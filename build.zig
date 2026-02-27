@@ -9,6 +9,32 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version_str);
 
+    // --- Shared modules ---
+    const protocol_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ipc_mod = b.createModule(.{
+        .root_source_file = b.path("src/ipc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "protocol", .module = protocol_mod },
+        },
+    });
+
+    // --- NvFBC module (X11 + GL for GLX context) ---
+    const nvfbc_mod = b.createModule(.{
+        .root_source_file = b.path("src/nvfbc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    nvfbc_mod.linkSystemLibrary("x11", .{});
+    nvfbc_mod.linkSystemLibrary("gl", .{});
+
     // --- barecast (main binary, unprivileged) ---
     const exe = b.addExecutable(.{
         .name = "barecast",
@@ -16,6 +42,20 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nvfbc", .module = nvfbc_mod },
+                .{ .name = "protocol", .module = protocol_mod },
+                .{ .name = "ipc", .module = ipc_mod },
+                .{ .name = "kms_client", .module = b.createModule(.{
+                    .root_source_file = b.path("src/kms_client.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "protocol", .module = protocol_mod },
+                        .{ .name = "ipc", .module = ipc_mod },
+                    },
+                }) },
+            },
         }),
     });
     exe.root_module.addOptions("build_options", options);
@@ -24,16 +64,27 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // --- barecast-kms (privileged helper, CAP_SYS_ADMIN) ---
+    const drm_mod = b.createModule(.{
+        .root_source_file = b.path("src/drm.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    drm_mod.linkSystemLibrary("libdrm", .{});
+
     const kms_exe = b.addExecutable(.{
         .name = "barecast-kms",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/kms.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "protocol", .module = protocol_mod },
+                .{ .name = "ipc", .module = ipc_mod },
+                .{ .name = "drm", .module = drm_mod },
+            },
         }),
     });
-    // Will link libdrm when real DRM code is added:
-    // kms_exe.linkSystemLibrary("drm");
     kms_exe.linkLibC();
 
     b.installArtifact(kms_exe);
@@ -61,7 +112,7 @@ pub fn build(b: *std.Build) void {
     const run_main_tests = b.addRunArtifact(main_tests);
     test_step.dependOn(&run_main_tests.step);
 
-    // KMS protocol tests (pure Zig, no libdrm needed for protocol logic)
+    // Protocol tests
     const protocol_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/protocol.zig"),
@@ -71,6 +122,21 @@ pub fn build(b: *std.Build) void {
     });
     const run_protocol_tests = b.addRunArtifact(protocol_tests);
     test_step.dependOn(&run_protocol_tests.step);
+
+    // IPC tests (SCM_RIGHTS roundtrip via socketpair — no DRM needed)
+    const ipc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "protocol", .module = protocol_mod },
+            },
+        }),
+    });
+    const run_ipc_tests = b.addRunArtifact(ipc_tests);
+    test_step.dependOn(&run_ipc_tests.step);
 
     // Property tests (minish)
     const minish_dep = b.dependency("minish", .{
@@ -86,11 +152,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "minish", .module = minish_dep.module("minish") },
-                .{ .name = "protocol", .module = b.createModule(.{
-                    .root_source_file = b.path("src/protocol.zig"),
-                    .target = target,
-                    .optimize = optimize,
-                }) },
+                .{ .name = "protocol", .module = protocol_mod },
             },
         }),
     });

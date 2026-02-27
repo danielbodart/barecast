@@ -173,6 +173,16 @@ No native app install on the viewer side. Open a URL, browser hardware-decodes A
 
 Massive UX advantage over Tuple/Pop which require native installs on both sides.
 
+### Region Sharing (Future)
+
+Support sharing a sub-region of the screen rather than the full display. Useful for ultrawide/multi-monitor setups where you want to keep parts of your workspace private.
+
+**Syntax:** `barecast share [WxH+X+Y]` — standard X11 geometry format (used by xrandr, ffmpeg, wf-recorder).
+
+**Where it happens in the pipeline:** At the GL/CUDA stage, not in KMS capture. The `barecast-kms` helper always captures the full framebuffer (DRM only gives you the whole thing). The main process crops to the requested geometry when setting up the NVENC input — just adjusted texture coordinates, essentially free on the GPU.
+
+This means region sharing doesn't affect the KMS helper design at all.
+
 ### Remote Input (Sharer Receives Viewer's Input)
 
 - Viewer captures keyboard/mouse in browser

@@ -24,6 +24,13 @@ pub const DmaBuf = extern struct {
     offset: u32 = 0,
 };
 
+pub const Rotation = enum(u32) {
+    rot_0 = 0,
+    rot_90 = 1,
+    rot_180 = 2,
+    rot_270 = 3,
+};
+
 pub const Plane = extern struct {
     dma_bufs: [max_dma_bufs_per_plane]DmaBuf = [_]DmaBuf{.{}} ** max_dma_bufs_per_plane,
     num_dma_bufs: u32 = 0,
@@ -33,6 +40,7 @@ pub const Plane = extern struct {
     modifier: u64 = 0,
     connector_id: u32 = 0,
     is_cursor: bool = false,
+    rotation: Rotation = .rot_0,
     x: i32 = 0,
     y: i32 = 0,
     src_w: u32 = 0,
