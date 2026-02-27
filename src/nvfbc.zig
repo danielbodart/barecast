@@ -391,8 +391,10 @@ pub const NvFbc = struct {
 
         std.debug.print("NvFBC: screen {}x{}\n", .{ status_params.screenSize.w, status_params.screenSize.h });
 
-        // Create capture session
-        var cap_params = CreateCaptureSessionParams{};
+        // Create capture session — 33ms sampling rate = ~30fps
+        var cap_params = CreateCaptureSessionParams{
+            .dwSamplingRateMs = 33,
+        };
         status = (fns.nvFBCCreateCaptureSession orelse return error.NvFbcInitFailed)(session, &cap_params);
         if (status != .success) {
             const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
@@ -433,8 +435,9 @@ pub const NvFbc = struct {
     pub fn grabFrame(self: *NvFbc) !FrameResult {
         var frame_info = FrameGrabInfo{};
         var grab_params = ToGlGrabFrameParams{
-            .dwFlags = 0x01 | 0x02, // NOWAIT | FORCE_REFRESH
+            .dwFlags = 0x02, // FORCE_REFRESH (blocking — waits for sampling rate)
             .pFrameGrabInfo = &frame_info,
+            .dwTimeoutMs = 100,
         };
 
         const status = (self.fns.nvFBCToGLGrabFrame orelse return error.NvFbcGrabFailed)(self.handle, &grab_params);

@@ -75,18 +75,8 @@ pub const Encoder = struct {
         self.stats.frames_encoded += 1;
     }
 
-    /// Flush encoder, drain buffered frames, and finalize IVF file.
+    /// Finalize IVF file header.
     pub fn finish(self: *Encoder) !void {
-        try self.nvenc.flush();
-
-        // Drain any trailing frames
-        while (try self.nvenc.drainFrame()) |frame| {
-            defer self.nvenc.unlockBitstream();
-            try self.ivf.writeFrame(frame.data, frame.pts);
-            self.stats.total_bytes += frame.data.len;
-            if (frame.is_key) self.stats.keyframes += 1;
-        }
-
         try self.ivf.finalize(
             @intCast(self.width),
             @intCast(self.height),

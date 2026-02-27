@@ -751,9 +751,13 @@ pub const Nvenc = struct {
     /// Retrieve one buffered frame after flush(). Returns null when drained.
     /// Caller must call unlockBitstream() after consuming each returned frame.
     pub fn drainFrame(self: *Nvenc) !?EncodedFrame {
-        var lock = LockBitstream{ .outputBitstream = self.bitstream_buffer };
+        var lock = LockBitstream{
+            .outputBitstream = self.bitstream_buffer,
+            .doNotWaitFlags = 1, // NV_ENC_LOCK_BITSTREAM_DO_NOT_WAIT
+        };
         const status = (self.fns.nvEncLockBitstream orelse return error.NvencEncodeFailed)(self.encoder, &lock);
         if (status == .err_need_more_input) return null;
+        if (status == .err_lock_busy) return null;
         if (status != .success) return null;
         if (lock.bitstreamSizeInBytes == 0) {
             self.unlockBitstream();

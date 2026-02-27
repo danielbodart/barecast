@@ -6,6 +6,10 @@ const Encoder = @import("encoder").Encoder;
 pub fn main() void {
     std.debug.print("barecast v{s}\n", .{build_options.version});
 
+    // Parse duration: `barecast [seconds]` (default 10)
+    const seconds = parseSeconds();
+    const duration_ns: u64 = @as(u64, seconds) * std.time.ns_per_s;
+
     var fbc = NvFbc.init() catch return;
     defer fbc.deinit();
 
@@ -31,26 +35,42 @@ pub fn main() void {
         enc.deinit();
     }
 
+    std.debug.print("Capturing {}s...\n", .{seconds});
+
+    var timer = std.time.Timer.start() catch {
+        std.debug.print("Timer unavailable\n", .{});
+        return;
+    };
+
     // Process the first frame we already grabbed
     enc.processFrame(first_frame) catch |err| {
         std.debug.print("Encode error: {}\n", .{err});
         return;
     };
 
-    // Capture loop — 300 frames (~10s at 30fps)
-    const max_frames: u32 = 300;
-    var i: u32 = 1;
-    while (i < max_frames) : (i += 1) {
+    // Capture loop — NvFBC blocks at ~30fps via dwSamplingRateMs,
+    // wall clock timer controls total duration
+    while (timer.read() < duration_ns) {
         const frame = fbc.grabFrame() catch |err| {
-            std.debug.print("Capture error at frame {}: {}\n", .{ i, err });
+            std.debug.print("Capture error: {}\n", .{err});
             break;
         };
 
         enc.processFrame(frame) catch |err| {
-            std.debug.print("Encode error at frame {}: {}\n", .{ i, err });
+            std.debug.print("Encode error: {}\n", .{err});
             break;
         };
     }
+}
+
+fn parseSeconds() u32 {
+    var args = std.process.args();
+    _ = args.next(); // skip argv[0]
+    const arg = args.next() orelse return 10;
+    return std.fmt.parseInt(u32, arg, 10) catch {
+        std.debug.print("Usage: barecast [seconds]\n", .{});
+        return 10;
+    };
 }
 
 test "placeholder" {
