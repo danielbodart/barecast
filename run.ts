@@ -1,5 +1,6 @@
 #!/usr/bin/env ./bootstrap.sh
 import { $ } from "bun";
+import { existsSync } from "fs";
 
 process.env.FORCE_COLOR = "1";
 
@@ -14,6 +15,13 @@ async function which(cmd: string): Promise<boolean> {
 
 // ─── Prerequisites ─────────────────────────────────────────────────────────
 
+async function ensureSubmodule() {
+    if (!existsSync("libdatachannel/CMakeLists.txt")) {
+        console.log("Initializing submodules...");
+        await $`git submodule update --init --recursive`;
+    }
+}
+
 async function ensureDeps() {
     const missing: string[] = [];
 
@@ -26,6 +34,10 @@ async function ensureDeps() {
     // EGL (needed by barecast for DMA-BUF import)
     const { exitCode: eglCheck } = await $`pkg-config --exists egl`.quiet().nothrow();
     if (eglCheck !== 0) missing.push("libegl-dev");
+
+    // OpenSSL (needed by libdatachannel)
+    const { exitCode: sslCheck } = await $`pkg-config --exists openssl`.quiet().nothrow();
+    if (sslCheck !== 0) missing.push("libssl-dev");
 
     if (missing.length > 0) {
         console.log(`Installing missing packages: ${missing.join(", ")}`);
@@ -49,9 +61,31 @@ async function version(): Promise<string> {
 
 export async function build() {
     await ensureDeps();
+    await ensureSubmodule();
     const ver = await version();
     console.log(`Building v${ver}...`);
     await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe`;
+}
+
+export async function rebuildLibs() {
+    await ensureDeps();
+    await ensureSubmodule();
+    await ensureZigCcWrappers();
+    console.log("Building libdatachannel static libs...");
+    await $`zig build rebuild-libs`;
+    console.log("Done. Static libs in .zig-cache/cmake/");
+}
+
+/** Create zig cc/c++ wrapper scripts for cmake. These ensure libdatachannel
+ *  is built with libc++ ABI, matching Zig's native linker. */
+async function ensureZigCcWrappers() {
+    const dir = `${SCRIPT_DIR}/.zig-cache/bin`;
+    const { stdout } = await $`which zig`.quiet();
+    const zigPath = stdout.toString().trim();
+    await $`mkdir -p ${dir}`;
+    await Bun.write(`${dir}/zig-cc`, `#!/bin/sh\nexec ${zigPath} cc "$@"\n`);
+    await Bun.write(`${dir}/zig-c++`, `#!/bin/sh\nexec ${zigPath} c++ "$@"\n`);
+    await $`chmod +x ${dir}/zig-cc ${dir}/zig-c++`;
 }
 
 export async function clean() {
@@ -96,6 +130,24 @@ export async function dev() {
 }
 
 export async function dist() {
+    // Validate no absolute RUNPATH (must be $ORIGIN or empty)
+    const { stdout: rpathOut } = await $`readelf -d dist/bin/barecast 2>/dev/null`.quiet();
+    const rpathLines = rpathOut.toString().split("\n").filter(l => l.includes("RUNPATH") || l.includes("RPATH"));
+    const absolutePaths = rpathLines.filter(l => !l.includes("$ORIGIN") && /\/[a-zA-Z]/.test(l));
+    if (absolutePaths.length > 0) {
+        console.error("ERROR: binary has hardcoded absolute RUNPATH:");
+        absolutePaths.forEach(l => console.error(`  ${l.trim()}`));
+        process.exit(1);
+    }
+
+    // Validate no AVX-512 instructions (must be portable to x86_64_v3)
+    const { stdout: objdumpOut } = await $`objdump -d dist/bin/barecast | grep -c 'zmm\\|%k[0-7],'`.quiet().nothrow();
+    const avx512Count = parseInt(objdumpOut.toString().trim()) || 0;
+    if (avx512Count > 0) {
+        console.error(`ERROR: binary contains ${avx512Count} AVX-512 instructions (not portable)`);
+        process.exit(1);
+    }
+
     const ver = await version();
     await Bun.write("dist/VERSION", ver);
     await $`tar -czf barecast-linux-x86_64.tar.gz -C dist bin/ VERSION`;
@@ -119,6 +171,39 @@ export async function ci() {
     }
 }
 
+// ─── Integration test (requires GPU) ──────────────────────────────────────
+
+export async function integration() {
+    await build();
+    const testFile = "/tmp/barecast-test.ivf";
+    console.log("Capturing 3s to IVF...");
+    await $`timeout 10 dist/bin/barecast --record ${testFile} 3`.nothrow();
+
+    if (!existsSync(testFile)) {
+        console.error("ERROR: IVF file was not created");
+        process.exit(1);
+    }
+
+    // Validate with ffprobe
+    console.log("Validating with ffprobe...");
+    const { stdout } = await $`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,nb_read_frames -count_frames -of csv=p=0 ${testFile}`.quiet();
+    const parts = stdout.toString().trim().split(",");
+    const codec = parts[0];
+    const frames = parseInt(parts[1]) || 0;
+
+    if (codec !== "av1") {
+        console.error(`ERROR: expected codec av1, got ${codec}`);
+        process.exit(1);
+    }
+    if (frames < 10) {
+        console.error(`ERROR: expected >= 10 frames, got ${frames}`);
+        process.exit(1);
+    }
+
+    await $`rm -f ${testFile}`;
+    console.log(`Integration test passed: ${codec}, ${frames} frames`);
+}
+
 // ─── Worker commands ───────────────────────────────────────────────────────
 
 export async function workerDev() {
@@ -136,7 +221,8 @@ async function printVersion() {
 }
 
 const commands: Record<string, Function> = {
-    dev, build, clean, setup, test, lint, dist, ci, version: printVersion,
+    dev, build, clean, setup, test, lint, dist, ci, integration, version: printVersion,
+    "rebuild-libs": rebuildLibs,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,
 };

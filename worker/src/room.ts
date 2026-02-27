@@ -9,10 +9,7 @@ import { DurableObject } from "cloudflare:workers";
  * Hibernation API so the DO sleeps when signaling is idle (after WebRTC connects).
  *
  * Rooms auto-create on first WebSocket connection. Room IDs are client-generated
- * (ULID or similar) — no server round-trip needed to create a room.
- *
- * HTTP as a pure function: the signaling logic is a simple message router.
- * Request in, Response out. Testable without Cloudflare infrastructure.
+ * (8-byte random hex → 16 chars) — no server round-trip needed to create a room.
  */
 export class SignalingRoom extends DurableObject<Env> {
     async fetch(request: Request): Promise<Response> {
@@ -21,10 +18,23 @@ export class SignalingRoom extends DurableObject<Env> {
             return new Response("Expected WebSocket upgrade", { status: 426 });
         }
 
+        // Extract role from query param
+        const url = new URL(request.url);
+        const role = url.searchParams.get("role") || "unknown";
+
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
 
-        this.ctx.acceptWebSocket(server);
+        // Tag the WebSocket with its role for identification
+        this.ctx.acceptWebSocket(server, [role]);
+
+        // Notify existing peers about the new connection
+        const sockets = this.ctx.getWebSockets();
+        for (const socket of sockets) {
+            if (socket !== server) {
+                socket.send(JSON.stringify({ type: "peer-joined", role }));
+            }
+        }
 
         return new Response(null, { status: 101, webSocket: client });
     }

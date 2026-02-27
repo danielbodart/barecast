@@ -26,6 +26,12 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 # Static analysis
 ./run.ts lint
 
+# Rebuild libdatachannel static libs (after submodule update)
+./run.ts rebuild-libs
+
+# Integration test (requires GPU)
+./run.ts integration
+
 # First-time setup (builds, installs binaries, sets CAP_SYS_ADMIN on barecast-kms)
 ./run.ts setup
 ```
@@ -47,12 +53,14 @@ Two Zig binaries + one Cloudflare Worker:
 
 ### Key source files
 
-- **`src/main.zig`** — Entry point for the main binary.
+- **`src/main.zig`** — Entry point. CLI modes: WebRTC streaming (default) or `--record` for IVF.
+- **`src/webrtc.zig`** — libdatachannel Zig bindings. Peer connection, AV1 track, signaling WebSocket.
+- **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (IVF or WebRTC).
 - **`src/kms.zig`** — Entry point for the privileged KMS helper.
 - **`src/protocol.zig`** — Wire protocol structs for IPC between barecast and barecast-kms.
 - **`src/prop_tests.zig`** — Property-based tests (minish).
-- **`worker/src/index.ts`** — Cloudflare Worker entry point.
-- **`worker/src/room.ts`** — Durable Object for signaling rooms.
+- **`worker/src/index.ts`** — Cloudflare Worker + full WebRTC browser viewer.
+- **`worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.
 
 ## Testing
 
@@ -61,12 +69,13 @@ Two Zig binaries + one Cloudflare Worker:
 ./run.ts lint    # static analysis (zwanzig) + shellcheck
 ```
 
-Three test tiers: unit tests (inline `test` blocks), property tests (minish), integration tests (Bun, requires GPU — not yet implemented).
+Three test tiers: unit tests (inline `test` blocks), property tests (minish), integration tests (`./run.ts integration`, requires GPU — captures 3s IVF, validates with ffprobe).
 
 ## Conventions
 
 - Zig 0.15 API: `b.createModule(...)` for executables
 - CI only calls `run.ts` targets — no build logic in workflow YAML
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
-- libdatachannel for WebRTC transport (C API, callable from Zig)
+- libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)
+- libdatachannel built with zig cc/c++ (libc++ ABI) to match Zig's linker
 - AV1 only, no codec fallback

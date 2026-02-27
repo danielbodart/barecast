@@ -59,6 +59,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // --- WebRTC module (libdatachannel C API bindings) ---
+    const webrtc_mod = b.createModule(.{
+        .root_source_file = b.path("src/webrtc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    webrtc_mod.addIncludePath(b.path("libdatachannel/include"));
+
     const encoder_mod = b.createModule(.{
         .root_source_file = b.path("src/encoder.zig"),
         .target = target,
@@ -68,6 +77,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cuda", .module = cuda_mod },
             .{ .name = "nvenc", .module = nvenc_mod },
             .{ .name = "ivf", .module = ivf_mod },
+            .{ .name = "webrtc", .module = webrtc_mod },
         },
     });
 
@@ -81,6 +91,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "nvfbc", .module = nvfbc_mod },
                 .{ .name = "encoder", .module = encoder_mod },
+                .{ .name = "ivf", .module = ivf_mod },
                 .{ .name = "protocol", .module = protocol_mod },
                 .{ .name = "ipc", .module = ipc_mod },
                 .{ .name = "kms_client", .module = b.createModule(.{
@@ -92,11 +103,21 @@ pub fn build(b: *std.Build) void {
                         .{ .name = "ipc", .module = ipc_mod },
                     },
                 }) },
+                .{ .name = "webrtc", .module = webrtc_mod },
             },
         }),
     });
     exe.root_module.addOptions("build_options", options);
     exe.linkLibC();
+
+    // Static link libdatachannel and its dependencies
+    exe.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
+    exe.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
+    exe.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
+    exe.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
+    exe.linkSystemLibrary("ssl");
+    exe.linkSystemLibrary("crypto");
+    exe.linkLibCpp();
 
     b.installArtifact(exe);
 
@@ -186,6 +207,26 @@ pub fn build(b: *std.Build) void {
     const run_ivf_tests = b.addRunArtifact(ivf_tests);
     test_step.dependOn(&run_ivf_tests.step);
 
+    // WebRTC tests (JSON helpers — no network/GPU needed)
+    const webrtc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/webrtc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    webrtc_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
+    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
+    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
+    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
+    webrtc_tests.linkSystemLibrary("ssl");
+    webrtc_tests.linkSystemLibrary("crypto");
+    webrtc_tests.linkLibCpp();
+    const run_webrtc_tests = b.addRunArtifact(webrtc_tests);
+    test_step.dependOn(&run_webrtc_tests.step);
+
     // Property tests (minish)
     const minish_dep = b.dependency("minish", .{
         .target = target,
@@ -223,4 +264,41 @@ pub fn build(b: *std.Build) void {
     zwanzig_run.addArgs(&.{ "--do", "unreachable-code-engine" });
     zwanzig_run.addDirectoryArg(b.path("src"));
     analyze_step.dependOn(&zwanzig_run.step);
+
+    // --- Rebuild libdatachannel static libs (cmake → .zig-cache/cmake/) ---
+    const rebuild_step = b.step("rebuild-libs", "Rebuild libdatachannel static libs");
+
+    const cmake_build_dir = ".zig-cache/cmake";
+
+    // Zig cc/c++ wrappers — cmake needs compiler scripts that resolve to zig cc/c++.
+    // This ensures the static .a files use libc++ ABI, matching Zig's native linker.
+    const zig_cc_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-cc" });
+    const zig_cxx_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-c++" });
+
+    const cmake_configure = b.addSystemCommand(&.{
+        "cmake",
+        "-S",
+        "libdatachannel",
+        "-B",
+        cmake_build_dir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DNO_EXAMPLES=ON",
+        "-DNO_TESTS=ON",
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+    });
+    cmake_configure.addArg(b.fmt("-DCMAKE_C_COMPILER={s}", .{zig_cc_path}));
+    cmake_configure.addArg(b.fmt("-DCMAKE_CXX_COMPILER={s}", .{zig_cxx_path}));
+
+    const cmake_build = b.addSystemCommand(&.{
+        "cmake",
+        "--build",
+        cmake_build_dir,
+        "--config",
+        "Release",
+        "--parallel",
+    });
+    cmake_build.step.dependOn(&cmake_configure.step);
+
+    rebuild_step.dependOn(&cmake_build.step);
 }

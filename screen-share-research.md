@@ -2,7 +2,9 @@
 
 ## Vision
 
-An opinionated, low-level screen sharing / pair programming tool built in Zig. Extremely fast, GPU-resident, minimal CPU usage. Linux-first, macOS later. Browser-based viewer — no install on the receiving end.
+A remote pair programming tool built in Zig. Share your screen with a colleague across the internet — they open a URL in their browser, no install required. Designed for developers working together remotely, not LAN-based screen mirroring.
+
+GPU-resident capture and encode pipeline. Minimal CPU usage. Linux-first, macOS later.
 
 Think Tuple/Pop but leaner, faster, and elitist about hardware requirements.
 
@@ -19,15 +21,20 @@ What's built, what's next, what's later.
 - **Build system** (`build.zig`) — Two executable targets with module dependency graph, system library linking (libdrm, X11, GL), test framework, property tests via minish, static analysis via zwanzig.
 - **Task runner** (`run.ts`) — Bun TypeScript. build/test/lint/setup/dist/ci/worker-dev/worker-deploy targets. Version string from git. Dependency checking via pkg-config.
 - **Signaling server** (`worker/`) — Cloudflare Worker + Durable Object. WebSocket upgrade routing, message broadcast to room peers, peer disconnection notifications. Uses Hibernation API.
-- **Unit + property tests** — Protocol serialization (5 tests), SCM_RIGHTS roundtrip (3 tests), property-based tests via minish (4 properties × 200 runs each).
+- **Unit + property tests** — Protocol serialization (5 tests), SCM_RIGHTS roundtrip (3 tests), IVF container (3 tests), property-based tests via minish (4 properties × 200 runs each).
+- **CUDA interop** (`src/cuda.zig`) — CUDA Driver API bindings via dlopen. Registers NvFBC GL textures as CUDA resources (`cuGraphicsGLRegisterImage`), copies to pitched device memory via `cuMemcpy2D`. Zero-copy GL→CUDA path.
+- **NVENC AV1 encode** (`src/nvenc.zig`) — Direct NVENC SDK 12.0 bindings via dlopen. Pure Zig extern structs with comptime size assertions. AV1 encode with P4 preset, low-latency tuning, constQP 28, ARGB input (BGRA from NvFBC). NVENC handles internal CSC to NV12.
+- **IVF container writer** (`src/ivf.zig`) — Writes AV1 bitstream to IVF files (DKIF header + per-frame headers). Millisecond timebase with real wall clock PTS.
+- **Encode pipeline** (`src/encoder.zig`) — Orchestrates NvFBC → CUDA → NVENC → IVF. Frame skip tracking, keyframe interval, stats.
+- **Capture CLI** — `barecast` streams via WebRTC (default), `barecast --record output.ivf [seconds]` records to IVF. SIGINT/SIGTERM handling.
+- **libdatachannel integration** (`src/webrtc.zig`) — Static link via cmake (built with zig cc for libc++ ABI). Zig bindings wrapping the C API: peer connection, sendonly AV1 track with RTP packetizer (90kHz clock, 1200 byte fragments), signaling WebSocket, PLI-triggered keyframes. Thread-safe: atomics for state/keyframe flags, callbacks fire on libdatachannel threads.
+- **FrameSink abstraction** (`src/encoder.zig`) — Tagged union `FrameSink = union(enum) { ivf, webrtc }`. Encoder dispatches encoded data to either IVF writer or WebRTC track. PLI keyframe forcing for WebRTC path.
+- **Browser viewer** (`worker/src/index.ts`) — Full WebRTC viewer served on `/` and `?room=` paths. RTCPeerConnection with STUN, `ontrack` → `<video>` binding, SDP answer generation, ICE candidate exchange. Status overlay (Connecting → Waiting → Negotiating → hidden on play → Disconnected).
+- **Signaling protocol** (`worker/src/room.ts`) — Role-tagged WebSocket connections (`?role=sharer|viewer`). `peer-joined` notifications on connect, verbatim message relay between peers. JSON messages: offer, answer, ice, peer-joined, peer-disconnected.
 
 ### Next
 
-- **CUDA interop** — Register GL textures (from NvFBC) as CUDA resources via `cuGraphicsGLRegisterImage`. Zero-copy pointer swap.
-- **NVENC AV1 encode** — Initialize encoder session, configure for screen content (low-latency preset, 4:4:4 chroma), encode captured frames to AV1 bitstream.
-- **libdatachannel integration** — Link the C API, implement signaling state machine (SDP offer/answer, ICE candidate exchange), media track for AV1 RTP.
-- **Browser viewer** — WebRTC peer connection setup, AV1 decode via browser, video element binding. Replace placeholder HTML.
-- **Signaling protocol** — Define message schema for SDP/ICE routing. Add sharer/viewer role detection in the Durable Object.
+- **Bitrate adaptation** — Monitor packet loss / RTT from libdatachannel stats, adjust NVENC target bitrate dynamically (REMB callback is stubbed).
 
 ### Later
 
@@ -41,18 +48,23 @@ What's built, what's next, what's later.
 
 | File | Lines | What it does |
 |---|---|---|
-| `src/main.zig` | ~20 | Entry point. Creates NvFBC instance, grabs one frame, prints debug output. Stub — no encoding or streaming loop yet. |
-| `src/nvfbc.zig` | ~465 | NvFBC bindings. Dynamic `libnvidia-fbc.so.1` loading, GLX context setup, frame capture → GL texture. |
+| `src/main.zig` | ~240 | Entry point. CLI parsing (stream vs `--record`), WebRTC mode (room ID, signaling, wait for viewer), record mode (IVF), signal handler. |
+| `src/webrtc.zig` | ~250 | libdatachannel Zig bindings. Peer connection, AV1 track + packetizer, signaling WebSocket, callbacks, minimal JSON helpers. |
+| `src/nvfbc.zig` | ~465 | NvFBC bindings. Dynamic `libnvidia-fbc.so.1` loading, GLX context setup, frame capture → GL texture. 33ms sampling rate for ~30fps pacing. |
+| `src/cuda.zig` | ~275 | CUDA Driver API via dlopen. GL texture interop, pitched device memory allocation, CUarray→linear copy. |
+| `src/nvenc.zig` | ~790 | Direct NVENC SDK 12.0 via dlopen. AV1 encode (P4/low-latency/constQP 28), ARGB input, comptime struct size assertions. |
+| `src/ivf.zig` | ~190 | IVF container writer. 32-byte file header + 12-byte frame headers. Millisecond PTS timebase. 3 unit tests. |
+| `src/encoder.zig` | ~105 | Pipeline orchestration. NvFBC → CUDA → NVENC → FrameSink dispatch (IVF or WebRTC). PLI keyframe support. |
 | `src/kms.zig` | ~312 | KMS helper binary. DRM plane enumeration, GEM → DMA-BUF export, SCM_RIGHTS IPC. Runs with CAP_SYS_ADMIN. |
 | `src/kms_client.zig` | ~188 | Launches `barecast-kms` subprocess, sends frame requests, receives DMA-BUF fds. NVIDIA GPU discovery via sysfs. |
 | `src/protocol.zig` | ~115 | Wire protocol structs (extern C ABI). Request/Response types, Plane metadata, DmaBuf descriptors. |
 | `src/ipc.zig` | ~223 | SCM_RIGHTS ancillary data over Unix socketpair. sendmsg/recvmsg with cmsg alignment. |
 | `src/drm.zig` | ~90 | libdrm C bindings via `@cImport`. ~15 functions for plane/FB2/property enumeration. |
 | `src/prop_tests.zig` | ~70 | Property-based tests (minish). 4 properties × 200 runs. |
-| `worker/src/index.ts` | ~49 | Cloudflare Worker. Routes `/room/{id}/ws` → Durable Object, serves placeholder viewer HTML. |
-| `worker/src/room.ts` | ~51 | SignalingRoom Durable Object. WebSocket broadcast to room peers, disconnect notification. |
-| `build.zig` | ~178 | Build system. Two exe targets, module graph, test framework, zwanzig analyzer. |
-| `run.ts` | ~160 | Bun task runner. build/test/lint/setup/dist/ci/worker targets. |
+| `worker/src/index.ts` | ~130 | Cloudflare Worker. Routes `/room/{id}/ws` → Durable Object, serves full WebRTC viewer HTML/JS. |
+| `worker/src/room.ts` | ~60 | SignalingRoom Durable Object. Role-tagged WebSocket connections, peer-joined broadcast, message relay. |
+| `build.zig` | ~300 | Build system. Two exe targets, encode + webrtc modules, cmake rebuild-libs step, static link libdatachannel, test framework. |
+| `run.ts` | ~210 | Bun task runner. build/test/lint/setup/dist/ci/integration/rebuild-libs/worker targets. |
 
 ## Hardware Requirements (Deliberate)
 
@@ -77,10 +89,10 @@ No fallback. One codec path = simpler pipeline, fewer bugs, less testing.
 - **128x128 superblocks** — large static screen regions encode as single blocks with near-zero bits. Static regions cost almost nothing, which eliminates the need for dirty rect tracking.
 - **56 directional intra prediction modes** (vs HEVC's 35) — sharp text edges predict cleanly.
 - **Up to 7 reference frames** — unchanged regions can reference further back, spending essentially zero bits.
-- **4:4:4 chroma in the base profile** — full color resolution, text looks perfect. No profile juggling needed.
-- **~30-50% better compression than HEVC** at same quality — lower bandwidth, better on shared wifi.
+- **4:4:4 chroma in the AV1 spec** — the codec supports it, but NVENC hardware only encodes 4:2:0. NVENC H.264/HEVC can do 4:4:4, but no browser WebRTC stack accepts those profiles. In practice, AV1's screen content tools compensate well at 4:2:0 — text remains sharp at reasonable QP values.
+- **~30-50% better compression than HEVC** at same quality — lower bandwidth for remote sessions over residential internet.
 - **Film grain synthesis** — strips noise at encode, resynthesises at decode. Encoder doesn't waste bits on dithering/subpixel rendering noise.
-- **Built-in superresolution** — encode at lower res, upsample at decode. Useful for bandwidth-constrained situations.
+- **Built-in superresolution** — encode at lower res, upsample at decode. Useful when bandwidth is tight on remote connections.
 
 ### Dirty rects
 
@@ -92,17 +104,21 @@ If needed later: a GPU compute shader can diff the previous and current frame as
 
 ## Architecture
 
-### Capture Pipeline (Linux — NVIDIA + X11) [IMPLEMENTED]
+### Capture Pipeline (Linux — NVIDIA + X11) [IMPLEMENTED — end-to-end to IVF]
 
 ```
 NvFBC (NVIDIA Frame Buffer Capture, proprietary driver API)
-  → GL texture (direct from NvFBC, no intermediate copies)      ← DONE
-    → CUDA resource (cuGraphicsGLRegisterImage — zero-copy)      ← NEXT
-      → NVENC AV1 hardware encode (dedicated ASIC)               ← NEXT
-        → encoded bitstream
+  → GL texture (BGRA, direct from NvFBC)                        ← DONE
+    → CUDA resource (cuGraphicsGLRegisterImage — zero-copy)      ← DONE
+      → NVENC AV1 hardware encode (ARGB input, internal CSC)     ← DONE
+        → encoded bitstream → IVF file                           ← DONE
           → libdatachannel (AV1 → RTP packetization, SRTP)       ← NEXT
             → WebRTC to browser
 ```
+
+**Tested:** 3840x1600 at ~30fps, 3.8 Mbps AV1 constQP 28. 30-second capture produces 45MB IVF file playable by ffplay/dav1d. CLI: `barecast [seconds]`.
+
+**Key discovery during implementation:** NVENC AV1 does NOT support 4:4:4 chroma (`chromaFormatIDC` must be 1 = YUV420). NvFBC captures BGRA, which maps to `NV_ENC_BUFFER_FORMAT_ARGB` on little-endian. NVENC performs internal CSC from ARGB to NV12 before encoding. Output is YUV420. For screen sharing this is acceptable — AV1's screen content coding tools (IBC, palette mode, transform skip) compensate for the chroma subsampling on text.
 
 NvFBC is the primary capture path. It's NVIDIA's proprietary screen capture API — a single call produces a GL texture of the entire screen. No DRM plane enumeration, no DMA-BUF export, no EGL import chain. Simpler and faster than KMS for X11.
 
@@ -219,10 +235,10 @@ After WebRTC connects, the signaling WebSocket goes idle and the DO hibernates. 
 
 libdatachannel's ICE implementation handles this. Configured with:
 
-- **STUN:** `stun.cloudflare.com:3478` (free, unlimited) — discovers public IP/port. Works for ~85% of home NATs.
-- **TURN:** Cloudflare TURN relay (fallback for symmetric NATs, CGNAT, strict firewalls). $0.05/GB after 1 TB/month free. Standard TURN protocol — works with any WebRTC library including libdatachannel.
+- **STUN:** `stun.cloudflare.com:3478` (free, unlimited) — discovers public IP/port. Works for ~85% of home NATs. Most remote pairing sessions between devs on residential connections will use this path.
+- **TURN:** Cloudflare TURN relay (fallback for symmetric NATs, CGNAT, strict corporate firewalls). $0.05/GB after 1 TB/month free. Standard TURN protocol — works with any WebRTC library including libdatachannel. This is the fallback for devs behind restrictive network setups.
 
-ICE tries paths in priority order: direct P2P → STUN-assisted P2P → TURN relay. Best working path wins.
+ICE tries paths in priority order: direct P2P → STUN-assisted P2P → TURN relay. Best working path wins. For two devs in different cities on residential internet, STUN-assisted P2P is the typical outcome.
 
 #### Cost
 
@@ -237,9 +253,9 @@ For pair programming usage, this is effectively free.
 
 ### Viewer: Browser Only [PLACEHOLDER]
 
-No native app install on the viewer side. Open a URL, browser hardware-decodes AV1 via WebRTC, renders it. Keyboard/mouse events sent back over WebRTC data channel.
+No native app install on the viewer side. Your pair sends you a URL, you open it, their screen appears. Browser hardware-decodes AV1 via WebRTC, renders it. Keyboard/mouse events sent back over WebRTC data channel for remote control.
 
-Massive UX advantage over Tuple/Pop which require native installs on both sides.
+Massive UX advantage over Tuple/Pop which require native installs on both sides. Critical for remote pair programming where you want zero friction for the person joining.
 
 **Current state:** Static HTML served from the Worker with a `<video>` element and status text. No JavaScript WebRTC implementation yet — waiting on signaling protocol definition and libdatachannel integration on the sharer side.
 
@@ -445,8 +461,8 @@ These require infrastructure (virtual displays, reference data, CI with GPUs) so
 | **KMS/DRM** | Kernel Mode Setting — access GPU framebuffer directly (Wayland path) | **In use** |
 | **DMA-BUF** | Kernel mechanism for sharing GPU buffer handles between processes without copying | **In use** |
 | **EGL + EGL_LINUX_DMA_BUF_EXT** | Import DMA-BUF fds as GPU textures | Not yet wired |
-| **CUDA** | Register GL textures as CUDA resources for NVENC | Next |
-| **NVENC** | NVIDIA's dedicated hardware video encoder ASIC | Next |
+| **CUDA** | Register GL textures as CUDA resources for NVENC | **In use** |
+| **NVENC** | NVIDIA's dedicated hardware video encoder ASIC | **In use** |
 | **VAAPI** | Video Acceleration API — AMD/Intel hardware encode (future) | Later |
 | **evdev / uinput** | Kernel input subsystem — capture and inject keyboard/mouse events | Later |
 | **libdatachannel** | WebRTC transport (ICE, DTLS, SRTP, data channels) | Next |
