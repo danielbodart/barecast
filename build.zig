@@ -35,6 +35,42 @@ pub fn build(b: *std.Build) void {
     nvfbc_mod.linkSystemLibrary("x11", .{});
     nvfbc_mod.linkSystemLibrary("gl", .{});
 
+    // --- Encode pipeline modules ---
+    const cuda_mod = b.createModule(.{
+        .root_source_file = b.path("src/cuda.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const nvenc_mod = b.createModule(.{
+        .root_source_file = b.path("src/nvenc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "cuda", .module = cuda_mod },
+        },
+    });
+
+    const ivf_mod = b.createModule(.{
+        .root_source_file = b.path("src/ivf.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const encoder_mod = b.createModule(.{
+        .root_source_file = b.path("src/encoder.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "nvfbc", .module = nvfbc_mod },
+            .{ .name = "cuda", .module = cuda_mod },
+            .{ .name = "nvenc", .module = nvenc_mod },
+            .{ .name = "ivf", .module = ivf_mod },
+        },
+    });
+
     // --- barecast (main binary, unprivileged) ---
     const exe = b.addExecutable(.{
         .name = "barecast",
@@ -44,6 +80,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "nvfbc", .module = nvfbc_mod },
+                .{ .name = "encoder", .module = encoder_mod },
                 .{ .name = "protocol", .module = protocol_mod },
                 .{ .name = "ipc", .module = ipc_mod },
                 .{ .name = "kms_client", .module = b.createModule(.{
@@ -137,6 +174,17 @@ pub fn build(b: *std.Build) void {
     });
     const run_ipc_tests = b.addRunArtifact(ipc_tests);
     test_step.dependOn(&run_ipc_tests.step);
+
+    // IVF tests
+    const ivf_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ivf.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ivf_tests = b.addRunArtifact(ivf_tests);
+    test_step.dependOn(&run_ivf_tests.step);
 
     // Property tests (minish)
     const minish_dep = b.dependency("minish", .{
