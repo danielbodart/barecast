@@ -233,8 +233,8 @@ const InitializeParams = extern struct {
     encodeHeight: u32,
     darWidth: u32,
     darHeight: u32,
-    frameRateNum: u32 = 30,
-    frameRateDen: u32 = 1,
+    frameRateNum: u32 = 0,
+    frameRateDen: u32 = 0,
     enableEncodeAsync: u32 = 0,
     enablePTD: u32 = 1,
     reportBitfields: u32 = 0,
@@ -599,11 +599,9 @@ pub const Nvenc = struct {
         // Set bitfield_flags: repeatSeqHdr=1 (bit 5), chromaFormatIDC=1 (bits 7-8)
         av1.bitfield_flags = (av1.bitfield_flags & ~@as(u32, (1 << 5) | (0x3 << 7))) | (1 << 5) | (1 << 7);
 
-        // Try ARGB input (matches NvFBC BGRA byte order on LE).
-        // If the encoder rejects it, we'll fall back to NV12.
-        var buffer_format: u32 = NV_ENC_BUFFER_FORMAT_ARGB;
+        const buffer_format: u32 = NV_ENC_BUFFER_FORMAT_ARGB;
 
-        // Initialize encoder
+        // Initialize encoder — ARGB input matches NvFBC BGRA byte order on LE.
         const initEncoder = fns.nvEncInitializeEncoder orelse return error.NvencInitFailed;
         var init_params = InitializeParams{
             .encodeWidth = cu.frame_width,
@@ -617,23 +615,12 @@ pub const Nvenc = struct {
 
         status = initEncoder(encoder_handle, &init_params);
         if (status != .success) {
-            // ARGB might not be supported for AV1 — this is expected.
-            // The encoder was not initialized, so no state to clean up.
-            std.debug.print("NVENC: ARGB init failed ({}), trying NV12 fallback\n", .{@intFromEnum(status)});
-
-            // Reset config for NV12 — no other changes needed
-            buffer_format = NV_ENC_BUFFER_FORMAT_NV12;
-            status = initEncoder(encoder_handle, &init_params);
-            if (status != .success) {
-                logNvencError(&fns, encoder_handle, "nvEncInitializeEncoder (NV12)", status);
-                _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
-                return error.NvencInitFailed;
-            }
+            logNvencError(&fns, encoder_handle, "nvEncInitializeEncoder", status);
+            _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
+            return error.NvencInitFailed;
         }
 
-        std.debug.print("NVENC: initialized AV1 encoder {}x{}, format=0x{X:0>8}\n", .{
-            cu.frame_width, cu.frame_height, buffer_format,
-        });
+        std.debug.print("NVENC: initialized AV1 encoder {}x{}\n", .{ cu.frame_width, cu.frame_height });
 
         // Register CUDA device pointer as NVENC input
         const registerResource = fns.nvEncRegisterResource orelse return error.NvencInitFailed;
@@ -726,7 +713,10 @@ pub const Nvenc = struct {
             return error.NvencEncodeFailed;
         }
 
-        const data_ptr: [*]const u8 = @ptrCast(lock.bitstreamBufferPtr orelse return error.NvencEncodeFailed);
+        const data_ptr: [*]const u8 = @ptrCast(lock.bitstreamBufferPtr orelse {
+            self.unlockBitstream();
+            return error.NvencEncodeFailed;
+        });
         const frame = EncodedFrame{
             .data = data_ptr[0..lock.bitstreamSizeInBytes],
             .is_key = lock.pictureType == 3, // NV_ENC_PIC_TYPE_IDR = 3
@@ -742,7 +732,8 @@ pub const Nvenc = struct {
         _ = (self.fns.nvEncUnlockBitstream orelse unreachable)(self.encoder, self.bitstream_buffer);
     }
 
-    /// Send EOS to flush any buffered frames.
+    /// Send EOS to signal end of stream. Call drainFrame() afterwards to
+    /// retrieve any buffered output.
     pub fn flush(self: *Nvenc) !void {
         var pic = PicParams{
             .inputWidth = self.width,
@@ -755,6 +746,31 @@ pub const Nvenc = struct {
             logNvencError(&self.fns, self.encoder, "nvEncEncodePicture (EOS)", status);
             return error.NvencEncodeFailed;
         }
+    }
+
+    /// Retrieve one buffered frame after flush(). Returns null when drained.
+    /// Caller must call unlockBitstream() after consuming each returned frame.
+    pub fn drainFrame(self: *Nvenc) !?EncodedFrame {
+        var lock = LockBitstream{ .outputBitstream = self.bitstream_buffer };
+        const status = (self.fns.nvEncLockBitstream orelse return error.NvencEncodeFailed)(self.encoder, &lock);
+        if (status == .err_need_more_input) return null;
+        if (status != .success) return null;
+        if (lock.bitstreamSizeInBytes == 0) {
+            self.unlockBitstream();
+            return null;
+        }
+
+        const data_ptr: [*]const u8 = @ptrCast(lock.bitstreamBufferPtr orelse {
+            self.unlockBitstream();
+            return null;
+        });
+        const frame = EncodedFrame{
+            .data = data_ptr[0..lock.bitstreamSizeInBytes],
+            .is_key = lock.pictureType == 3,
+            .pts = self.frame_idx,
+        };
+        self.frame_idx += 1;
+        return frame;
     }
 
     pub fn deinit(self: *Nvenc) void {

@@ -20,7 +20,16 @@ pub fn main() void {
         std.debug.print("Encoder init failed: {}\n", .{err});
         return;
     };
-    defer enc.deinit();
+    defer {
+        enc.finish() catch |err| {
+            std.debug.print("Finalize error: {}\n", .{err});
+        };
+        const stats = enc.stats;
+        std.debug.print("Done: {} encoded, {} skipped, {} keyframes, {} bytes\n", .{
+            stats.frames_encoded, stats.frames_skipped, stats.keyframes, stats.total_bytes,
+        });
+        enc.deinit();
+    }
 
     // Process the first frame we already grabbed
     enc.processFrame(first_frame) catch |err| {
@@ -42,16 +51,6 @@ pub fn main() void {
             break;
         };
     }
-
-    // Flush encoder and finalize IVF
-    enc.finish() catch |err| {
-        std.debug.print("Finalize error: {}\n", .{err});
-    };
-
-    const stats = enc.stats;
-    std.debug.print("Done: {} encoded, {} skipped, {} keyframes, {} bytes\n", .{
-        stats.frames_encoded, stats.frames_skipped, stats.keyframes, stats.total_bytes,
-    });
 }
 
 test "placeholder" {

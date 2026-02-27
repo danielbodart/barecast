@@ -202,13 +202,13 @@ pub const Cuda = struct {
             logCudaError(self.cuGetErrorString, res, "cuGraphicsMapResources");
             return error.CudaCopyFailed;
         }
+        defer _ = self.cuGraphicsUnmapResources(1, @ptrCast(&self.graphics_resource), null);
 
         // Get the mapped CUarray
         var mapped_array: ?*anyopaque = null;
         res = self.cuGraphicsSubResourceGetMappedArray(&mapped_array, self.graphics_resource.?, 0, 0);
         if (res != CUDA_SUCCESS) {
             logCudaError(self.cuGetErrorString, res, "cuGraphicsSubResourceGetMappedArray");
-            _ = self.cuGraphicsUnmapResources(1, @ptrCast(&self.graphics_resource), null);
             return error.CudaCopyFailed;
         }
 
@@ -226,14 +226,6 @@ pub const Cuda = struct {
         res = self.cuMemcpy2D_v2(&copy);
         if (res != CUDA_SUCCESS) {
             logCudaError(self.cuGetErrorString, res, "cuMemcpy2D_v2");
-            _ = self.cuGraphicsUnmapResources(1, @ptrCast(&self.graphics_resource), null);
-            return error.CudaCopyFailed;
-        }
-
-        // Unmap GL resource
-        res = self.cuGraphicsUnmapResources(1, @ptrCast(&self.graphics_resource), null);
-        if (res != CUDA_SUCCESS) {
-            logCudaError(self.cuGetErrorString, res, "cuGraphicsUnmapResources");
             return error.CudaCopyFailed;
         }
     }

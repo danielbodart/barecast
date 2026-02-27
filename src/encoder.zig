@@ -4,6 +4,9 @@ const Cuda = @import("cuda").Cuda;
 const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
 
+const fps_num: u32 = 30;
+const fps_den: u32 = 1;
+
 pub const Stats = struct {
     frames_encoded: u64 = 0,
     frames_skipped: u64 = 0,
@@ -62,27 +65,33 @@ pub const Encoder = struct {
         const maybe_encoded = try self.nvenc.encodeFrame(force_key);
 
         if (maybe_encoded) |encoded| {
-            // Write to IVF
-            try self.ivf.writeFrame(encoded.data, encoded.pts);
+            defer self.nvenc.unlockBitstream();
 
+            try self.ivf.writeFrame(encoded.data, encoded.pts);
             self.stats.total_bytes += encoded.data.len;
             if (encoded.is_key) self.stats.keyframes += 1;
-
-            // Unlock bitstream after writing
-            self.nvenc.unlockBitstream();
         }
 
         self.stats.frames_encoded += 1;
     }
 
-    /// Flush encoder and finalize IVF file.
+    /// Flush encoder, drain buffered frames, and finalize IVF file.
     pub fn finish(self: *Encoder) !void {
         try self.nvenc.flush();
+
+        // Drain any trailing frames
+        while (try self.nvenc.drainFrame()) |frame| {
+            defer self.nvenc.unlockBitstream();
+            try self.ivf.writeFrame(frame.data, frame.pts);
+            self.stats.total_bytes += frame.data.len;
+            if (frame.is_key) self.stats.keyframes += 1;
+        }
+
         try self.ivf.finalize(
             @intCast(self.width),
             @intCast(self.height),
-            30,
-            1,
+            fps_num,
+            fps_den,
         );
     }
 
