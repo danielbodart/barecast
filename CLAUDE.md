@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What is this?
 
-Barecast is a low-level screen sharing / pair programming tool. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `screen-share-research.md` for the full design.
+Barecast is a low-level screen sharing / pair programming tool. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
 
 ## Build & Run
 

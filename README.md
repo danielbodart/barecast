@@ -35,12 +35,11 @@ What's built, what's next, what's later.
 ### Next
 
 - **Bitrate adaptation** — Monitor packet loss / RTT from libdatachannel stats, adjust NVENC target bitrate dynamically (REMB callback is stubbed).
+- **Remote input** — Keyboard/mouse events from browser → data channel → uinput injection on sharer.
+- **Region sharing** — Crop to sub-region at GL/CUDA stage. `barecast share [WxH+X+Y]`.
 
 ### Later
 
-- **Bitrate adaptation** — Monitor packet loss / RTT from libdatachannel stats, adjust NVENC target bitrate dynamically.
-- **Remote input** — Keyboard/mouse events from browser → data channel → uinput injection on sharer.
-- **Region sharing** — Crop to sub-region at GL/CUDA stage. `barecast share [WxH+X+Y]`.
 - **macOS backend** — ScreenCaptureKit + VideoToolbox + IOSurface.
 - **VAAPI backend** — AMD/Intel hardware encode on Linux.
 
@@ -89,10 +88,35 @@ No fallback. One codec path = simpler pipeline, fewer bugs, less testing.
 - **128x128 superblocks** — large static screen regions encode as single blocks with near-zero bits. Static regions cost almost nothing, which eliminates the need for dirty rect tracking.
 - **56 directional intra prediction modes** (vs HEVC's 35) — sharp text edges predict cleanly.
 - **Up to 7 reference frames** — unchanged regions can reference further back, spending essentially zero bits.
-- **4:4:4 chroma in the AV1 spec** — the codec supports it, but NVENC hardware only encodes 4:2:0. NVENC H.264/HEVC can do 4:4:4, but no browser WebRTC stack accepts those profiles. In practice, AV1's screen content tools compensate well at 4:2:0 — text remains sharp at reasonable QP values.
+- **4:4:4 chroma in the AV1 spec** — see [4:4:4 chroma section](#444-chroma--why-we-cant-have-it) below.
 - **~30-50% better compression than HEVC** at same quality — lower bandwidth for remote sessions over residential internet.
 - **Film grain synthesis** — strips noise at encode, resynthesises at decode. Encoder doesn't waste bits on dithering/subpixel rendering noise.
 - **Built-in superresolution** — encode at lower res, upsample at decode. Useful when bandwidth is tight on remote connections.
+
+### 4:4:4 Chroma — Why We Can't Have It
+
+Screen sharing is the one use case where 4:4:4 chroma genuinely matters. Text rendering uses subpixel antialiasing with distinct R/G/B values per pixel — 4:2:0 chroma subsampling averages those out, causing colour fringing on sharp text edges. This is why RDP and VNC use lossless RGB, and why every screen sharing tool that uses video codecs gets complaints about blurry text.
+
+AV1 supports 4:4:4 in its High Profile. The spec is fine. The problem is the entire hardware pipeline refuses to cooperate:
+
+| Layer | 4:4:4 support | Notes |
+|---|---|---|
+| **AV1 spec** | Yes (High Profile) | Fully specified |
+| **NVENC AV1** | **No** | `chromaFormatIDC` must be 1 (YUV420). NVENC H.264/HEVC *can* do 4:4:4, but NVENC AV1 cannot. Confirmed by testing — encoder rejects any other chroma format. |
+| **Browser AV1 decode** | Unlikely | Chrome/Firefox WebRTC stacks negotiate Main Profile (4:2:0). No browser has shipped High Profile AV1 decode for WebRTC. Even if the decoder silicon supports it, the WebRTC negotiation won't offer it. |
+| **libdatachannel** | N/A | Passes through whatever the encoder produces. Not a bottleneck. |
+| **Software AV1 encoders** | Yes (libaom, SVT-AV1) | But real-time 4K screen sharing on CPU is not viable. |
+
+So we're blocked at two independent layers: the hardware encoder can't produce it, and the browser can't consume it via WebRTC. Either one alone would kill the path.
+
+**What we do instead:** NvFBC captures BGRA. We pass it to NVENC as `NV_ENC_BUFFER_FORMAT_ARGB` (BGRA on little-endian). NVENC performs internal CSC from ARGB → NV12 (4:2:0) before encoding. The chroma subsampling happens inside the encoder ASIC — no CPU shader pass needed.
+
+**Why it's acceptable:** AV1's screen content coding tools — Intra Block Copy, palette mode, transform skip — compensate surprisingly well. At constQP 28, text remains readable and colour fringing is minimal. The 128×128 superblocks also help: large solid-colour regions (IDE backgrounds, terminal backgrounds) encode as single palette-mode blocks where chroma subsampling is irrelevant.
+
+**Future escape hatches:**
+- NVIDIA may add 4:4:4 to NVENC AV1 in a future GPU generation (they did it for H.264/HEVC, so there's precedent)
+- Browsers may eventually support AV1 High Profile in WebRTC (Chrome bug tracker has requests)
+- If both happen simultaneously, we just flip `chromaFormatIDC` and the SDP profile negotiation — the rest of the pipeline is unchanged
 
 ### Dirty rects
 
@@ -104,19 +128,19 @@ If needed later: a GPU compute shader can diff the previous and current frame as
 
 ## Architecture
 
-### Capture Pipeline (Linux — NVIDIA + X11) [IMPLEMENTED — end-to-end to IVF]
+### Capture Pipeline (Linux — NVIDIA + X11) [IMPLEMENTED — end-to-end WebRTC]
 
 ```
 NvFBC (NVIDIA Frame Buffer Capture, proprietary driver API)
   → GL texture (BGRA, direct from NvFBC)                        ← DONE
     → CUDA resource (cuGraphicsGLRegisterImage — zero-copy)      ← DONE
       → NVENC AV1 hardware encode (ARGB input, internal CSC)     ← DONE
-        → encoded bitstream → IVF file                           ← DONE
-          → libdatachannel (AV1 → RTP packetization, SRTP)       ← NEXT
-            → WebRTC to browser
+        → libdatachannel (AV1 → RTP packetization, SRTP)         ← DONE
+          → WebRTC to browser                                     ← DONE
+        → (optional) IVF file via --record flag                   ← DONE
 ```
 
-**Tested:** 3840x1600 at ~30fps, 3.8 Mbps AV1 constQP 28. 30-second capture produces 45MB IVF file playable by ffplay/dav1d. CLI: `barecast [seconds]`.
+**Tested:** 3840x1600 live WebRTC streaming to browser viewer via Cloudflare Worker signaling. Also: 3840x1600 at ~30fps AV1 constQP 28 IVF recording. CLI: `barecast` (stream) or `barecast --record output.ivf [seconds]` (record).
 
 **Key discovery during implementation:** NVENC AV1 does NOT support 4:4:4 chroma (`chromaFormatIDC` must be 1 = YUV420). NvFBC captures BGRA, which maps to `NV_ENC_BUFFER_FORMAT_ARGB` on little-endian. NVENC performs internal CSC from ARGB to NV12 before encoding. Output is YUV420. For screen sharing this is acceptable — AV1's screen content coding tools (IBC, palette mode, transform skip) compensate for the chroma subsampling on text.
 
@@ -184,21 +208,22 @@ Evaluated and rejected. Cloudflare Calls is an anycast SFU — media always rela
 
 We **do** use Cloudflare for TURN relay (fallback when P2P fails) and for the signaling server (Worker + Durable Object). Just not the SFU.
 
-### Signaling & Infrastructure: Cloudflare Workers [IMPLEMENTED — basic routing]
+### Signaling & Infrastructure: Cloudflare Workers [IMPLEMENTED — full signaling + viewer]
 
-All server-side infrastructure runs on Cloudflare Workers. Single deployment, no servers to manage.
+All server-side infrastructure runs on Cloudflare Workers. Single deployment, no servers to manage. Deployed at `barecast.bodar.workers.dev`.
 
 #### Architecture
 
 ```
-barecast.dev (Cloudflare Worker)
+barecast.bodar.workers.dev (Cloudflare Worker)
 │
-├── GET /                        → static viewer app (bundled in Worker)    ← DONE (placeholder HTML)
-├── GET /room/:id/ws             → WebSocket upgrade → Durable Object      ← DONE
-└── POST /room/new               → (optional, rooms auto-create on first connect)
+├── GET /                        → viewer app (full WebRTC JS)              ← DONE
+├── GET /?room=<id>              → viewer app with room auto-connect        ← DONE
+├── GET /room/:id/ws?role=…      → WebSocket upgrade → Durable Object      ← DONE
+└── (rooms auto-create on first WebSocket connection)
 ```
 
-**Current state:** Worker routes `/room/{roomId}/ws` to a Durable Object. The DO accepts WebSocket upgrades, broadcasts messages to all other peers in the room, and notifies peers on disconnect. Messages are currently untyped — no SDP/ICE validation or sharer/viewer role detection yet. The viewer page at `/` is a placeholder with `<video>` element but no WebRTC code.
+**Current state:** Worker routes `/room/{roomId}/ws` to a Durable Object. The DO accepts WebSocket upgrades with role tags (`?role=sharer|viewer`), broadcasts `peer-joined` notifications on new connections, relays all signaling messages (SDP offer/answer, ICE candidates) between peers, and notifies peers on disconnect. The viewer at `/` is a complete WebRTC client — creates RTCPeerConnection, handles SDP answer generation, ICE candidate exchange, and displays the remote AV1 stream in a `<video>` element.
 
 #### Room Management — Durable Objects
 
@@ -251,13 +276,39 @@ ICE tries paths in priority order: direct P2P → STUN-assisted P2P → TURN rel
 
 For pair programming usage, this is effectively free.
 
-### Viewer: Browser Only [PLACEHOLDER]
+### Viewer: Browser Only [IMPLEMENTED]
 
-No native app install on the viewer side. Your pair sends you a URL, you open it, their screen appears. Browser hardware-decodes AV1 via WebRTC, renders it. Keyboard/mouse events sent back over WebRTC data channel for remote control.
+No native app install on the viewer side. Your pair sends you a URL, you open it, their screen appears. Browser hardware-decodes AV1 via WebRTC, renders it. Keyboard/mouse events sent back over WebRTC data channel for remote control (future).
 
 Massive UX advantage over Tuple/Pop which require native installs on both sides. Critical for remote pair programming where you want zero friction for the person joining.
 
-**Current state:** Static HTML served from the Worker with a `<video>` element and status text. No JavaScript WebRTC implementation yet — waiting on signaling protocol definition and libdatachannel integration on the sharer side.
+**Current state:** Full WebRTC viewer served from the Worker. RTCPeerConnection with STUN, `ontrack` → `<video>` element binding, SDP answer generation, ICE candidate relay. Status overlay transitions: Connecting → Waiting for sharer → Negotiating → (hidden when video plays) → Disconnected. Tested end-to-end: 3840x1600 AV1 stream from native sharer to Chromium viewer.
+
+#### PWA — Near-Borderless Viewer Window (Future)
+
+The viewer can be made installable as a Progressive Web App, giving viewers a clean, near-borderless window that auto-sizes to the shared screen's aspect ratio. Much closer to a native screen sharing app than a browser tab.
+
+**What PWA standalone mode provides:**
+- `manifest.json` with `"display": "standalone"` — own window, no URL bar, no tabs
+- `"display_override": ["window-controls-overlay"]` — just the OS close/min/max as a tiny overlay, nearly frameless
+- macOS gets a razor-thin title bar, Linux/GNOME similar
+
+**Auto-sizing to stream aspect ratio:**
+- Once `ontrack` fires and `videoWidth`/`videoHeight` are known, call `window.resizeTo()` to match the aspect ratio
+- `resizeTo()` is blocked in regular browser tabs but allowed in standalone PWA windows
+- Flow: video arrives → read dimensions → resize window to match → feels like a native viewer
+
+**What's needed:**
+- `manifest.json` served from the Worker with correct MIME type, icon, `start_url: "/?room="`
+- Trivial service worker (Chrome requires one for PWA installability — can be a no-op)
+- `resizeTo()` call in the viewer JS on first frame
+
+**Limitations:**
+- Can't truly remove the OS window frame — that's outside browser control. But standalone + window-controls-overlay gets very close
+- `resizeTo()` behaviour varies by OS — works best on macOS/Windows, Linux tiling WMs may override
+- Install prompt UX varies by browser (Chrome shows install icon in address bar, Safari has "Add to Dock")
+
+This is a small addition — manifest, a no-op service worker, and a resize call — but meaningfully improves the viewer experience for repeated use.
 
 ### Region Sharing (Future)
 
@@ -361,8 +412,10 @@ Bun TypeScript script. All build commands live here — CI only calls `run.ts` t
 ./run.ts test         # zig build test (unit + property tests)
 ./run.ts lint         # zwanzig static analysis + shellcheck
 ./run.ts setup        # build + install to /usr/local/bin + setcap CAP_SYS_ADMIN
-./run.ts dist         # validate + package tarball with version
+./run.ts dist         # validate (no AVX-512, no absolute RUNPATH) + package tarball
 ./run.ts ci           # lint + test + build + dist + gh release create
+./run.ts integration  # GPU integration test (captures 3s IVF, validates with ffprobe)
+./run.ts rebuild-libs # rebuild libdatachannel static libs via cmake
 ./run.ts worker-dev   # wrangler dev --port 8787
 ./run.ts worker-deploy # wrangler deploy
 ```
@@ -396,7 +449,6 @@ Implemented:
 - **SCM_RIGHTS transport** (`ipc.zig`, 3 tests) — real socketpair + `/dev/null` fd roundtrips, Request serialization, Response with error
 
 Future modules (as they're built):
-- **Signaling message parsing** — WebSocket JSON message handling
 - **Bitrate adaptation logic** — packet loss / RTT → target bitrate calculations
 - **Input event encoding/decoding** — keyboard/mouse events over the data channel
 
@@ -415,7 +467,6 @@ Implemented:
 - **`prop_default_response_is_ok`** — default Response always has `.ok` result, 0 planes
 
 Future properties (as modules are built):
-- **RTP packetization** — any AV1 bitstream packetized then reassembled → identical bitstream
 - **Input event roundtrip** — encode then decode any keyboard/mouse event → identical event
 - **Bitrate adaptation monotonicity** — higher packet loss → lower or equal target bitrate
 
@@ -423,13 +474,15 @@ Future properties (as modules are built):
 zig build prop-test
 ```
 
-### Tier 3: Integration Tests
+### Tier 3: Integration Tests [PARTIALLY IMPLEMENTED]
 
-Bun test scripts that exercise real hardware and network paths. Require GPU, run in CI with hardware or skipped gracefully.
+Exercise real hardware and network paths. Require GPU, run in CI with hardware or skipped gracefully.
 
-Candidates:
-- **KMS capture smoke test** — `barecast-kms` helper launches, returns valid DMA-BUF metadata (width > 0, height > 0, valid pixel format, valid fd)
-- **NVENC encode smoke test** — capture one frame, encode to AV1, verify output is a valid AV1 OBU sequence
+Implemented:
+- **IVF capture test** (`./run.ts integration`) — captures 3 seconds via NvFBC → CUDA → NVENC → IVF, validates with ffprobe (codec=av1, frame count ≥ 10)
+- **Dist validation** (`./run.ts dist`) — verifies no AVX-512 instructions (portable to x86_64_v3), no absolute RUNPATH in binary
+
+Future:
 - **Signaling roundtrip** — two libdatachannel peers exchange SDP via a local WebSocket server, verify ICE connection establishes
 - **Loopback end-to-end** — sharer encodes a known test pattern, viewer decodes via WebRTC, compare pixel output (SSIM/PSNR against reference)
 
@@ -465,7 +518,7 @@ These require infrastructure (virtual displays, reference data, CI with GPUs) so
 | **NVENC** | NVIDIA's dedicated hardware video encoder ASIC | **In use** |
 | **VAAPI** | Video Acceleration API — AMD/Intel hardware encode (future) | Later |
 | **evdev / uinput** | Kernel input subsystem — capture and inject keyboard/mouse events | Later |
-| **libdatachannel** | WebRTC transport (ICE, DTLS, SRTP, data channels) | Next |
+| **libdatachannel** | WebRTC transport (ICE, DTLS, SRTP, data channels) | **In use** |
 
 ## Reference: gpu-screen-recorder
 
@@ -485,7 +538,7 @@ These require infrastructure (virtual displays, reference data, CI with GPUs) so
 
 Architecture: plugin-based via C function pointers. Capture and encoder backends implement a common interface. Detect GPU at startup, pick best backend.
 
-**Lessons learned from gpu-screen-recorder:** Their NvFBC path is the simplest capture backend (~200 lines vs ~1200 for KMS). We adopted the same approach — NvFBC for X11, KMS retained for Wayland. Their NVENC encoder (`src/encoder/video/nvenc.c`) is the key reference for our next implementation phase.
+**Lessons learned from gpu-screen-recorder:** Their NvFBC path is the simplest capture backend (~200 lines vs ~1200 for KMS). We adopted the same approach — NvFBC for X11, KMS retained for Wayland. Their NVENC encoder was a useful reference for our implementation.
 
 ## Key macOS APIs (Future)
 
