@@ -1,0 +1,15 @@
+compatibility_date = "2025-02-03"
+name = "barecast"
+main = "src/index.ts"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SignalingRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SignalingRoom"]
