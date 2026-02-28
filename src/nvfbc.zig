@@ -132,7 +132,7 @@ pub const CreateCaptureSessionParams = extern struct {
     bDisableAutoModesetRecovery: Bool = .false_,
     bRoundFrameSize: Bool = .false_,
     dwSamplingRateMs: u32 = 0,
-    bPushModel: Bool = .true_,
+    bPushModel: Bool = .false_,
     bAllowDirectCapture: Bool = .false_,
 };
 
