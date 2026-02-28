@@ -462,6 +462,20 @@ pub const BroadcastSession = struct {
             var peer_id: [PEER_ID_LEN]u8 = undefined;
             @memcpy(&peer_id, peer_id_str[0..PEER_ID_LEN]);
 
+            // After signaling reconnect the DO re-sends viewer-joined for
+            // existing viewers. Skip if we already have an active peer.
+            {
+                self.peers_mutex.lock();
+                defer self.peers_mutex.unlock();
+                if (self.findPeerLocked(peer_id_str)) |existing| {
+                    const s = existing.state.load(.acquire);
+                    if (s == .connecting or s == .connected) {
+                        log.info("viewer {s}: already connected, skipping", .{peer_id});
+                        return;
+                    }
+                }
+            }
+
             log.info("viewer joined: {s}", .{peer_id});
 
             const peer = self.allocPeer(peer_id);
