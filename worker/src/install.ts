@@ -44,13 +44,13 @@ roomField.addEventListener("keydown", (e) => {
 window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e as BeforeInstallPromptEvent;
-    btn.disabled = false;
-    btn.textContent = "Launch";
-    installNote.textContent = "";
 });
 
 btn.addEventListener("click", async () => {
-    if (!deferredPrompt) return;
+    if (!deferredPrompt) {
+        showRoomInput();
+        return;
+    }
     const prompt = deferredPrompt;
     deferredPrompt = null;
     btn.disabled = true;
