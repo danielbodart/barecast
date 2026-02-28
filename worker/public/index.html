@@ -12,9 +12,17 @@
 <body class="install">
     <div class="install-page">
         <h1>zerocast</h1>
-        <p>Screen sharing for developers.<br>No install required for the viewer — but the app is better.</p>
-        <button id="install-btn" disabled>Install zerocast</button>
-        <div class="install-note">Your browser will prompt you to install when ready.</div>
+        <ul class="features">
+            <li>Zero install — open a link, see the screen</li>
+            <li>Zero latency — P2P WebRTC, hardware AV1 decode</li>
+            <li>Zero fluff — screen only, no audio, no webcam</li>
+        </ul>
+        <button id="install-btn" disabled>Launch zerocast</button>
+        <div id="room-input" class="room-input" hidden>
+            <input type="text" id="room-field" placeholder="Room ID or URL" autocomplete="off" spellcheck="false">
+            <div class="install-note">Paste a room link or enter a room ID</div>
+        </div>
+        <div id="install-note" class="install-note">Your browser will prompt you to install when ready.</div>
     </div>
     <script src="/install.js"></script>
 </body>
