@@ -23,6 +23,9 @@ if (!roomId) {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let streamSized = false;
     let isZoom = false;
+    let iceServers: RTCIceServer[] = [
+        { urls: "stun:stun.cloudflare.com:3478" },
+    ];
 
     function setStatus(msg: string) {
         status.textContent = msg;
@@ -101,7 +104,21 @@ if (!roomId) {
         ws.onmessage = (event) => {
             const msg = JSON.parse(event.data);
 
-            if (msg.type === "offer") {
+            if (msg.type === "turn-credentials") {
+                iceServers = [
+                    { urls: "stun:stun.cloudflare.com:3478" },
+                    {
+                        urls: [
+                            "turn:turn.cloudflare.com:3478?transport=udp",
+                            "turn:turn.cloudflare.com:3478?transport=tcp",
+                            "turns:turn.cloudflare.com:5349?transport=tcp",
+                            "turns:turn.cloudflare.com:443?transport=tcp",
+                        ],
+                        username: msg.username,
+                        credential: msg.credential,
+                    },
+                ];
+            } else if (msg.type === "offer") {
                 handleOffer(msg.sdp);
             } else if (msg.type === "ice" && pc) {
                 pc.addIceCandidate({
@@ -139,9 +156,7 @@ if (!roomId) {
         }
         setStatus("Negotiating...");
 
-        pc = new RTCPeerConnection({
-            iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
-        });
+        pc = new RTCPeerConnection({ iceServers });
 
         pc.ontrack = (event) => {
             video.srcObject =

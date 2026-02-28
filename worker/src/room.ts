@@ -36,6 +36,18 @@ export class SignalingRoom extends DurableObject<Env> {
 
         this.ctx.acceptWebSocket(server, [tag]);
 
+        // Send TURN credentials before any signaling messages
+        const creds = await this.generateTurnCredentials();
+        if (creds) {
+            server.send(
+                JSON.stringify({
+                    type: "turn-credentials",
+                    username: creds.username,
+                    credential: creds.credential,
+                })
+            );
+        }
+
         if (role === "viewer") {
             // Notify the sharer about the new viewer
             this.safeSendToSharer(
@@ -132,6 +144,40 @@ export class SignalingRoom extends DurableObject<Env> {
     private getTag(ws: WebSocket): string | undefined {
         const tags = this.ctx.getTags(ws);
         return tags[0];
+    }
+
+    private async generateTurnCredentials(): Promise<{
+        username: string;
+        credential: string;
+    } | null> {
+        const keyId = this.env.TURN_KEY_ID;
+        const apiToken = this.env.TURN_KEY_API_TOKEN;
+        if (!keyId || !apiToken) return null;
+
+        try {
+            const resp = await fetch(
+                `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate-ice-servers`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${apiToken}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ ttl: 86400 }),
+                }
+            );
+            if (!resp.ok) return null;
+
+            const data = (await resp.json()) as {
+                iceServers?: { username?: string; credential?: string }[];
+            };
+            const turn = data.iceServers?.find((s) => s.username);
+            if (!turn?.username || !turn?.credential) return null;
+
+            return { username: turn.username, credential: turn.credential };
+        } catch {
+            return null;
+        }
     }
 
     private safeSendToSharer(message: string): void {

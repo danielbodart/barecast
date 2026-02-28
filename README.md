@@ -8,8 +8,8 @@ Highly opinionated screen sharing for developers.
 - **Zero install for viewers** — Open a URL, see the screen. PWA for a near-borderless window. No native app needed, no extension, no plugin.
 - **Zero shaders** — NvFBC gives us a GPU texture. CUDA copies it to linear device memory, then NVENC encodes it with internal ARGB→NV12 color space conversion. No CPU pixel processing, no GL shaders, no compute passes.
 - **Zero codec negotiation** — AV1 only. One codec path = simpler pipeline, fewer bugs, less testing.
-- **Minimal latency** — GPU-direct capture, hardware encode, P2P WebRTC transport. No compositor round-trip, no CPU encode. 
-- **Minimal infrastructure** — Signaling runs on Cloudflare Workers (serverless). Media flows P2P via STUN. Cloudflare TURN as a last resort. 
+- **Minimal latency** — GPU-direct capture, hardware encode, P2P WebRTC transport. No compositor round-trip, no CPU encode.
+- **Minimal infrastructure** — Signaling runs on Cloudflare Workers (serverless). Media flows P2P via STUN. Cloudflare TURN as a last resort.
 - **Minimal dependencies** — staticly link libdatachannel (~20MB) instead of Google's libwebrtc (600MB). Native Zig binary, only real external dependency is OpenSSL
 - **Minimal config** — Run the binary, share the URL. That's it.
 

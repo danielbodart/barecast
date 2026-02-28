@@ -175,8 +175,8 @@ pub const BroadcastSession = struct {
     peers: [MAX_PEERS]Peer,
     peers_mutex: std.Thread.Mutex,
     pc_config: c.rtcConfiguration,
-    stun_server: [*c]const u8,
-    stun_servers: [1][*c]const u8,
+    ice_servers: [2][*c]const u8,
+    turn_uri: [256]u8,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8) !BroadcastSession {
@@ -198,10 +198,10 @@ pub const BroadcastSession = struct {
         var session: BroadcastSession = undefined;
         session.ws = ws;
         session.peers_mutex = .{};
-        session.stun_server = "stun:stun.cloudflare.com:3478";
-        session.stun_servers = .{session.stun_server};
+        session.ice_servers = .{ "stun:stun.cloudflare.com:3478", undefined };
+        session.turn_uri = std.mem.zeroes([256]u8);
         session.pc_config = std.mem.zeroes(c.rtcConfiguration);
-        session.pc_config.iceServers = &session.stun_servers;
+        session.pc_config.iceServers = &session.ice_servers;
         session.pc_config.iceServersCount = 1;
 
         // Initialize all peer slots as empty
@@ -218,8 +218,7 @@ pub const BroadcastSession = struct {
     /// once the session is at its final memory location.
     pub fn start(self: *BroadcastSession) void {
         // Fix up pc_config pointer — it was copied during init return
-        self.stun_servers = .{self.stun_server};
-        self.pc_config.iceServers = &self.stun_servers;
+        self.pc_config.iceServers = &self.ice_servers;
 
         c.rtcSetUserPointer(self.ws, @ptrCast(self));
         _ = c.rtcSetMessageCallback(self.ws, wsMessageCallback);
@@ -384,6 +383,20 @@ pub const BroadcastSession = struct {
         const msg: []const u8 = raw_msg[0..len];
 
         const msg_type = jsonExtract(msg, "type") orelse return;
+
+        if (std.mem.eql(u8, msg_type, "turn-credentials")) {
+            const username = jsonExtract(msg, "username") orelse return;
+            const credential = jsonExtract(msg, "credential") orelse return;
+
+            // Format: turn:username:credential@turn.cloudflare.com:3478
+            const uri = std.fmt.bufPrintZ(&self.turn_uri, "turn:{s}:{s}@turn.cloudflare.com:3478", .{
+                username, credential,
+            }) catch return;
+            self.ice_servers[1] = uri.ptr;
+            self.pc_config.iceServersCount = 2;
+            log.info("TURN credentials configured", .{});
+            return;
+        }
 
         if (std.mem.eql(u8, msg_type, "viewer-joined")) {
             const peer_id_str = jsonExtract(msg, "peer_id") orelse return;
