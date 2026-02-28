@@ -224,6 +224,11 @@ export async function workerDeploy() {
     await $`cd worker && bun run wrangler deploy`;
 }
 
+export async function workerPromote() {
+    await workerBuild(true);
+    await $`cd worker && bun run wrangler deploy --env production`;
+}
+
 // ─── Command dispatch ──────────────────────────────────────────────────────
 
 async function printVersion() {
@@ -235,6 +240,7 @@ const commands: Record<string, Function> = {
     "rebuild-libs": rebuildLibs,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,
+    "worker-promote": workerPromote,
 };
 
 const command = process.argv[2] || "dev";

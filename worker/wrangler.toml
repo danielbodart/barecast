@@ -3,10 +3,6 @@ name = "barecast"
 main = "src/index.ts"
 workers_dev = true
 
-[[routes]]
-pattern = "barecast.bodar.com"
-custom_domain = true
-
 [assets]
 directory = "./public"
 binding = "ASSETS"
@@ -20,5 +16,21 @@ name = "ROOMS"
 class_name = "SignalingRoom"
 
 [[migrations]]
+tag = "v1"
+new_classes = ["SignalingRoom"]
+
+# Production: wrangler deploy --env production
+[env.production]
+workers_dev = false
+
+[[env.production.routes]]
+pattern = "barecast.bodar.com"
+custom_domain = true
+
+[[env.production.durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SignalingRoom"
+
+[[env.production.migrations]]
 tag = "v1"
 new_classes = ["SignalingRoom"]
