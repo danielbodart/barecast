@@ -254,13 +254,14 @@ fn isValidRoomId(id: []const u8) bool {
 fn generateRoomId() ![16]u8 {
     var bytes: [8]u8 = undefined;
     std.crypto.random.bytes(&bytes);
-    var hex: [16]u8 = undefined;
     const charset = "0123456789abcdef";
+    var hex: [16]u8 = undefined;
     for (bytes, 0..) |b, i| {
         hex[i * 2] = charset[b >> 4];
         hex[i * 2 + 1] = charset[b & 0x0f];
     }
-    return hex;
+    const id = hex;
+    return id;
 }
 
 fn printStats(stats: @import("encoder").Stats) void {
