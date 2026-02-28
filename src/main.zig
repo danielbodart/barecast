@@ -1,11 +1,14 @@
 const std = @import("std");
 const posix = std.posix;
 const build_options = @import("build_options");
-const NvFbc = @import("nvfbc").NvFbc;
+const nvfbc = @import("nvfbc");
+const NvFbc = nvfbc.NvFbc;
+const Box = nvfbc.Box;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
+const Overlay = @import("overlay").Overlay;
 
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -13,17 +16,17 @@ pub fn main() void {
     std.debug.print("zerocast v{s}\n", .{build_options.version});
     installSignalHandler();
 
-    const cli = parseCli();
-    switch (cli) {
-        .record => |r| runRecord(r.path, r.seconds),
-        .stream => |s| runStream(s.room_id),
+    const parsed = parseCli();
+    switch (parsed.cli) {
+        .record => |r| runRecord(r.path, r.seconds, parsed.geometry),
+        .stream => |s| runStream(s.room_id, parsed.geometry),
     }
 }
 
 // ─── Record mode ─────────────────────────────────────────────────────────
 
-fn runRecord(output_path: []const u8, seconds: ?u32) void {
-    var fbc = NvFbc.init() catch return;
+fn runRecord(output_path: []const u8, seconds: ?u32, geometry: Box) void {
+    var fbc = NvFbc.init(geometry) catch return;
     defer fbc.deinit();
 
     const first_frame = fbc.grabFrame() catch return;
@@ -84,16 +87,26 @@ fn runRecord(output_path: []const u8, seconds: ?u32) void {
 
 // ─── Stream mode (WebRTC) ────────────────────────────────────────────────
 
-fn runStream(cli_room_id: ?[]const u8) void {
+fn runStream(cli_room_id: ?[]const u8, geometry: Box) void {
     const allocator = std.heap.c_allocator;
 
-    var fbc = NvFbc.init() catch return;
+    var fbc = NvFbc.init(geometry) catch return;
     defer fbc.deinit();
 
     const first_frame = fbc.grabFrame() catch return;
     std.debug.print("NvFBC: {}x{}, texture={}\n", .{
         first_frame.width, first_frame.height, first_frame.texture_id,
     });
+
+    // Show corner brackets indicating the shared region
+    const overlay_box = if (geometry.w != 0) geometry else Box{
+        .x = 0, .y = 0, .w = first_frame.width, .h = first_frame.height,
+    };
+    var overlay: ?Overlay = Overlay.init(overlay_box) catch |err| blk: {
+        std.debug.print("Overlay init failed (non-fatal): {}\n", .{err});
+        break :blk null;
+    };
+    defer if (overlay) |*o| o.deinit();
 
     // Room ID: from --room flag or generate random
     var generated_id: [16]u8 = undefined;
@@ -183,11 +196,17 @@ const Cli = union(enum) {
     stream: struct { room_id: ?[]const u8 },
 };
 
-fn parseCli() Cli {
+const ParsedCli = struct {
+    cli: Cli,
+    geometry: Box, // zero = full screen
+};
+
+fn parseCli() ParsedCli {
     var args = std.process.args();
     _ = args.next(); // skip argv[0]
 
     var room_id: ?[]const u8 = null;
+    var geometry: Box = .{};
     var first: ?[]const u8 = null;
 
     while (args.next()) |arg| {
@@ -201,13 +220,22 @@ fn parseCli() Cli {
                 std.debug.print("Invalid room ID: use alphanumeric, dash, underscore (max 64 chars)\n", .{});
                 std.process.exit(1);
             }
+        } else if (std.mem.eql(u8, arg, "--geometry")) {
+            const val = args.next() orelse {
+                std.debug.print("--geometry requires a WxH+X+Y argument\n", .{});
+                std.process.exit(1);
+            };
+            geometry = parseGeometry(val) orelse {
+                std.debug.print("Invalid geometry '{s}': expected WxH+X+Y (e.g. 1920x1080+0+0)\n", .{val});
+                std.process.exit(1);
+            };
         } else if (first == null) {
             first = arg;
         }
     }
 
     // No positional arg → stream mode
-    if (first == null) return .{ .stream = .{ .room_id = room_id } };
+    if (first == null) return .{ .cli = .{ .stream = .{ .room_id = room_id } }, .geometry = geometry };
 
     if (std.mem.eql(u8, first.?, "--record")) {
         // Re-parse for record mode — room flag is ignored
@@ -218,8 +246,8 @@ fn parseCli() Cli {
         while (args2.next()) |a| {
             if (std.mem.eql(u8, a, "--record")) {
                 path = args2.next();
-            } else if (std.mem.eql(u8, a, "--room")) {
-                _ = args2.next(); // skip room value
+            } else if (std.mem.eql(u8, a, "--room") or std.mem.eql(u8, a, "--geometry")) {
+                _ = args2.next(); // skip value
             } else if (path != null and seconds == null) {
                 seconds = std.fmt.parseInt(u32, a, 10) catch {
                     std.debug.print("Invalid duration: expected integer seconds\n", .{});
@@ -231,20 +259,38 @@ fn parseCli() Cli {
             std.debug.print("Usage: zerocast --record <output.ivf> [seconds]\n", .{});
             std.process.exit(1);
         }
-        return .{ .record = .{ .path = path.?, .seconds = seconds } };
+        return .{ .cli = .{ .record = .{ .path = path.?, .seconds = seconds } }, .geometry = geometry };
     }
 
     // Legacy: bare number means record mode with default output
     if (std.fmt.parseInt(u32, first.?, 10)) |s| {
-        return .{ .record = .{ .path = "output.ivf", .seconds = s } };
+        return .{ .cli = .{ .record = .{ .path = "output.ivf", .seconds = s } }, .geometry = geometry };
     } else |_| {}
 
     std.debug.print("Usage:\n", .{});
-    std.debug.print("  zerocast                              Stream via WebRTC\n", .{});
-    std.debug.print("  zerocast --room <id>                  Stream with a stable room ID\n", .{});
-    std.debug.print("  zerocast --record output.ivf          Record to IVF\n", .{});
-    std.debug.print("  zerocast --record output.ivf 5        Record 5s to IVF\n", .{});
+    std.debug.print("  zerocast                                     Stream via WebRTC\n", .{});
+    std.debug.print("  zerocast --room <id>                         Stream with a stable room ID\n", .{});
+    std.debug.print("  zerocast --geometry WxH+X+Y                  Capture a sub-region\n", .{});
+    std.debug.print("  zerocast --record output.ivf                 Record to IVF\n", .{});
+    std.debug.print("  zerocast --record output.ivf 5               Record 5s to IVF\n", .{});
     std.process.exit(1);
+}
+
+/// Parse X11 geometry format: WxH+X+Y
+fn parseGeometry(s: []const u8) ?Box {
+    const x_pos = std.mem.indexOfScalar(u8, s, 'x') orelse return null;
+    const plus1 = std.mem.indexOfScalarPos(u8, s, x_pos, '+') orelse return null;
+    if (plus1 + 1 >= s.len) return null;
+    const plus2 = std.mem.indexOfScalarPos(u8, s, plus1 + 1, '+') orelse return null;
+
+    const w = std.fmt.parseInt(u32, s[0..x_pos], 10) catch return null;
+    const h = std.fmt.parseInt(u32, s[x_pos + 1 .. plus1], 10) catch return null;
+    const x = std.fmt.parseInt(u32, s[plus1 + 1 .. plus2], 10) catch return null;
+    const y = std.fmt.parseInt(u32, s[plus2 + 1 ..], 10) catch return null;
+
+    if (w == 0 or h == 0) return null;
+
+    return .{ .x = x, .y = y, .w = w, .h = h };
 }
 
 fn isValidRoomId(id: []const u8) bool {
@@ -312,4 +358,32 @@ test "isValidRoomId" {
     try std.testing.expect(!isValidRoomId(""));
     try std.testing.expect(!isValidRoomId("room with spaces"));
     try std.testing.expect(!isValidRoomId("a" ** 65));
+}
+
+test "parseGeometry valid" {
+    const b = parseGeometry("1280x720+100+200").?;
+    try std.testing.expectEqual(@as(u32, 1280), b.w);
+    try std.testing.expectEqual(@as(u32, 720), b.h);
+    try std.testing.expectEqual(@as(u32, 100), b.x);
+    try std.testing.expectEqual(@as(u32, 200), b.y);
+}
+
+test "parseGeometry zero origin" {
+    const b = parseGeometry("1920x1080+0+0").?;
+    try std.testing.expectEqual(@as(u32, 1920), b.w);
+    try std.testing.expectEqual(@as(u32, 1080), b.h);
+    try std.testing.expectEqual(@as(u32, 0), b.x);
+    try std.testing.expectEqual(@as(u32, 0), b.y);
+}
+
+test "parseGeometry rejects zero dimensions" {
+    try std.testing.expect(parseGeometry("0x720+0+0") == null);
+    try std.testing.expect(parseGeometry("1280x0+0+0") == null);
+}
+
+test "parseGeometry rejects malformed" {
+    try std.testing.expect(parseGeometry("1280x720") == null);
+    try std.testing.expect(parseGeometry("1280x720+0") == null);
+    try std.testing.expect(parseGeometry("abcxdef+0+0") == null);
+    try std.testing.expect(parseGeometry("") == null);
 }

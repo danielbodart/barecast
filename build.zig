@@ -35,6 +35,16 @@ pub fn build(b: *std.Build) void {
     nvfbc_mod.linkSystemLibrary("x11", .{});
     nvfbc_mod.linkSystemLibrary("gl", .{});
 
+    // --- Overlay module (X11 region indicator) ---
+    const overlay_mod = b.createModule(.{
+        .root_source_file = b.path("src/overlay.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    overlay_mod.linkSystemLibrary("x11", .{});
+    overlay_mod.addImport("nvfbc", nvfbc_mod);
+
     // --- Encode pipeline modules ---
     const cuda_mod = b.createModule(.{
         .root_source_file = b.path("src/cuda.zig"),
@@ -104,6 +114,7 @@ pub fn build(b: *std.Build) void {
                     },
                 }) },
                 .{ .name = "session", .module = session_mod },
+                .{ .name = "overlay", .module = overlay_mod },
             },
         }),
     });
@@ -159,14 +170,20 @@ pub fn build(b: *std.Build) void {
     // --- Test step ---
     const test_step = b.step("test", "Run unit tests");
 
-    // Main module tests
+    // Main module tests — only needs nvfbc for the Box type used by parseGeometry.
+    // Other imports (encoder, session, overlay) are lazily resolved and not
+    // referenced by any test block.
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nvfbc", .module = nvfbc_mod },
+            },
         }),
     });
+    main_tests.root_module.addOptions("build_options", options);
     const run_main_tests = b.addRunArtifact(main_tests);
     test_step.dependOn(&run_main_tests.step);
 

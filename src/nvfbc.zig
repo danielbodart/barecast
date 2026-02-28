@@ -319,7 +319,7 @@ pub const NvFbc = struct {
     setup_params: ToGlSetupParams,
     session_created: bool,
 
-    pub fn init() !NvFbc {
+    pub fn init(capture_box: Box) !NvFbc {
         var glx = GlxContext.init() catch {
             std.debug.print("NvFBC: failed to create GLX context\n", .{});
             return error.NvFbcInitFailed;
@@ -366,7 +366,13 @@ pub const NvFbc = struct {
             status = createHandle(&session, &create_params);
             if (status != .success) {
                 const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
-                std.debug.print("NvFBC: CreateHandle failed: {s}\n", .{err_str orelse "unknown"});
+                std.debug.print("NvFBC: CreateHandle failed ({s}): {s}\n", .{
+                    @tagName(status),
+                    err_str orelse "unknown",
+                });
+                if (status == .err_max_clients) {
+                    std.debug.print("NvFBC: Another capture session is already running. Kill it with: pkill -f zerocast\n", .{});
+                }
                 return error.NvFbcInitFailed;
             }
         }
@@ -390,10 +396,23 @@ pub const NvFbc = struct {
         }
 
         std.debug.print("NvFBC: screen {}x{}\n", .{ status_params.screenSize.w, status_params.screenSize.h });
+        if (capture_box.w != 0) {
+            std.debug.print("NvFBC: capture region {}x{}+{}+{}\n", .{
+                capture_box.w, capture_box.h, capture_box.x, capture_box.y,
+            });
+        }
 
         // Create capture session — 33ms sampling rate = ~30fps
+        // When captureBox is set, also set frameSize to match so the output
+        // texture is sized to the crop region (not the full screen).
+        const frame_size: Size = if (capture_box.w != 0)
+            .{ .w = capture_box.w, .h = capture_box.h }
+        else
+            .{};
         var cap_params = CreateCaptureSessionParams{
             .dwSamplingRateMs = 33,
+            .captureBox = capture_box,
+            .frameSize = frame_size,
         };
         status = (fns.nvFBCCreateCaptureSession orelse return error.NvFbcInitFailed)(session, &cap_params);
         if (status != .success) {
