@@ -1,3 +1,5 @@
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -6,6 +8,13 @@
 
 body {
     background: #000;
+    color: #ccc;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ── Viewer (room page) ───────────────────────────────────────────────── */
+
+body.viewer {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -13,7 +22,7 @@ body {
     overflow: hidden;
 }
 
-body.zoom {
+body.viewer.zoom {
     display: block;
     height: auto;
     overflow: auto;
@@ -43,7 +52,6 @@ body.zoom video {
     align-items: center;
     justify-content: center;
     color: #888;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 16px;
     pointer-events: none;
     z-index: 10;
@@ -66,7 +74,7 @@ body.zoom video {
     padding: 5px 9px;
     font-size: 13px;
     cursor: pointer;
-    font-family: monospace;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     line-height: 1;
     opacity: 0;
     transition: opacity 0.25s;
@@ -76,4 +84,63 @@ body.zoom video {
 #toggle.visible {
     opacity: 1;
     pointer-events: auto;
+}
+
+/* ── Install page ─────────────────────────────────────────────────────── */
+
+body.install {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+}
+
+.install-page {
+    text-align: center;
+    max-width: 400px;
+    padding: 32px;
+}
+
+.install-page h1 {
+    font-size: 28px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 8px;
+}
+
+.install-page p {
+    font-size: 15px;
+    color: #888;
+    margin-bottom: 32px;
+    line-height: 1.5;
+}
+
+#install-btn {
+    display: inline-block;
+    padding: 14px 36px;
+    font-size: 16px;
+    font-weight: 500;
+    font-family: inherit;
+    color: #fff;
+    background: #2563eb;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+#install-btn:hover {
+    background: #1d4ed8;
+}
+
+#install-btn:disabled {
+    background: #333;
+    color: #666;
+    cursor: default;
+}
+
+.install-note {
+    margin-top: 20px;
+    font-size: 13px;
+    color: #555;
 }

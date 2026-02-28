@@ -210,6 +210,7 @@ async function workerBuild(minify = false) {
     console.log("Building viewer TypeScript...");
     const flags = minify ? ["--minify"] : [];
     await $`bun build worker/src/viewer.ts --outdir worker/public --target=browser ${flags}`;
+    await $`bun build worker/src/install.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/sw.ts --outdir worker/public --target=browser ${flags}`;
 }
 

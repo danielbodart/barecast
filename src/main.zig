@@ -112,7 +112,19 @@ fn runStream(cli_room_id: ?[]const u8) void {
     };
     defer allocator.free(signaling_url);
 
-    std.debug.print("\n  Room: https://barecast.dev/?room={s}\n\n", .{room_id});
+    // Derive share URL from signaling URL: wss:// → https://, ws:// → http://
+    const share_scheme: []const u8 = if (std.mem.startsWith(u8, signaling_url, "wss://")) "https://" else "http://";
+    const host_start: usize = if (std.mem.startsWith(u8, signaling_url, "wss://"))
+        @as(usize, 6)
+    else if (std.mem.startsWith(u8, signaling_url, "ws://"))
+        @as(usize, 5)
+    else
+        @as(usize, 0);
+    var share_url_buf: [512]u8 = undefined;
+    const share_url = std.fmt.bufPrint(&share_url_buf, "{s}{s}/room/{s}", .{
+        share_scheme, signaling_url[host_start..], room_id,
+    }) catch "https://barecast.bodar.com/room/???";
+    std.debug.print("\n  Room: {s}\n\n", .{share_url});
     std.debug.print("Connecting to signaling server...\n", .{});
 
     var session = BroadcastSession.init(signaling_url, room_id) catch |err| {

@@ -1,11 +1,14 @@
 const video = document.getElementById("video") as HTMLVideoElement;
 const status = document.getElementById("status")!;
 const toggle = document.getElementById("toggle")!;
-const params = new URLSearchParams(window.location.search);
-const roomId = params.get("room");
+
+// Extract room ID from pathname: /room/:id
+const pattern = new URLPattern({ pathname: "/room/:id" });
+const pathMatch = pattern.exec(window.location.href);
+const roomId = pathMatch?.pathname.groups.id ?? null;
 
 if (!roomId) {
-    status.textContent = "No room specified. Use ?room=<id>";
+    window.location.href = "/";
 } else {
     const peerId = Array.from(crypto.getRandomValues(new Uint8Array(8)))
         .map((b) => b.toString(16).padStart(2, "0"))

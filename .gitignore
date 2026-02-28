@@ -12,4 +12,5 @@ barecast-linux-x86_64.tar.gz.sha256
 worker/node_modules/
 worker/.wrangler/
 worker/public/viewer.js
+worker/public/install.js
 worker/public/sw.js

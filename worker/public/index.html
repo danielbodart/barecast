@@ -9,10 +9,13 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="stylesheet" href="/viewer.css">
 </head>
-<body>
-    <div id="status">Connecting...</div>
-    <video id="video" autoplay playsinline muted></video>
-    <button id="toggle" title="Toggle zoom">1:1</button>
-    <script src="/viewer.js"></script>
+<body class="install">
+    <div class="install-page">
+        <h1>barecast</h1>
+        <p>Screen sharing for developers.<br>No install required for the viewer — but the app is better.</p>
+        <button id="install-btn" disabled>Install barecast</button>
+        <div class="install-note">Your browser will prompt you to install when ready.</div>
+    </div>
+    <script src="/install.js"></script>
 </body>
 </html>
