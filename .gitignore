@@ -11,3 +11,5 @@ barecast-linux-x86_64.tar.gz.sha256
 .playwright-mcp
 worker/node_modules/
 worker/.wrangler/
+worker/public/viewer.js
+worker/public/sw.js

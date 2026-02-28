@@ -206,11 +206,20 @@ export async function integration() {
 
 // ─── Worker commands ───────────────────────────────────────────────────────
 
+async function workerBuild(minify = false) {
+    console.log("Building viewer TypeScript...");
+    const flags = minify ? ["--minify"] : [];
+    await $`bun build worker/src/viewer.ts --outdir worker/public --target=browser ${flags}`;
+    await $`bun build worker/src/sw.ts --outdir worker/public --target=browser ${flags}`;
+}
+
 export async function workerDev() {
+    await workerBuild();
     await $`cd worker && bun run wrangler dev --port 8787`;
 }
 
 export async function workerDeploy() {
+    await workerBuild(true);
     await $`cd worker && bun run wrangler deploy`;
 }
 

@@ -5,8 +5,7 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types"]
+    "lib": ["ESNext", "DOM"]
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/viewer.ts", "src/sw.ts"]
+  "include": ["src/viewer.ts", "src/sw.ts"]
 }
