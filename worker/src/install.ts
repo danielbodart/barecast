@@ -45,7 +45,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e as BeforeInstallPromptEvent;
     btn.disabled = false;
-    btn.textContent = "Launch zerocast";
+    btn.textContent = "Launch";
     installNote.textContent = "";
 });
 
