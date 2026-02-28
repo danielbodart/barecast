@@ -174,7 +174,21 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box) void {
 
     // Capture loop — runs regardless of viewer count.
     // Frames are silently dropped when no viewers are connected.
+    const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
+    var ping_timer = std.time.Timer.start() catch {
+        std.debug.print("Timer unavailable\n", .{});
+        return;
+    };
+
     while (!should_exit.load(.acquire)) {
+        // Periodic signaling keepalive / reconnect check
+        if (ping_timer.read() >= ping_interval_ns) {
+            ping_timer.reset();
+            if (!session.sendPing()) {
+                session.reconnect();
+            }
+        }
+
         const frame = fbc.grabFrame() catch |err| {
             std.debug.print("Capture error: {}\n", .{err});
             break;

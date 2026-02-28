@@ -177,6 +177,9 @@ pub const BroadcastSession = struct {
     pc_config: c.rtcConfiguration,
     ice_servers: [2][*c]const u8,
     turn_uri: [256]u8,
+    ws_connected: std.atomic.Value(bool),
+    ws_url_z: [513]u8,
+    ws_url_len: usize,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8) !BroadcastSession {
@@ -203,6 +206,9 @@ pub const BroadcastSession = struct {
         session.pc_config = std.mem.zeroes(c.rtcConfiguration);
         session.pc_config.iceServers = &session.ice_servers;
         session.pc_config.iceServersCount = 1;
+        session.ws_connected = std.atomic.Value(bool).init(false);
+        session.ws_url_z = url_z;
+        session.ws_url_len = ws_url.len;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {
@@ -219,10 +225,15 @@ pub const BroadcastSession = struct {
     pub fn start(self: *BroadcastSession) void {
         // Fix up pc_config pointer — it was copied during init return
         self.pc_config.iceServers = &self.ice_servers;
+        self.registerWsCallbacks();
+    }
 
+    fn registerWsCallbacks(self: *BroadcastSession) void {
         c.rtcSetUserPointer(self.ws, @ptrCast(self));
-        _ = c.rtcSetMessageCallback(self.ws, wsMessageCallback);
         _ = c.rtcSetOpenCallback(self.ws, wsOpenCallback);
+        _ = c.rtcSetClosedCallback(self.ws, wsClosedCallback);
+        _ = c.rtcSetErrorCallback(self.ws, wsErrorCallback);
+        _ = c.rtcSetMessageCallback(self.ws, wsMessageCallback);
     }
 
     /// Send one encoded AV1 frame to all connected peers.
@@ -368,10 +379,57 @@ pub const BroadcastSession = struct {
         c.rtcCleanup();
     }
 
+    /// Send a "ping" text message on the signaling WebSocket.
+    /// Returns true if the send succeeded, false if the WebSocket is dead.
+    pub fn sendPing(self: *BroadcastSession) bool {
+        if (!self.ws_connected.load(.acquire)) return false;
+        const result = c.rtcSendMessage(self.ws, "ping", -1);
+        if (result < 0) {
+            log.warn("signaling ping failed: {d}", .{result});
+            self.ws_connected.store(false, .release);
+            return false;
+        }
+        return true;
+    }
+
+    /// Reconnect the signaling WebSocket. Call from the main thread only.
+    pub fn reconnect(self: *BroadcastSession) void {
+        log.info("reconnecting signaling WebSocket...", .{});
+
+        // Close the old handle (safe even if already closed)
+        if (self.ws >= 0) _ = c.rtcDeleteWebSocket(self.ws);
+
+        const ws = c.rtcCreateWebSocket(&self.ws_url_z);
+        if (ws < 0) {
+            log.err("reconnect: rtcCreateWebSocket failed: {d}", .{ws});
+            self.ws = -1;
+            return;
+        }
+
+        self.ws = ws;
+        self.registerWsCallbacks();
+        // ws_connected will be set to true by wsOpenCallback
+    }
+
     // ── Signaling WebSocket callbacks ────────────────────────────────
 
-    fn wsOpenCallback(_: c_int, _: ?*anyopaque) callconv(.c) void {
+    fn wsOpenCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self: *BroadcastSession = @alignCast(@ptrCast(ptr orelse return));
+        self.ws_connected.store(true, .release);
         log.info("signaling WebSocket connected", .{});
+    }
+
+    fn wsClosedCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self: *BroadcastSession = @alignCast(@ptrCast(ptr orelse return));
+        self.ws_connected.store(false, .release);
+        log.warn("signaling WebSocket closed", .{});
+    }
+
+    fn wsErrorCallback(_: c_int, raw_err: [*c]const u8, ptr: ?*anyopaque) callconv(.c) void {
+        const self: *BroadcastSession = @alignCast(@ptrCast(ptr orelse return));
+        self.ws_connected.store(false, .release);
+        const err_msg = if (raw_err) |e| std.mem.span(e) else "unknown";
+        log.err("signaling WebSocket error: {s}", .{err_msg});
     }
 
     fn wsMessageCallback(_: c_int, raw_msg: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.c) void {

@@ -11,6 +11,15 @@ import { DurableObject } from "cloudflare:workers";
  * Uses the WebSocket Hibernation API — the DO sleeps when signaling is idle.
  */
 export class SignalingRoom extends DurableObject<Env> {
+    constructor(ctx: DurableObjectState, env: Env) {
+        super(ctx, env);
+        // Auto-respond to "ping" with "pong" without waking the DO from hibernation.
+        // Keeps the sharer's WebSocket alive through Cloudflare's edge proxy.
+        this.ctx.setWebSocketAutoResponse(
+            new WebSocketRequestResponsePair("ping", "pong")
+        );
+    }
+
     async fetch(request: Request): Promise<Response> {
         const upgrade = request.headers.get("Upgrade");
         if (upgrade !== "websocket") {
@@ -139,6 +148,11 @@ export class SignalingRoom extends DurableObject<Env> {
         }
     }
 
+    async webSocketError(ws: WebSocket): Promise<void> {
+        // Same cleanup as webSocketClose — notify the other side
+        await this.webSocketClose(ws);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
 
     private getTag(ws: WebSocket): string | undefined {
@@ -152,7 +166,10 @@ export class SignalingRoom extends DurableObject<Env> {
     } | null> {
         const keyId = this.env.TURN_KEY_ID;
         const apiToken = this.env.TURN_KEY_API_TOKEN;
-        if (!keyId || !apiToken) return null;
+        if (!keyId || !apiToken) {
+            console.log("TURN: missing creds", `keyId.len=${keyId?.length}`, `apiToken.len=${apiToken?.length}`);
+            return null;
+        }
 
         try {
             const resp = await fetch(
@@ -166,7 +183,10 @@ export class SignalingRoom extends DurableObject<Env> {
                     body: JSON.stringify({ ttl: 86400 }),
                 }
             );
-            if (!resp.ok) return null;
+            if (!resp.ok) {
+                console.log(`TURN: API returned ${resp.status}`);
+                return null;
+            }
 
             const data = (await resp.json()) as {
                 iceServers?: { username?: string; credential?: string }[];
@@ -174,8 +194,10 @@ export class SignalingRoom extends DurableObject<Env> {
             const turn = data.iceServers?.find((s) => s.username);
             if (!turn?.username || !turn?.credential) return null;
 
+            console.log("TURN: credentials generated");
             return { username: turn.username, credential: turn.credential };
-        } catch {
+        } catch (e) {
+            console.log(`TURN: error: ${e}`);
             return null;
         }
     }
