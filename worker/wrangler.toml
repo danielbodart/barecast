@@ -1,5 +1,5 @@
 compatibility_date = "2025-02-03"
-name = "barecast"
+name = "zerocast"
 main = "src/index.ts"
 workers_dev = true
 
@@ -24,7 +24,7 @@ new_classes = ["SignalingRoom"]
 workers_dev = false
 
 [[env.production.routes]]
-pattern = "barecast.bodar.com"
+pattern = "zerocast.bodar.com"
 custom_domain = true
 
 [[env.production.durable_objects.bindings]]

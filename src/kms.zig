@@ -13,14 +13,14 @@ const ConnectorCrtcPair = struct {
     crtc_id: u64,
 };
 
-/// barecast-kms: Privileged KMS capture helper.
+/// zerocast-kms: Privileged KMS capture helper.
 ///
 /// argv[1] = socketpair fd (as decimal string)
 /// argv[2] = card path (e.g. "/dev/dri/card0")
 pub fn main() !void {
     const args = std.os.argv;
     if (args.len != 3) {
-        log.err("usage: barecast-kms <socket_fd> <card_path>", .{});
+        log.err("usage: zerocast-kms <socket_fd> <card_path>", .{});
         std.process.exit(1);
     }
 

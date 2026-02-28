@@ -4,8 +4,8 @@ dist/VERSION
 tools/
 .idea/
 CLAUDE.local.md
-barecast-linux-x86_64.tar.gz
-barecast-linux-x86_64.tar.gz.sha256
+zerocast-linux-x86_64.tar.gz
+zerocast-linux-x86_64.tar.gz.sha256
 .claude/worktrees/
 .worktrees/
 .playwright-mcp

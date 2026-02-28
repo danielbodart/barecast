@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Wire protocol between barecast (unprivileged) and barecast-kms (CAP_SYS_ADMIN).
+/// Wire protocol between zerocast (unprivileged) and zerocast-kms (CAP_SYS_ADMIN).
 /// Communicated over a Unix socketpair via sendmsg/recvmsg with SCM_RIGHTS for DMA-BUF fds.
 
 pub const protocol_version: u32 = 1;

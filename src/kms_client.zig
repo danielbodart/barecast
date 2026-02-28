@@ -10,14 +10,14 @@ const Self = @This();
 sock_fd: posix.fd_t = -1,
 server_pid: posix.pid_t = 0,
 
-/// Launch the barecast-kms helper process and establish IPC.
+/// Launch the zerocast-kms helper process and establish IPC.
 pub fn init(card_path: []const u8) !Self {
     const pair = try ipc.socketPair();
 
-    // Resolve barecast-kms path relative to our own executable
+    // Resolve zerocast-kms path relative to our own executable
     var helper_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const helper_path = resolveHelperPath(&helper_path_buf) catch |err| {
-        log.err("failed to resolve barecast-kms path: {}", .{err});
+        log.err("failed to resolve zerocast-kms path: {}", .{err});
         return error.HelperNotFound;
     };
 
@@ -42,7 +42,7 @@ pub fn init(card_path: []const u8) !Self {
         card_buf[card_path.len] = 0;
         const card_z: [*:0]const u8 = card_buf[0..card_path.len :0];
 
-        const argv = [_:null]?[*:0]const u8{ "barecast-kms", fd_z, card_z, null };
+        const argv = [_:null]?[*:0]const u8{ "zerocast-kms", fd_z, card_z, null };
         const envp = [_:null]?[*:0]const u8{null};
 
         const err = posix.execvpeZ(helper_path, &argv, &envp);
@@ -159,12 +159,12 @@ fn readSysfsLine(path: []const u8, buf: *[16]u8) ?[]const u8 {
     return buf[0..len];
 }
 
-/// Resolve the path to barecast-kms by looking in the same directory as our own executable.
+/// Resolve the path to zerocast-kms by looking in the same directory as our own executable.
 fn resolveHelperPath(buf: *[std.fs.max_path_bytes]u8) ![*:0]const u8 {
     const self_path = try std.fs.selfExePath(buf);
     // Find the last '/' to get the directory
     const dir_end = if (std.mem.lastIndexOfScalar(u8, self_path, '/')) |pos| pos + 1 else 0;
-    const helper_name = "barecast-kms";
+    const helper_name = "zerocast-kms";
     const total_len = dir_end + helper_name.len;
     if (total_len >= buf.len) return error.NameTooLong;
     @memcpy(buf[dir_end..][0..helper_name.len], helper_name);

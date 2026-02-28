@@ -1,5 +1,5 @@
 .{
-    .name = .barecast,
+    .name = .zerocast,
     .version = "0.0.1",
     .dependencies = .{
         .minish = .{
@@ -11,7 +11,7 @@
             .hash = "zwanzig-0.8.1-oiXZlsqhFQB0jB-80jJNdP5CH0bgBIGjhWeNaQgHpqZP",
         },
     },
-    .fingerprint = 0xfee90de374073ac4,
+    .fingerprint = 0xef481bcf95b8e141,
     .minimum_zig_version = "0.15.2",
     .paths = .{
         "build.zig",

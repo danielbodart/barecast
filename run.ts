@@ -27,11 +27,11 @@ async function ensureDeps() {
 
     if (!await which("pkg-config")) missing.push("pkg-config");
 
-    // libdrm (needed by barecast-kms helper)
+    // libdrm (needed by zerocast-kms helper)
     const { exitCode: drmCheck } = await $`pkg-config --exists libdrm`.quiet().nothrow();
     if (drmCheck !== 0) missing.push("libdrm-dev");
 
-    // EGL (needed by barecast for DMA-BUF import)
+    // EGL (needed by zerocast for DMA-BUF import)
     const { exitCode: eglCheck } = await $`pkg-config --exists egl`.quiet().nothrow();
     if (eglCheck !== 0) missing.push("libegl-dev");
 
@@ -119,10 +119,10 @@ export async function lint() {
 
 export async function setup() {
     await build();
-    console.log("Installing barecast...");
-    await $`sudo install -m 755 dist/bin/barecast /usr/local/bin/barecast`;
-    await $`sudo install -m 755 dist/bin/barecast-kms /usr/local/bin/barecast-kms`;
-    await $`sudo setcap cap_sys_admin+ep /usr/local/bin/barecast-kms`;
+    console.log("Installing zerocast...");
+    await $`sudo install -m 755 dist/bin/zerocast /usr/local/bin/zerocast`;
+    await $`sudo install -m 755 dist/bin/zerocast-kms /usr/local/bin/zerocast-kms`;
+    await $`sudo setcap cap_sys_admin+ep /usr/local/bin/zerocast-kms`;
 
     // Ensure user is in video group
     const { stdout } = await $`id -nG`.quiet();
@@ -146,7 +146,7 @@ export async function dev() {
 
 export async function dist() {
     // Validate no absolute RUNPATH (must be $ORIGIN or empty)
-    const { stdout: rpathOut } = await $`readelf -d dist/bin/barecast 2>/dev/null`.quiet();
+    const { stdout: rpathOut } = await $`readelf -d dist/bin/zerocast 2>/dev/null`.quiet();
     const rpathLines = rpathOut.toString().split("\n").filter(l => l.includes("RUNPATH") || l.includes("RPATH"));
     const absolutePaths = rpathLines.filter(l => !l.includes("$ORIGIN") && /\/[a-zA-Z]/.test(l));
     if (absolutePaths.length > 0) {
@@ -156,7 +156,7 @@ export async function dist() {
     }
 
     // Validate no AVX-512 instructions (must be portable to x86_64_v3)
-    const { stdout: objdumpOut } = await $`objdump -d dist/bin/barecast | grep -c 'zmm\\|%k[0-7],'`.quiet().nothrow();
+    const { stdout: objdumpOut } = await $`objdump -d dist/bin/zerocast | grep -c 'zmm\\|%k[0-7],'`.quiet().nothrow();
     const avx512Count = parseInt(objdumpOut.toString().trim()) || 0;
     if (avx512Count > 0) {
         console.error(`ERROR: binary contains ${avx512Count} AVX-512 instructions (not portable)`);
@@ -165,9 +165,9 @@ export async function dist() {
 
     const ver = await version();
     await Bun.write("dist/VERSION", ver);
-    await $`tar -czf barecast-linux-x86_64.tar.gz -C dist bin/ VERSION`;
-    await $`sha256sum barecast-linux-x86_64.tar.gz > barecast-linux-x86_64.tar.gz.sha256`;
-    console.log(`Tarball: barecast-linux-x86_64.tar.gz (v${ver})`);
+    await $`tar -czf zerocast-linux-x86_64.tar.gz -C dist bin/ VERSION`;
+    await $`sha256sum zerocast-linux-x86_64.tar.gz > zerocast-linux-x86_64.tar.gz.sha256`;
+    console.log(`Tarball: zerocast-linux-x86_64.tar.gz (v${ver})`);
 }
 
 export async function ci() {
@@ -204,7 +204,7 @@ export async function ci() {
     if (process.env.GH_TOKEN) {
         const commitMsg = (await $`git log -1 --format=%B`.quiet()).text().trim();
         console.log(`Creating release v${ver}...`);
-        await $`gh release create v${ver} barecast-linux-x86_64.tar.gz barecast-linux-x86_64.tar.gz.sha256 --title v${ver} --notes ${commitMsg}`;
+        await $`gh release create v${ver} zerocast-linux-x86_64.tar.gz zerocast-linux-x86_64.tar.gz.sha256 --title v${ver} --notes ${commitMsg}`;
     }
 }
 
@@ -212,9 +212,9 @@ export async function ci() {
 
 export async function integration() {
     await build();
-    const testFile = "/tmp/barecast-test.ivf";
+    const testFile = "/tmp/zerocast-test.ivf";
     console.log("Capturing 3s to IVF...");
-    await $`timeout 10 dist/bin/barecast --record ${testFile} 3`.nothrow();
+    await $`timeout 10 dist/bin/zerocast --record ${testFile} 3`.nothrow();
 
     if (!existsSync(testFile)) {
         console.error("ERROR: IVF file was not created");

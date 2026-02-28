@@ -81,9 +81,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // --- barecast (main binary, unprivileged) ---
+    // --- zerocast (main binary, unprivileged) ---
     const exe = b.addExecutable(.{
-        .name = "barecast",
+        .name = "zerocast",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -121,7 +121,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    // --- barecast-kms (privileged helper, CAP_SYS_ADMIN) ---
+    // --- zerocast-kms (privileged helper, CAP_SYS_ADMIN) ---
     const drm_mod = b.createModule(.{
         .root_source_file = b.path("src/drm.zig"),
         .target = target,
@@ -131,7 +131,7 @@ pub fn build(b: *std.Build) void {
     drm_mod.linkSystemLibrary("libdrm", .{});
 
     const kms_exe = b.addExecutable(.{
-        .name = "barecast-kms",
+        .name = "zerocast-kms",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/kms.zig"),
             .target = target,
@@ -153,7 +153,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run barecast");
+    const run_step = b.step("run", "Run zerocast");
     run_step.dependOn(&run_cmd.step);
 
     // --- Test step ---

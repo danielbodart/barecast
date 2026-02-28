@@ -1,12 +1,19 @@
-# Screen Sharing Tool — Research & Design Notes
+# zerocast
 
-## Vision
+Highly opinionated screen sharing for developers.
 
-A remote pair programming tool built in Zig. Share your screen with a colleague across the internet — they open a URL in their browser, no install required. Designed for developers working together remotely, not LAN-based screen mirroring.
+- **Zero copy** — GPU-resident pipeline. Screen capture, color conversion, and AV1 encode happen entirely on the GPU. CPU usage near 0%.
+- **Zero audio, zero webcam** — Screen only. This is a pair programming tool, not a video call. Use your existing voice chat.
+- **Zero legacy hardware** — Requires AV1 hardware encode (NVIDIA RTX 40-series+) to share. Requires AV1 hardware decode (most GPUs from 2020+, Apple M1+) to view. No software fallback.
+- **Zero install for viewers** — Open a URL, see the screen. PWA for a near-borderless window. No native app, no extension, no plugin.
+- **Zero latency** — GPU-direct capture, hardware encode, P2P WebRTC transport. No compositor round-trip, no CPU encode, no relay server (in the common case).
+- **Zero conversion** — DMA-BUF/NvFBC gives us a GPU texture. We hand it directly to the hardware encoder. No format conversion, no pixel copying, no shaders.
+- **Zero codec negotiation** — AV1 only. One codec path = simpler pipeline, fewer bugs, less testing.
+- **Zero servers** — Signaling runs on Cloudflare Workers (serverless). Media flows P2P via STUN. TURN relay is the fallback, not the default.
+- **Zero fat dependencies** — libdatachannel (~20MB) instead of Google's libwebrtc (600MB). Native Zig binary, not Electron.
+- **Zero config** — Run the binary, share the URL. That's it.
 
-GPU-resident capture and encode pipeline. Minimal CPU usage. Linux-first, macOS later.
-
-Think Tuple/Pop but leaner, faster, and elitist about hardware requirements.
+Built in Zig. Linux-first, macOS later.
 
 ## Implementation Status
 
@@ -17,7 +24,7 @@ What's built, what's next, what's later.
 - **NvFBC capture** (`src/nvfbc.zig`) — Pure Zig bindings for NVIDIA's proprietary Frame Buffer Capture API. Dynamically loads `libnvidia-fbc.so.1`, creates GLX context, captures full-screen frames as GL textures. Primary capture backend for X11.
 - **KMS/DRM capture** (`src/kms.zig`) — Privileged helper binary. Full DRM plane enumeration, GEM handle → DMA-BUF fd export, plane property extraction (type, CRTC position, rotation, source crop). Retained for Wayland (where NvFBC is unavailable).
 - **IPC layer** (`src/protocol.zig`, `src/ipc.zig`) — Wire protocol structs (extern C ABI) for request/response between main binary and KMS helper. SCM_RIGHTS fd passing over Unix socketpair. Fully tested.
-- **KMS client** (`src/kms_client.zig`) — Launches `barecast-kms` as subprocess, sends frame requests, receives DMA-BUF fds. Includes NVIDIA GPU card discovery via sysfs vendor ID.
+- **KMS client** (`src/kms_client.zig`) — Launches `zerocast-kms` as subprocess, sends frame requests, receives DMA-BUF fds. Includes NVIDIA GPU card discovery via sysfs vendor ID.
 - **Build system** (`build.zig`) — Two executable targets with module dependency graph, system library linking (libdrm, X11, GL), test framework, property tests via minish, static analysis via zwanzig.
 - **Task runner** (`run.ts`) — Bun TypeScript. build/test/lint/setup/dist/ci/worker-dev/worker-deploy targets. Version string from git. Dependency checking via pkg-config.
 - **Signaling server** (`worker/`) — Cloudflare Worker + Durable Object. WebSocket upgrade routing, message broadcast to room peers, peer disconnection notifications. Uses Hibernation API.
@@ -26,7 +33,7 @@ What's built, what's next, what's later.
 - **NVENC AV1 encode** (`src/nvenc.zig`) — Direct NVENC SDK 12.0 bindings via dlopen. Pure Zig extern structs with comptime size assertions. AV1 encode with P4 preset, low-latency tuning, constQP 28, ARGB input (BGRA from NvFBC). NVENC handles internal CSC to NV12.
 - **IVF container writer** (`src/ivf.zig`) — Writes AV1 bitstream to IVF files (DKIF header + per-frame headers). Millisecond timebase with real wall clock PTS.
 - **Encode pipeline** (`src/encoder.zig`) — Orchestrates NvFBC → CUDA → NVENC → IVF. Frame skip tracking, keyframe interval, stats.
-- **Capture CLI** — `barecast` streams via WebRTC (default), `barecast --record output.ivf [seconds]` records to IVF. SIGINT/SIGTERM handling.
+- **Capture CLI** — `zerocast` streams via WebRTC (default), `zerocast --record output.ivf [seconds]` records to IVF. SIGINT/SIGTERM handling.
 - **libdatachannel integration** (`src/webrtc.zig`) — Static link via cmake (built with zig cc for libc++ ABI). Zig bindings wrapping the C API: peer connection, sendonly AV1 track with RTP packetizer (90kHz clock, 1200 byte fragments), signaling WebSocket, PLI-triggered keyframes. Thread-safe: atomics for state/keyframe flags, callbacks fire on libdatachannel threads.
 - **FrameSink abstraction** (`src/encoder.zig`) — Tagged union `FrameSink = union(enum) { ivf, webrtc }`. Encoder dispatches encoded data to either IVF writer or WebRTC track. PLI keyframe forcing for WebRTC path.
 - **Browser viewer** (`worker/src/index.ts`) — Full WebRTC viewer served on `/` and `?room=` paths. RTCPeerConnection with STUN, `ontrack` → `<video>` binding, SDP answer generation, ICE candidate exchange. Status overlay (Connecting → Waiting → Negotiating → hidden on play → Disconnected).
@@ -36,7 +43,7 @@ What's built, what's next, what's later.
 
 - **Bitrate adaptation** — Monitor packet loss / RTT from libdatachannel stats, adjust NVENC target bitrate dynamically (REMB callback is stubbed).
 - **Remote input** — Keyboard/mouse events from browser → data channel → uinput injection on sharer.
-- **Region sharing** — Crop to sub-region at GL/CUDA stage. `barecast share [WxH+X+Y]`.
+- **Region sharing** — Crop to sub-region at GL/CUDA stage. `zerocast share [WxH+X+Y]`.
 
 ### Later
 
@@ -55,7 +62,7 @@ What's built, what's next, what's later.
 | `src/ivf.zig` | ~190 | IVF container writer. 32-byte file header + 12-byte frame headers. Millisecond PTS timebase. 3 unit tests. |
 | `src/encoder.zig` | ~105 | Pipeline orchestration. NvFBC → CUDA → NVENC → FrameSink dispatch (IVF or WebRTC). PLI keyframe support. |
 | `src/kms.zig` | ~312 | KMS helper binary. DRM plane enumeration, GEM → DMA-BUF export, SCM_RIGHTS IPC. Runs with CAP_SYS_ADMIN. |
-| `src/kms_client.zig` | ~188 | Launches `barecast-kms` subprocess, sends frame requests, receives DMA-BUF fds. NVIDIA GPU discovery via sysfs. |
+| `src/kms_client.zig` | ~188 | Launches `zerocast-kms` subprocess, sends frame requests, receives DMA-BUF fds. NVIDIA GPU discovery via sysfs. |
 | `src/protocol.zig` | ~115 | Wire protocol structs (extern C ABI). Request/Response types, Plane metadata, DmaBuf descriptors. |
 | `src/ipc.zig` | ~223 | SCM_RIGHTS ancillary data over Unix socketpair. sendmsg/recvmsg with cmsg alignment. |
 | `src/drm.zig` | ~90 | libdrm C bindings via `@cImport`. ~15 functions for plane/FB2/property enumeration. |
@@ -140,7 +147,7 @@ NvFBC (NVIDIA Frame Buffer Capture, proprietary driver API)
         → (optional) IVF file via --record flag                   ← DONE
 ```
 
-**Tested:** 3840x1600 live WebRTC streaming to browser viewer via Cloudflare Worker signaling. Also: 3840x1600 at ~30fps AV1 constQP 28 IVF recording. CLI: `barecast` (stream) or `barecast --record output.ivf [seconds]` (record).
+**Tested:** 3840x1600 live WebRTC streaming to browser viewer via Cloudflare Worker signaling. Also: 3840x1600 at ~30fps AV1 constQP 28 IVF recording. CLI: `zerocast` (stream) or `zerocast --record output.ivf [seconds]` (record).
 
 **Key discovery during implementation:** NVENC AV1 does NOT support 4:4:4 chroma (`chromaFormatIDC` must be 1 = YUV420). NvFBC captures BGRA, which maps to `NV_ENC_BUFFER_FORMAT_ARGB` on little-endian. NVENC performs internal CSC from ARGB to NV12 before encoding. Output is YUV420. For screen sharing this is acceptable — AV1's screen content coding tools (IBC, palette mode, transform skip) compensate for the chroma subsampling on text.
 
@@ -154,7 +161,7 @@ NvFBC is the primary capture path. It's NVIDIA's proprietary screen capture API 
 
 ```
 KMS/DRM framebuffer (GPU VRAM)
-  → DMA-BUF file descriptor (via barecast-kms helper, CAP_SYS_ADMIN)  ← DONE
+  → DMA-BUF file descriptor (via zerocast-kms helper, CAP_SYS_ADMIN)  ← DONE
     → EGL image (eglCreateImage with EGL_LINUX_DMA_BUF_EXT)
       → GL texture (glEGLImageTargetTexture2DOES)
         → CUDA resource (cuGraphicsGLRegisterImage)
@@ -162,7 +169,7 @@ KMS/DRM framebuffer (GPU VRAM)
             → encoded bitstream → libdatachannel → WebRTC
 ```
 
-The KMS path goes through the `barecast-kms` privileged helper. Everything from DRM plane enumeration through DMA-BUF fd export is implemented and tested. The EGL import → GL texture → CUDA → NVENC chain is not yet wired up.
+The KMS path goes through the `zerocast-kms` privileged helper. Everything from DRM plane enumeration through DMA-BUF fd export is implemented and tested. The EGL import → GL texture → CUDA → NVENC chain is not yet wired up.
 
 Everything stays GPU-resident. CPU usage near 0%.
 
@@ -210,12 +217,12 @@ We **do** use Cloudflare for TURN relay (fallback when P2P fails) and for the si
 
 ### Signaling & Infrastructure: Cloudflare Workers [IMPLEMENTED — full signaling + viewer]
 
-All server-side infrastructure runs on Cloudflare Workers. Single deployment, no servers to manage. Deployed at `barecast.bodar.workers.dev`.
+All server-side infrastructure runs on Cloudflare Workers. Single deployment, no servers to manage. Deployed at `zerocast.bodar.workers.dev`.
 
 #### Architecture
 
 ```
-barecast.bodar.workers.dev (Cloudflare Worker)
+zerocast.bodar.workers.dev (Cloudflare Worker)
 │
 ├── GET /                        → viewer app (full WebRTC JS)              ← DONE
 ├── GET /?room=<id>              → viewer app with room auto-connect        ← DONE
@@ -314,9 +321,9 @@ This is a small addition — manifest, a no-op service worker, and a resize call
 
 Support sharing a sub-region of the screen rather than the full display. Useful for ultrawide/multi-monitor setups where you want to keep parts of your workspace private.
 
-**Syntax:** `barecast share [WxH+X+Y]` — standard X11 geometry format (used by xrandr, ffmpeg, wf-recorder).
+**Syntax:** `zerocast share [WxH+X+Y]` — standard X11 geometry format (used by xrandr, ffmpeg, wf-recorder).
 
-**Where it happens in the pipeline:** At the GL/CUDA stage, not in KMS capture. The `barecast-kms` helper always captures the full framebuffer (DRM only gives you the whole thing). The main process crops to the requested geometry when setting up the NVENC input — just adjusted texture coordinates, essentially free on the GPU.
+**Where it happens in the pipeline:** At the GL/CUDA stage, not in KMS capture. The `zerocast-kms` helper always captures the full framebuffer (DRM only gives you the whole thing). The main process crops to the requested geometry when setting up the NVENC input — just adjusted texture coordinates, essentially free on the GPU.
 
 This means region sharing doesn't affect the KMS helper design at all.
 
@@ -329,7 +336,7 @@ This means region sharing doesn't affect the KMS helper design at all.
 
 ### Privilege Separation [IMPLEMENTED]
 
-Two Zig binaries: `barecast` (unprivileged) and `barecast-kms` (CAP_SYS_ADMIN file capability).
+Two Zig binaries: `zerocast` (unprivileged) and `zerocast-kms` (CAP_SYS_ADMIN file capability).
 
 #### Why two binaries?
 
@@ -352,17 +359,17 @@ There is no finer-grained capability — no `CAP_DRM` exists. `CAP_SYS_ADMIN` is
 | **PipeWire / xdg-desktop-portal** | No privilege escalation needed — compositor mediates access. But adds PipeWire as a runtime dependency, extra latency, and significantly more complex code (~900 lines in gpu-screen-recorder's portal backend vs ~200 for KMS). Not available properly on X11. |
 | **logind `TakeDevice`** | Can't work — `TakeControl` is exclusive and the compositor already holds it. Only one session controller at a time. |
 
-#### Architecture: `barecast-kms` helper [IMPLEMENTED — 312 lines]
+#### Architecture: `zerocast-kms` helper [IMPLEMENTED — 312 lines]
 
 The helper does exactly one thing: export DMA-BUF fds from the compositor's framebuffers.
 
 ```
-barecast (unprivileged, video group)
+zerocast (unprivileged, video group)
   │
   ├── socketpair(AF_UNIX, SOCK_STREAM)
-  ├── fork() + exec("barecast-kms")
+  ├── fork() + exec("zerocast-kms")
   │
-  │   barecast-kms (CAP_SYS_ADMIN via file capability)
+  │   zerocast-kms (CAP_SYS_ADMIN via file capability)
   │     ├── open("/dev/dri/card0", O_RDONLY)
   │     ├── drmSetClientCap(UNIVERSAL_PLANES)
   │     ├── drmSetClientCap(ATOMIC)
@@ -385,9 +392,9 @@ IPC is a simple request/response over `socketpair()`. No path-based socket, no t
 #### Installation
 
 ```bash
-sudo install -m 755 barecast /usr/local/bin/barecast
-sudo install -m 755 barecast-kms /usr/local/bin/barecast-kms
-sudo setcap cap_sys_admin+ep /usr/local/bin/barecast-kms
+sudo install -m 755 zerocast /usr/local/bin/zerocast
+sudo install -m 755 zerocast-kms /usr/local/bin/zerocast-kms
+sudo setcap cap_sys_admin+ep /usr/local/bin/zerocast-kms
 sudo usermod -aG video "$USER"  # most desktop users already have this
 ```
 
@@ -407,7 +414,7 @@ Bun TypeScript script. All build commands live here — CI only calls `run.ts` t
 
 ```
 ./run.ts              # default: build + analyze + test (dev target)
-./run.ts build        # zig build ReleaseSafe (both barecast + barecast-kms)
+./run.ts build        # zig build ReleaseSafe (both zerocast + zerocast-kms)
 ./run.ts clean        # rm -rf dist/bin .zig-cache
 ./run.ts test         # zig build test (unit + property tests)
 ./run.ts lint         # zwanzig static analysis + shellcheck
@@ -431,9 +438,9 @@ bun = "latest"
 ### Developer Workflow
 
 ```bash
-git clone <repo> && cd barecast
+git clone <repo> && cd zerocast
 ./run.ts              # bootstrap installs tools, builds, tests — one command
-./run.ts setup        # install binaries + setcap on barecast-kms
+./run.ts setup        # install binaries + setcap on zerocast-kms
 ```
 
 ## Testing Strategy
@@ -534,7 +541,7 @@ These require infrastructure (virtual displays, reference data, CI with GPUs) so
 | `src/color_conversion.c` | GL shaders for RGB → NV12/P010 (BT.709/BT.2020) | May need for NVENC input format |
 | `src/egl.c` | EGL context + DMA-BUF image creation | Reference for KMS → EGL path |
 | `src/pipewire_video.c` | PipeWire stream for portal-based DMA-BUF reception | Not using |
-| `kms/server/kms_server.c` | Privileged setuid helper for DRM ioctls | Inspired our `barecast-kms` design |
+| `kms/server/kms_server.c` | Privileged setuid helper for DRM ioctls | Inspired our `zerocast-kms` design |
 
 Architecture: plugin-based via C function pointers. Capture and encoder backends implement a common interface. Detect GPU at startup, pick best backend.
 

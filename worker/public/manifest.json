@@ -1,6 +1,6 @@
 {
-  "name": "barecast",
-  "short_name": "barecast",
+  "name": "zerocast",
+  "short_name": "zerocast",
   "description": "Screen sharing for developers",
   "start_url": "/",
   "scope": "/",

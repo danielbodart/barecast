@@ -10,7 +10,7 @@ const BroadcastSession = @import("session").BroadcastSession;
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 pub fn main() void {
-    std.debug.print("barecast v{s}\n", .{build_options.version});
+    std.debug.print("zerocast v{s}\n", .{build_options.version});
     installSignalHandler();
 
     const cli = parseCli();
@@ -105,25 +105,31 @@ fn runStream(cli_room_id: ?[]const u8) void {
         break :blk &generated_id;
     };
 
-    // Signaling URL from env or default
-    const signaling_url = std.process.getEnvVarOwned(allocator, "BARECAST_URL") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => allocator.dupe(u8, "wss://barecast.dev") catch return,
+    // Base URL from env or default (https://)
+    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch return,
         else => return,
     };
-    defer allocator.free(signaling_url);
+    defer allocator.free(base_url);
 
-    // Derive share URL from signaling URL: wss:// → https://, ws:// → http://
-    const share_scheme: []const u8 = if (std.mem.startsWith(u8, signaling_url, "wss://")) "https://" else "http://";
-    const host_start: usize = if (std.mem.startsWith(u8, signaling_url, "wss://"))
-        @as(usize, 6)
-    else if (std.mem.startsWith(u8, signaling_url, "ws://"))
-        @as(usize, 5)
+    // Derive WebSocket URL: https:// → wss://, http:// → ws://
+    const ws_scheme: []const u8 = if (std.mem.startsWith(u8, base_url, "https://")) "wss://" else "ws://";
+    const host_start: usize = if (std.mem.startsWith(u8, base_url, "https://"))
+        @as(usize, 8)
+    else if (std.mem.startsWith(u8, base_url, "http://"))
+        @as(usize, 7)
     else
         @as(usize, 0);
+    var ws_url_buf: [512]u8 = undefined;
+    const signaling_url = std.fmt.bufPrint(&ws_url_buf, "{s}{s}", .{
+        ws_scheme, base_url[host_start..],
+    }) catch return;
+
+    // Share URL for display
     var share_url_buf: [512]u8 = undefined;
-    const share_url = std.fmt.bufPrint(&share_url_buf, "{s}{s}/room/{s}", .{
-        share_scheme, signaling_url[host_start..], room_id,
-    }) catch "https://barecast.bodar.com/room/???";
+    const share_url = std.fmt.bufPrint(&share_url_buf, "{s}/room/{s}", .{
+        base_url, room_id,
+    }) catch "https://zerocast.bodar.com/room/???";
     std.debug.print("\n  Room: {s}\n\n", .{share_url});
     std.debug.print("Connecting to signaling server...\n", .{});
 
@@ -222,7 +228,7 @@ fn parseCli() Cli {
             }
         }
         if (path == null) {
-            std.debug.print("Usage: barecast --record <output.ivf> [seconds]\n", .{});
+            std.debug.print("Usage: zerocast --record <output.ivf> [seconds]\n", .{});
             std.process.exit(1);
         }
         return .{ .record = .{ .path = path.?, .seconds = seconds } };
@@ -234,10 +240,10 @@ fn parseCli() Cli {
     } else |_| {}
 
     std.debug.print("Usage:\n", .{});
-    std.debug.print("  barecast                              Stream via WebRTC\n", .{});
-    std.debug.print("  barecast --room <id>                  Stream with a stable room ID\n", .{});
-    std.debug.print("  barecast --record output.ivf          Record to IVF\n", .{});
-    std.debug.print("  barecast --record output.ivf 5        Record 5s to IVF\n", .{});
+    std.debug.print("  zerocast                              Stream via WebRTC\n", .{});
+    std.debug.print("  zerocast --room <id>                  Stream with a stable room ID\n", .{});
+    std.debug.print("  zerocast --record output.ivf          Record to IVF\n", .{});
+    std.debug.print("  zerocast --record output.ivf 5        Record 5s to IVF\n", .{});
     std.process.exit(1);
 }
 

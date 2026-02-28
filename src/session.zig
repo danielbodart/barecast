@@ -48,7 +48,7 @@ pub const Peer = struct {
         track_init.ssrc = 1;
         track_init.mid = "0";
         track_init.name = "video";
-        track_init.msid = "barecast";
+        track_init.msid = "zerocast";
         track_init.trackId = "video";
 
         const track = c.rtcAddTrackEx(pc, &track_init);
@@ -58,7 +58,7 @@ pub const Peer = struct {
         // AV1 packetizer
         var pkt_init = std.mem.zeroes(c.rtcPacketizerInit);
         pkt_init.ssrc = 1;
-        pkt_init.cname = "barecast";
+        pkt_init.cname = "zerocast";
         pkt_init.payloadType = 96;
         pkt_init.clockRate = 90000;
         pkt_init.maxFragmentSize = 1200;

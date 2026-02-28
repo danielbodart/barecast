@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What is this?
 
-Barecast is a low-level screen sharing / pair programming tool. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
+Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
 
 ## Build & Run
 
@@ -32,7 +32,7 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 # Integration test (requires GPU)
 ./run.ts integration
 
-# First-time setup (builds, installs binaries, sets CAP_SYS_ADMIN on barecast-kms)
+# First-time setup (builds, installs binaries, sets CAP_SYS_ADMIN on zerocast-kms)
 ./run.ts setup
 ```
 
@@ -47,8 +47,8 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 
 Two Zig binaries + one Cloudflare Worker:
 
-- **`barecast`** — Main binary (unprivileged). Screen capture pipeline: DMA-BUF → EGL → CUDA → NVENC AV1 → libdatachannel WebRTC → browser.
-- **`barecast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
+- **`zerocast`** — Main binary (unprivileged). Screen capture pipeline: DMA-BUF → EGL → CUDA → NVENC AV1 → libdatachannel WebRTC → browser.
+- **`zerocast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
 - **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
 
 ### Key source files
@@ -57,7 +57,7 @@ Two Zig binaries + one Cloudflare Worker:
 - **`src/webrtc.zig`** — libdatachannel Zig bindings. Peer connection, AV1 track, signaling WebSocket.
 - **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (IVF or WebRTC).
 - **`src/kms.zig`** — Entry point for the privileged KMS helper.
-- **`src/protocol.zig`** — Wire protocol structs for IPC between barecast and barecast-kms.
+- **`src/protocol.zig`** — Wire protocol structs for IPC between zerocast and zerocast-kms.
 - **`src/prop_tests.zig`** — Property-based tests (minish).
 - **`worker/src/index.ts`** — Cloudflare Worker + full WebRTC browser viewer.
 - **`worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.

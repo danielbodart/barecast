@@ -12,7 +12,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e as BeforeInstallPromptEvent;
     btn.disabled = false;
-    btn.textContent = "Install barecast";
+    btn.textContent = "Install zerocast";
     note.textContent = "";
 });
 
