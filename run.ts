@@ -39,6 +39,21 @@ async function ensureDeps() {
     const { exitCode: sslCheck } = await $`pkg-config --exists openssl`.quiet().nothrow();
     if (sslCheck !== 0) missing.push("libssl-dev");
 
+    // X11 + GL (needed by nvfbc module for GLX context)
+    const { exitCode: x11Check } = await $`pkg-config --exists x11`.quiet().nothrow();
+    if (x11Check !== 0) missing.push("libx11-dev");
+    const { exitCode: glCheck } = await $`pkg-config --exists gl`.quiet().nothrow();
+    if (glCheck !== 0) missing.push("libgl-dev");
+
+    // cmake (needed to build libdatachannel)
+    if (!await which("cmake")) missing.push("cmake");
+
+    // shellcheck (needed by lint)
+    if (!await which("shellcheck")) missing.push("shellcheck");
+
+    // binutils (readelf + objdump, needed by dist validation)
+    if (!await which("objdump")) missing.push("binutils");
+
     if (missing.length > 0) {
         console.log(`Installing missing packages: ${missing.join(", ")}`);
         await $`sudo apt install -y ${missing}`;
@@ -156,14 +171,36 @@ export async function dist() {
 }
 
 export async function ci() {
+    await ensureDeps();
+    await ensureSubmodule();
+
+    // Build libdatachannel static libs if not cached
+    if (!existsSync(".zig-cache/cmake/libdatachannel.a")) {
+        await ensureZigCcWrappers();
+        console.log("Building libdatachannel static libs...");
+        await $`zig build rebuild-libs`;
+    }
+
     const ver = await version();
+
     console.log("Running static analysis...");
     await $`zig build analyze`;
+    await $`shellcheck bootstrap.sh`;
+
     console.log("Running tests...");
     await $`zig build test`;
+
     console.log(`Building v${ver}...`);
     await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe`;
     await dist();
+
+    // Worker: install deps, build viewer TS, deploy to production
+    console.log("Deploying worker to production...");
+    await $`cd worker && bun install`;
+    await workerBuild(true);
+    await $`cd worker && bun run wrangler deploy --env production`;
+
+    // GitHub release
     if (process.env.GH_TOKEN) {
         const commitMsg = (await $`git log -1 --format=%B`.quiet()).text().trim();
         console.log(`Creating release v${ver}...`);

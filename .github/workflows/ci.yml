@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: [trunk]
+permissions:
+  contents: write
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: tools
+          key: mise-tools-${{ hashFiles('.mise.toml') }}
+      - uses: actions/cache@v4
+        with:
+          path: .zig-cache/cmake
+          key: libdatachannel-${{ hashFiles('libdatachannel/CMakeLists.txt') }}
+      - name: CI
+        run: ./run.ts ci
+        env:
+          CI: "true"
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
