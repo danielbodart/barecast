@@ -59,14 +59,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // --- WebRTC module (libdatachannel C API bindings) ---
-    const webrtc_mod = b.createModule(.{
-        .root_source_file = b.path("src/webrtc.zig"),
+    // --- Session module (multi-viewer WebRTC, replaces webrtc module) ---
+    const session_mod = b.createModule(.{
+        .root_source_file = b.path("src/session.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    webrtc_mod.addIncludePath(b.path("libdatachannel/include"));
+    session_mod.addIncludePath(b.path("libdatachannel/include"));
 
     const encoder_mod = b.createModule(.{
         .root_source_file = b.path("src/encoder.zig"),
@@ -77,7 +77,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cuda", .module = cuda_mod },
             .{ .name = "nvenc", .module = nvenc_mod },
             .{ .name = "ivf", .module = ivf_mod },
-            .{ .name = "webrtc", .module = webrtc_mod },
+            .{ .name = "session", .module = session_mod },
         },
     });
 
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
                         .{ .name = "ipc", .module = ipc_mod },
                     },
                 }) },
-                .{ .name = "webrtc", .module = webrtc_mod },
+                .{ .name = "session", .module = session_mod },
             },
         }),
     });
@@ -207,25 +207,25 @@ pub fn build(b: *std.Build) void {
     const run_ivf_tests = b.addRunArtifact(ivf_tests);
     test_step.dependOn(&run_ivf_tests.step);
 
-    // WebRTC tests (JSON helpers — no network/GPU needed)
-    const webrtc_tests = b.addTest(.{
+    // Session tests (JSON helpers, peer routing — no network/GPU needed)
+    const session_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/webrtc.zig"),
+            .root_source_file = b.path("src/session.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         }),
     });
-    webrtc_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
-    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
-    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
-    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
-    webrtc_tests.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
-    webrtc_tests.linkSystemLibrary("ssl");
-    webrtc_tests.linkSystemLibrary("crypto");
-    webrtc_tests.linkLibCpp();
-    const run_webrtc_tests = b.addRunArtifact(webrtc_tests);
-    test_step.dependOn(&run_webrtc_tests.step);
+    session_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    session_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
+    session_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
+    session_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
+    session_tests.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
+    session_tests.linkSystemLibrary("ssl");
+    session_tests.linkSystemLibrary("crypto");
+    session_tests.linkLibCpp();
+    const run_session_tests = b.addRunArtifact(session_tests);
+    test_step.dependOn(&run_session_tests.step);
 
     // Property tests (minish)
     const minish_dep = b.dependency("minish", .{

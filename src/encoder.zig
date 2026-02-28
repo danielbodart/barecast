@@ -3,11 +3,11 @@ const nvfbc = @import("nvfbc");
 const Cuda = @import("cuda").Cuda;
 const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
-const WebRtc = @import("webrtc").WebRtc;
+const BroadcastSession = @import("session").BroadcastSession;
 
 pub const FrameSink = union(enum) {
     ivf: IvfWriter,
-    webrtc: *WebRtc,
+    session: *BroadcastSession,
 };
 
 pub const Stats = struct {
@@ -70,7 +70,7 @@ pub const Encoder = struct {
 
         // Encode — check PLI-triggered keyframe for WebRTC, plus periodic interval
         const pli_key = switch (self.sink) {
-            .webrtc => |rtc| rtc.shouldForceKeyframe(),
+            .session => |s| s.shouldForceKeyframe(),
             .ivf => false,
         };
         const force_key = pli_key or (self.stats.frames_encoded % self.keyframe_interval == 0);
@@ -81,7 +81,7 @@ pub const Encoder = struct {
 
             switch (self.sink) {
                 .ivf => |*ivf| try ivf.writeFrame(encoded.data, pts_ms),
-                .webrtc => |rtc| try rtc.sendFrame(encoded.data, pts_ms),
+                .session => |s| s.sendFrame(encoded.data, pts_ms),
             }
             self.stats.total_bytes += encoded.data.len;
             if (encoded.is_key) self.stats.keyframes += 1;
@@ -99,7 +99,7 @@ pub const Encoder = struct {
                 1000,
                 1,
             ),
-            .webrtc => {},
+            .session => {},
         }
     }
 
@@ -108,7 +108,7 @@ pub const Encoder = struct {
         self.cuda_ctx.deinit();
         switch (self.sink) {
             .ivf => |*ivf| ivf.deinit(),
-            .webrtc => {}, // WebRtc lifetime managed by main
+            .session => {}, // session lifetime managed by main
         }
     }
 };

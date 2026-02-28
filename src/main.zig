@@ -5,7 +5,7 @@ const NvFbc = @import("nvfbc").NvFbc;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const IvfWriter = @import("ivf").IvfWriter;
-const WebRtc = @import("webrtc").WebRtc;
+const BroadcastSession = @import("session").BroadcastSession;
 
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -16,7 +16,7 @@ pub fn main() void {
     const cli = parseCli();
     switch (cli) {
         .record => |r| runRecord(r.path, r.seconds),
-        .stream => runStream(),
+        .stream => |s| runStream(s.room_id),
     }
 }
 
@@ -84,7 +84,7 @@ fn runRecord(output_path: []const u8, seconds: ?u32) void {
 
 // ─── Stream mode (WebRTC) ────────────────────────────────────────────────
 
-fn runStream() void {
+fn runStream(cli_room_id: ?[]const u8) void {
     const allocator = std.heap.c_allocator;
 
     var fbc = NvFbc.init() catch return;
@@ -95,10 +95,14 @@ fn runStream() void {
         first_frame.width, first_frame.height, first_frame.texture_id,
     });
 
-    // Generate room ID (8 random bytes → 16 hex chars)
-    const room_id = generateRoomId() catch {
-        std.debug.print("Failed to generate room ID\n", .{});
-        return;
+    // Room ID: from --room flag or generate random
+    var generated_id: [16]u8 = undefined;
+    const room_id: []const u8 = if (cli_room_id) |id| id else blk: {
+        generated_id = generateRoomId() catch {
+            std.debug.print("Failed to generate room ID\n", .{});
+            return;
+        };
+        break :blk &generated_id;
     };
 
     // Signaling URL from env or default
@@ -108,26 +112,21 @@ fn runStream() void {
     };
     defer allocator.free(signaling_url);
 
-    std.debug.print("\n  Room: https://barecast.dev/?room={s}\n\n", .{&room_id});
+    std.debug.print("\n  Room: https://barecast.dev/?room={s}\n\n", .{room_id});
     std.debug.print("Connecting to signaling server...\n", .{});
 
-    var rtc = WebRtc.init(allocator, signaling_url, &room_id) catch |err| {
-        std.debug.print("WebRTC init failed: {}\n", .{err});
+    var session = BroadcastSession.init(signaling_url, room_id) catch |err| {
+        std.debug.print("Session init failed: {}\n", .{err});
         return;
     };
-    defer rtc.deinit();
+    defer session.deinit();
 
-    // Register callbacks now that rtc is at its final stack location
-    rtc.start();
+    // Register callbacks now that session is at its final stack location
+    session.start();
 
-    std.debug.print("Waiting for viewer...\n", .{});
-    rtc.waitForConnection(120_000, &should_exit) catch |err| {
-        std.debug.print("Connection failed: {}\n", .{err});
-        return;
-    };
-    std.debug.print("Viewer connected, streaming...\n", .{});
+    std.debug.print("Streaming. Viewers can connect at any time.\n", .{});
 
-    var enc = Encoder.init(&fbc, first_frame, .{ .webrtc = &rtc }) catch |err| {
+    var enc = Encoder.init(&fbc, first_frame, .{ .session = &session }) catch |err| {
         std.debug.print("Encoder init failed: {}\n", .{err});
         return;
     };
@@ -142,7 +141,9 @@ fn runStream() void {
         return;
     };
 
-    while (!should_exit.load(.acquire) and rtc.state.load(.acquire) == .connected) {
+    // Capture loop — runs regardless of viewer count.
+    // Frames are silently dropped when no viewers are connected.
+    while (!should_exit.load(.acquire)) {
         const frame = fbc.grabFrame() catch |err| {
             std.debug.print("Capture error: {}\n", .{err});
             break;
@@ -161,40 +162,79 @@ fn runStream() void {
 
 const Cli = union(enum) {
     record: struct { path: []const u8, seconds: ?u32 },
-    stream: void,
+    stream: struct { room_id: ?[]const u8 },
 };
 
 fn parseCli() Cli {
     var args = std.process.args();
     _ = args.next(); // skip argv[0]
 
-    const first = args.next() orelse return .{ .stream = {} };
+    var room_id: ?[]const u8 = null;
+    var first: ?[]const u8 = null;
 
-    if (std.mem.eql(u8, first, "--record")) {
-        const path = args.next() orelse {
-            std.debug.print("Usage: barecast --record <output.ivf> [seconds]\n", .{});
-            std.process.exit(1);
-        };
-        const seconds: ?u32 = if (args.next()) |s|
-            std.fmt.parseInt(u32, s, 10) catch {
-                std.debug.print("Invalid duration: expected integer seconds\n", .{});
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--room")) {
+            room_id = args.next() orelse {
+                std.debug.print("--room requires a room ID argument\n", .{});
+                std.process.exit(1);
+            };
+            // Validate: alphanumeric + dash + underscore, max 64 chars
+            if (!isValidRoomId(room_id.?)) {
+                std.debug.print("Invalid room ID: use alphanumeric, dash, underscore (max 64 chars)\n", .{});
                 std.process.exit(1);
             }
-        else
-            null;
-        return .{ .record = .{ .path = path, .seconds = seconds } };
+        } else if (first == null) {
+            first = arg;
+        }
+    }
+
+    // No positional arg → stream mode
+    if (first == null) return .{ .stream = .{ .room_id = room_id } };
+
+    if (std.mem.eql(u8, first.?, "--record")) {
+        // Re-parse for record mode — room flag is ignored
+        var args2 = std.process.args();
+        _ = args2.next(); // skip argv[0]
+        var path: ?[]const u8 = null;
+        var seconds: ?u32 = null;
+        while (args2.next()) |a| {
+            if (std.mem.eql(u8, a, "--record")) {
+                path = args2.next();
+            } else if (std.mem.eql(u8, a, "--room")) {
+                _ = args2.next(); // skip room value
+            } else if (path != null and seconds == null) {
+                seconds = std.fmt.parseInt(u32, a, 10) catch {
+                    std.debug.print("Invalid duration: expected integer seconds\n", .{});
+                    std.process.exit(1);
+                };
+            }
+        }
+        if (path == null) {
+            std.debug.print("Usage: barecast --record <output.ivf> [seconds]\n", .{});
+            std.process.exit(1);
+        }
+        return .{ .record = .{ .path = path.?, .seconds = seconds } };
     }
 
     // Legacy: bare number means record mode with default output
-    if (std.fmt.parseInt(u32, first, 10)) |s| {
+    if (std.fmt.parseInt(u32, first.?, 10)) |s| {
         return .{ .record = .{ .path = "output.ivf", .seconds = s } };
     } else |_| {}
 
     std.debug.print("Usage:\n", .{});
-    std.debug.print("  barecast                          Stream via WebRTC\n", .{});
-    std.debug.print("  barecast --record output.ivf      Record to IVF\n", .{});
-    std.debug.print("  barecast --record output.ivf 5    Record 5s to IVF\n", .{});
+    std.debug.print("  barecast                              Stream via WebRTC\n", .{});
+    std.debug.print("  barecast --room <id>                  Stream with a stable room ID\n", .{});
+    std.debug.print("  barecast --record output.ivf          Record to IVF\n", .{});
+    std.debug.print("  barecast --record output.ivf 5        Record 5s to IVF\n", .{});
     std.process.exit(1);
+}
+
+fn isValidRoomId(id: []const u8) bool {
+    if (id.len == 0 or id.len > 64) return false;
+    for (id) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') return false;
+    }
+    return true;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -246,4 +286,12 @@ test "generateRoomId produces unique IDs" {
     const a = try generateRoomId();
     const b = try generateRoomId();
     try std.testing.expect(!std.mem.eql(u8, &a, &b));
+}
+
+test "isValidRoomId" {
+    try std.testing.expect(isValidRoomId("abc123"));
+    try std.testing.expect(isValidRoomId("my-room_01"));
+    try std.testing.expect(!isValidRoomId(""));
+    try std.testing.expect(!isValidRoomId("room with spaces"));
+    try std.testing.expect(!isValidRoomId("a" ** 65));
 }

@@ -50,57 +50,78 @@ function viewerHtml(): string {
     <video id="video" autoplay playsinline muted></video>
     <script>
     (function() {
-        const video = document.getElementById('video');
-        const status = document.getElementById('status');
-        const params = new URLSearchParams(window.location.search);
-        const roomId = params.get('room');
+        var video = document.getElementById('video');
+        var status = document.getElementById('status');
+        var params = new URLSearchParams(window.location.search);
+        var roomId = params.get('room');
 
         if (!roomId) {
             status.textContent = 'No room specified. Use ?room=<id>';
             return;
         }
 
+        // Generate a stable peer ID for this browser tab session
+        var peerId = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+            .map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+
+        var wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var wsBase = wsProto + '//' + location.host + '/room/' + roomId + '/ws?role=viewer&peer_id=' + peerId;
+
+        var pc = null;
+        var ws = null;
+        var reconnectDelay = 1000;
+        var reconnectTimer = null;
+
         function setStatus(msg) {
             status.textContent = msg;
             status.classList.remove('hidden');
         }
 
-        // Determine WebSocket URL from current page origin
-        const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = wsProto + '//' + location.host + '/room/' + roomId + '/ws?role=viewer';
+        function connect() {
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
-        const ws = new WebSocket(wsUrl);
-        let pc = null;
+            ws = new WebSocket(wsBase);
 
-        ws.onopen = function() {
-            setStatus('Waiting for sharer...');
-        };
+            ws.onopen = function() {
+                reconnectDelay = 1000;
+                setStatus('Waiting for sharer...');
+            };
 
-        ws.onclose = function() {
-            setStatus('Disconnected');
-        };
+            ws.onclose = function() {
+                scheduleReconnect();
+            };
 
-        ws.onerror = function() {
-            setStatus('Connection error');
-        };
+            ws.onerror = function() { /* onclose fires after */ };
 
-        ws.onmessage = function(event) {
-            const msg = JSON.parse(event.data);
+            ws.onmessage = function(event) {
+                var msg = JSON.parse(event.data);
 
-            if (msg.type === 'offer') {
-                handleOffer(msg.sdp);
-            } else if (msg.type === 'ice' && pc) {
-                pc.addIceCandidate(new RTCIceCandidate({
-                    candidate: msg.candidate,
-                    sdpMid: msg.mid
-                })).catch(function() {});
-            } else if (msg.type === 'peer-disconnected') {
-                setStatus('Sharer disconnected');
-                if (pc) { pc.close(); pc = null; }
-            }
-        };
+                if (msg.type === 'offer') {
+                    handleOffer(msg.sdp);
+                } else if (msg.type === 'ice' && pc) {
+                    pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid || '0' })
+                        .catch(function() {});
+                } else if (msg.type === 'sharer-left') {
+                    setStatus('Waiting for sharer...');
+                    if (pc) { pc.close(); pc = null; }
+                }
+            };
+        }
 
-        async function handleOffer(sdp) {
+        function scheduleReconnect() {
+            if (pc) { pc.close(); pc = null; }
+            var delaySec = Math.round(reconnectDelay / 1000);
+            setStatus('Reconnecting in ' + delaySec + 's...');
+            reconnectTimer = setTimeout(function() {
+                reconnectTimer = null;
+                connect();
+            }, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+        }
+
+        function handleOffer(sdp) {
+            // Close any existing PC before handling a new offer
+            if (pc) { pc.close(); pc = null; }
             setStatus('Negotiating...');
 
             pc = new RTCPeerConnection({
@@ -112,13 +133,12 @@ function viewerHtml(): string {
                 video.play().catch(function() {});
             };
 
-            // Hide status once video starts playing
             video.onplaying = function() {
                 status.classList.add('hidden');
             };
 
             pc.onicecandidate = function(event) {
-                if (event.candidate) {
+                if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({
                         type: 'ice',
                         candidate: event.candidate.candidate,
@@ -128,21 +148,27 @@ function viewerHtml(): string {
             };
 
             pc.oniceconnectionstatechange = function() {
-                if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
                     setStatus('Connection lost');
                 }
             };
 
-            // Set remote offer and create answer
-            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: sdp }));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-
-            ws.send(JSON.stringify({
-                type: 'answer',
-                sdp: answer.sdp
-            }));
+            pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: sdp }))
+                .then(function() { return pc.createAnswer(); })
+                .then(function(answer) {
+                    return pc.setLocalDescription(answer);
+                })
+                .then(function() {
+                    if (ws && ws.readyState === WebSocket.OPEN && pc && pc.localDescription) {
+                        ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription.sdp }));
+                    }
+                })
+                .catch(function(err) {
+                    setStatus('Negotiation failed');
+                });
         }
+
+        connect();
     })();
     </script>
 </body>
