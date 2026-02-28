@@ -13,7 +13,7 @@ Highly opinionated screen sharing for developers.
 - **Minimal dependencies** — staticly link libdatachannel (~20MB) instead of Google's libwebrtc (600MB). Native Zig binary, only real external dependency is OpenSSL
 - **Minimal config** — Run the binary, share the URL. That's it.
 
-Built in Zig. Linux-first, macOS later.
+Built in Zig. Linux-first, macOS next
 
 ## Implementation Status
 
