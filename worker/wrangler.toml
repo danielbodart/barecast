@@ -1,6 +1,7 @@
 compatibility_date = "2025-02-03"
 name = "barecast"
 main = "src/index.ts"
+workers_dev = true
 
 [[routes]]
 pattern = "barecast.bodar.com"
