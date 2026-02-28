@@ -16,10 +16,13 @@ jobs:
         with:
           path: tools
           key: mise-tools-${{ hashFiles('.mise.toml') }}
+      - name: Libdatachannel cache key
+        id: libdc
+        run: echo "hash=$(git rev-parse HEAD:libdatachannel)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: .zig-cache/cmake
-          key: libdatachannel-${{ hashFiles('libdatachannel/CMakeLists.txt') }}
+          key: libdatachannel-${{ steps.libdc.outputs.hash }}-${{ hashFiles('.mise.toml') }}
       - name: CI
         run: ./run.ts ci
         env:

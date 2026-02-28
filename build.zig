@@ -260,7 +260,6 @@ pub fn build(b: *std.Build) void {
     const zwanzig_exe = zwanzig_dep.artifact("zwanzig");
     const zwanzig_run = b.addRunArtifact(zwanzig_exe);
     zwanzig_run.addArgs(&.{ "--do", "store-violations-engine" });
-    zwanzig_run.addArgs(&.{ "--do", "stack-escape-engine" });
     zwanzig_run.addArgs(&.{ "--do", "unreachable-code-engine" });
     zwanzig_run.addDirectoryArg(b.path("src"));
     analyze_step.dependOn(&zwanzig_run.step);

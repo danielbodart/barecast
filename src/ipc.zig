@@ -148,7 +148,7 @@ pub fn socketPair() ![2]posix.fd_t {
     var fds: [2]posix.fd_t = undefined;
     if (c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds) != 0)
         return error.SocketPairFailed;
-    return .{ fds[0], fds[1] };
+    return fds;
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
