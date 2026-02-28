@@ -14,3 +14,4 @@ worker/.wrangler/
 worker/public/viewer.js
 worker/public/install.js
 worker/public/sw.js
+.env
