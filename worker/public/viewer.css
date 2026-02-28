@@ -66,9 +66,8 @@ body.zoom video {
     opacity: 0;
 }
 
-#toggle {
+.hud-btn {
     position: fixed;
-    bottom: 12px;
     right: 12px;
     z-index: 20;
     background: rgba(0, 0, 0, 0.55);
@@ -85,9 +84,54 @@ body.zoom video {
     pointer-events: none;
 }
 
-#toggle.visible {
+.hud-btn.visible {
     opacity: 1;
     pointer-events: auto;
+}
+
+#toggle { bottom: 12px; }
+
+/* ── Stats overlay ────────────────────────────────────────────────────── */
+
+#info { top: 12px; }
+
+#stats-panel {
+    position: fixed;
+    top: 40px;
+    right: 12px;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 5px;
+    padding: 8px 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #ccc;
+    min-width: 180px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+}
+
+#stats-panel.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.stats-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.stats-label {
+    color: #666;
+}
+
+.stats-value {
+    text-align: right;
+    color: #eee;
 }
 
 /* ── Install page ─────────────────────────────────────────────────────── */

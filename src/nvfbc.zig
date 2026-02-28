@@ -319,7 +319,7 @@ pub const NvFbc = struct {
     setup_params: ToGlSetupParams,
     session_created: bool,
 
-    pub fn init(capture_box: Box) !NvFbc {
+    pub fn init(capture_box: Box, fps: u32) !NvFbc {
         var glx = GlxContext.init() catch {
             std.debug.print("NvFBC: failed to create GLX context\n", .{});
             return error.NvFbcInitFailed;
@@ -402,7 +402,7 @@ pub const NvFbc = struct {
             });
         }
 
-        // Create capture session — 33ms sampling rate = ~30fps
+        // Create capture session — sampling rate derived from fps
         // When captureBox is set, also set frameSize to match so the output
         // texture is sized to the crop region (not the full screen).
         const frame_size: Size = if (capture_box.w != 0)
@@ -410,7 +410,7 @@ pub const NvFbc = struct {
         else
             .{};
         var cap_params = CreateCaptureSessionParams{
-            .dwSamplingRateMs = 33,
+            .dwSamplingRateMs = (999 + fps) / fps,
             .captureBox = capture_box,
             .frameSize = frame_size,
         };

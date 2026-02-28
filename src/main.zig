@@ -18,15 +18,15 @@ pub fn main() void {
 
     const parsed = parseCli();
     switch (parsed.cli) {
-        .record => |r| runRecord(r.path, r.seconds, parsed.geometry),
-        .stream => |s| runStream(s.room_id, parsed.geometry),
+        .record => |r| runRecord(r.path, r.seconds, parsed.geometry, parsed.fps),
+        .stream => |s| runStream(s.room_id, parsed.geometry, parsed.fps),
     }
 }
 
 // ─── Record mode ─────────────────────────────────────────────────────────
 
-fn runRecord(output_path: []const u8, seconds: ?u32, geometry: Box) void {
-    var fbc = NvFbc.init(geometry) catch return;
+fn runRecord(output_path: []const u8, seconds: ?u32, geometry: Box, fps: u32) void {
+    var fbc = NvFbc.init(geometry, fps) catch return;
     defer fbc.deinit();
 
     const first_frame = fbc.grabFrame() catch return;
@@ -38,7 +38,7 @@ fn runRecord(output_path: []const u8, seconds: ?u32, geometry: Box) void {
         std.debug.print("IVF init failed: {}\n", .{err});
         return;
     };
-    var enc = Encoder.init(&fbc, first_frame, .{ .ivf = ivf }) catch |err| {
+    var enc = Encoder.init(&fbc, first_frame, .{ .ivf = ivf }, fps) catch |err| {
         std.debug.print("Encoder init failed: {}\n", .{err});
         return;
     };
@@ -87,10 +87,10 @@ fn runRecord(output_path: []const u8, seconds: ?u32, geometry: Box) void {
 
 // ─── Stream mode (WebRTC) ────────────────────────────────────────────────
 
-fn runStream(cli_room_id: ?[]const u8, geometry: Box) void {
+fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
     const allocator = std.heap.c_allocator;
 
-    var fbc = NvFbc.init(geometry) catch return;
+    var fbc = NvFbc.init(geometry, fps) catch return;
     defer fbc.deinit();
 
     const first_frame = fbc.grabFrame() catch return;
@@ -157,7 +157,7 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box) void {
 
     std.debug.print("Streaming. Viewers can connect at any time.\n", .{});
 
-    var enc = Encoder.init(&fbc, first_frame, .{ .session = &session }) catch |err| {
+    var enc = Encoder.init(&fbc, first_frame, .{ .session = &session }, fps) catch |err| {
         std.debug.print("Encoder init failed: {}\n", .{err});
         return;
     };
@@ -213,6 +213,7 @@ const Cli = union(enum) {
 const ParsedCli = struct {
     cli: Cli,
     geometry: Box, // zero = full screen
+    fps: u32, // capture frame rate (default 30)
 };
 
 fn parseCli() ParsedCli {
@@ -221,10 +222,25 @@ fn parseCli() ParsedCli {
 
     var room_id: ?[]const u8 = null;
     var geometry: Box = .{};
+    var fps: u32 = 30;
     var first: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--room")) {
+        if (std.mem.eql(u8, arg, "--fps")) {
+            const val = args.next() orelse {
+                std.debug.print("--fps requires a number\n", .{});
+                std.process.exit(1);
+            };
+            const n = std.fmt.parseInt(u32, val, 10) catch {
+                std.debug.print("Invalid fps '{s}': expected integer\n", .{val});
+                std.process.exit(1);
+            };
+            if (n < 1 or n > 144) {
+                std.debug.print("Invalid fps {}: must be 1-144\n", .{n});
+                std.process.exit(1);
+            }
+            fps = n;
+        } else if (std.mem.eql(u8, arg, "--room")) {
             room_id = args.next() orelse {
                 std.debug.print("--room requires a room ID argument\n", .{});
                 std.process.exit(1);
@@ -249,7 +265,7 @@ fn parseCli() ParsedCli {
     }
 
     // No positional arg → stream mode
-    if (first == null) return .{ .cli = .{ .stream = .{ .room_id = room_id } }, .geometry = geometry };
+    if (first == null) return .{ .cli = .{ .stream = .{ .room_id = room_id } }, .geometry = geometry, .fps = fps };
 
     if (std.mem.eql(u8, first.?, "--record")) {
         // Re-parse for record mode — room flag is ignored
@@ -260,7 +276,7 @@ fn parseCli() ParsedCli {
         while (args2.next()) |a| {
             if (std.mem.eql(u8, a, "--record")) {
                 path = args2.next();
-            } else if (std.mem.eql(u8, a, "--room") or std.mem.eql(u8, a, "--geometry")) {
+            } else if (std.mem.eql(u8, a, "--room") or std.mem.eql(u8, a, "--geometry") or std.mem.eql(u8, a, "--fps")) {
                 _ = args2.next(); // skip value
             } else if (path != null and seconds == null) {
                 seconds = std.fmt.parseInt(u32, a, 10) catch {
@@ -273,18 +289,19 @@ fn parseCli() ParsedCli {
             std.debug.print("Usage: zerocast --record <output.ivf> [seconds]\n", .{});
             std.process.exit(1);
         }
-        return .{ .cli = .{ .record = .{ .path = path.?, .seconds = seconds } }, .geometry = geometry };
+        return .{ .cli = .{ .record = .{ .path = path.?, .seconds = seconds } }, .geometry = geometry, .fps = fps };
     }
 
     // Legacy: bare number means record mode with default output
     if (std.fmt.parseInt(u32, first.?, 10)) |s| {
-        return .{ .cli = .{ .record = .{ .path = "output.ivf", .seconds = s } }, .geometry = geometry };
+        return .{ .cli = .{ .record = .{ .path = "output.ivf", .seconds = s } }, .geometry = geometry, .fps = fps };
     } else |_| {}
 
     std.debug.print("Usage:\n", .{});
     std.debug.print("  zerocast                                     Stream via WebRTC\n", .{});
     std.debug.print("  zerocast --room <id>                         Stream with a stable room ID\n", .{});
     std.debug.print("  zerocast --geometry WxH+X+Y                  Capture a sub-region\n", .{});
+    std.debug.print("  zerocast --fps <1-144>                       Set capture frame rate (default 30)\n", .{});
     std.debug.print("  zerocast --record output.ivf                 Record to IVF\n", .{});
     std.debug.print("  zerocast --record output.ivf 5               Record 5s to IVF\n", .{});
     std.process.exit(1);

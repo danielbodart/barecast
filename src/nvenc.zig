@@ -537,7 +537,7 @@ pub const Nvenc = struct {
     frame_idx: u64,
     buffer_format: u32,
 
-    pub fn init(cu: *const cuda.Cuda) !Nvenc {
+    pub fn init(cu: *const cuda.Cuda, fps: u32) !Nvenc {
         // dlopen libnvidia-encode
         const lib = std.c.dlopen("libnvidia-encode.so.1", .{ .LAZY = true }) orelse blk: {
             break :blk std.c.dlopen("libnvidia-encode.so", .{ .LAZY = true }) orelse {
@@ -588,14 +588,14 @@ pub const Nvenc = struct {
         var config = preset_config.presetCfg;
         config.version = structVersionHigh(8);
         config.profileGUID = profile_av1_main_guid;
-        config.gopLength = 120;
+        config.gopLength = fps * 4;
         config.frameIntervalP = 1; // no B-frames
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
         config.rcParams.constQP = .{ .qpInterP = 28, .qpInterB = 28, .qpIntra = 24 };
 
         // AV1 specific config
         const av1 = config.av1Config();
-        av1.idrPeriod = 120;
+        av1.idrPeriod = fps * 4;
         // Set bitfield_flags: repeatSeqHdr=1 (bit 5), chromaFormatIDC=1 (bits 7-8)
         av1.bitfield_flags = (av1.bitfield_flags & ~@as(u32, (1 << 5) | (0x3 << 7))) | (1 << 5) | (1 << 7);
 
@@ -608,7 +608,7 @@ pub const Nvenc = struct {
             .encodeHeight = cu.frame_height,
             .darWidth = cu.frame_width,
             .darHeight = cu.frame_height,
-            .frameRateNum = 30,
+            .frameRateNum = fps,
             .frameRateDen = 1,
             .encodeConfig = &config,
         };

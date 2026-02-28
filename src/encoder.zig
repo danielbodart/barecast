@@ -26,16 +26,18 @@ pub const Encoder = struct {
     width: u32,
     height: u32,
     keyframe_interval: u32,
+    fps: u32,
 
     pub fn init(
         fbc: *nvfbc.NvFbc,
         first_frame: nvfbc.FrameResult,
         sink: FrameSink,
+        fps: u32,
     ) !Encoder {
         var cu = try Cuda.init(first_frame.texture_id, first_frame.width, first_frame.height);
         errdefer cu.deinit();
 
-        var enc = try NvencEncoder.init(&cu);
+        var enc = try NvencEncoder.init(&cu, fps);
         errdefer enc.deinit();
 
         _ = fbc; // NvFBC reference retained for future use (e.g. texture slot management)
@@ -48,7 +50,8 @@ pub const Encoder = struct {
             .timer = try std.time.Timer.start(),
             .width = first_frame.width,
             .height = first_frame.height,
-            .keyframe_interval = 120,
+            .keyframe_interval = fps * 4,
+            .fps = fps,
         };
     }
 
@@ -96,7 +99,7 @@ pub const Encoder = struct {
             .ivf => |*ivf| try ivf.finalize(
                 @intCast(self.width),
                 @intCast(self.height),
-                1000,
+                self.fps,
                 1,
             ),
             .session => {},
