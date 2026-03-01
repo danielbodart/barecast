@@ -91,6 +91,40 @@ body.zoom video {
 
 #toggle { bottom: 12px; }
 
+/* ── Input toolbar ───────────────────────────────────────────────────── */
+
+#hud-toolbar {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#hud-toolbar .hud-btn {
+    position: static;
+}
+
+.viewer-color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #888;
+    opacity: 0;
+    transition: opacity 0.25s;
+}
+
+.viewer-color-dot.visible {
+    opacity: 1;
+}
+
+video.input-mode {
+    cursor: none;
+}
+
 /* ── Stats overlay ────────────────────────────────────────────────────── */
 
 #info { top: 12px; }

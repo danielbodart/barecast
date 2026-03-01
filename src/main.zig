@@ -8,7 +8,10 @@ const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
+const InputHandler = @import("session").InputHandler;
 const Overlay = @import("overlay").Overlay;
+const ViewerRegistry = @import("viewer_state").ViewerRegistry;
+const VirtualInput = @import("uinput").VirtualInput;
 
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -146,11 +149,30 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
     std.debug.print("\n  Room: {s}\n\n", .{share_url});
     std.debug.print("Connecting to signaling server...\n", .{});
 
+    // Viewer state registry (cursors, drawing paths, colors)
+    var viewer_registry = ViewerRegistry.init();
+
+    // Virtual input device for remote keyboard/mouse (optional, non-fatal)
+    var vinput: ?VirtualInput = VirtualInput.init(
+        if (overlay_box.w != 0) overlay_box.w else first_frame.width,
+        if (overlay_box.h != 0) overlay_box.h else first_frame.height,
+    ) catch |err| blk: {
+        std.debug.print("Virtual input init failed (non-fatal): {}\n", .{err});
+        break :blk null;
+    };
+    defer if (vinput) |*vi| vi.deinit();
+
     var session = BroadcastSession.init(signaling_url, room_id) catch |err| {
         std.debug.print("Session init failed: {}\n", .{err});
         return;
     };
     defer session.deinit();
+
+    // Wire viewer registry and input handler into session
+    session.viewer_registry = &viewer_registry;
+    if (vinput) |*vi| {
+        session.input_handler = vinputHandler(vi);
+    }
 
     // Register callbacks now that session is at its final stack location
     session.start();
@@ -175,7 +197,12 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
     // Capture loop — runs regardless of viewer count.
     // Frames are silently dropped when no viewers are connected.
     const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
+    const overlay_interval_ns: u64 = 50 * std.time.ns_per_ms; // 20 Hz
     var ping_timer = std.time.Timer.start() catch {
+        std.debug.print("Timer unavailable\n", .{});
+        return;
+    };
+    var overlay_timer = std.time.Timer.start() catch {
         std.debug.print("Timer unavailable\n", .{});
         return;
     };
@@ -186,6 +213,16 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
             ping_timer.reset();
             if (!session.sendPing()) {
                 session.reconnect();
+            }
+        }
+
+        // 20 Hz overlay redraw (cursors + drawing paths)
+        if (overlay_timer.read() >= overlay_interval_ns) {
+            overlay_timer.reset();
+            if (overlay) |*o| {
+                if (viewer_registry.hasActiveContent()) {
+                    o.redraw(&viewer_registry);
+                }
             }
         }
 
@@ -333,6 +370,37 @@ fn isValidRoomId(id: []const u8) bool {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
+
+/// Create an InputHandler that dispatches to a VirtualInput.
+fn vinputHandler(vi: *VirtualInput) InputHandler {
+    return .{
+        .ptr = @ptrCast(vi),
+        .moveFn = &struct {
+            fn f(ptr: *anyopaque, x: u16, y: u16) void {
+                const v: *VirtualInput = @alignCast(@ptrCast(ptr));
+                v.moveMouse(x, y);
+            }
+        }.f,
+        .mouseButtonFn = &struct {
+            fn f(ptr: *anyopaque, button: u8, value: i32) void {
+                const v: *VirtualInput = @alignCast(@ptrCast(ptr));
+                v.injectMouseButton(button, value);
+            }
+        }.f,
+        .scrollFn = &struct {
+            fn f(ptr: *anyopaque, delta: i16) void {
+                const v: *VirtualInput = @alignCast(@ptrCast(ptr));
+                v.injectScroll(delta);
+            }
+        }.f,
+        .keyCodeFn = &struct {
+            fn f(ptr: *anyopaque, code: []const u8, value: i32) void {
+                const v: *VirtualInput = @alignCast(@ptrCast(ptr));
+                v.injectKeyCode(code, value);
+            }
+        }.f,
+    };
+}
 
 fn generateRoomId() ![16]u8 {
     var bytes: [8]u8 = undefined;

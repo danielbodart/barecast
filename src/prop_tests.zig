@@ -2,6 +2,7 @@ const std = @import("std");
 const minish = @import("minish");
 const mgen = minish.gen;
 const protocol = @import("protocol");
+const input_protocol = @import("input_protocol");
 
 const runs = 200;
 
@@ -60,6 +61,21 @@ fn prop_default_response_is_ok(_: []const u8) !void {
     try std.testing.expectEqual(resp.num_planes, 0);
 }
 
+// ─── Input protocol property: random bytes never panic ──────────────────────
+
+fn prop_input_decode_never_panics(data: []const u8) !void {
+    // decode() should return a valid message or an error, never panic/crash
+    _ = input_protocol.decode(data) catch return;
+}
+
+fn prop_color_assign_roundtrip(data: []const u8) !void {
+    if (data.len == 0) return;
+    const color_index = data[0];
+    const encoded = input_protocol.encodeColorAssign(color_index);
+    const msg = input_protocol.decode(&encoded) catch return error.TestUnexpectedResult;
+    try std.testing.expectEqual(msg.color_assign.color_index, color_index);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -69,6 +85,8 @@ pub fn main() !void {
     try minish.check(allocator, msg_byte_gen, prop_setError_marks_err, .{ .num_runs = runs });
     try minish.check(allocator, msg_byte_gen, prop_collectFds_count, .{ .num_runs = runs });
     try minish.check(allocator, msg_byte_gen, prop_default_response_is_ok, .{ .num_runs = runs });
+    try minish.check(allocator, msg_byte_gen, prop_input_decode_never_panics, .{ .num_runs = runs });
+    try minish.check(allocator, msg_byte_gen, prop_color_assign_roundtrip, .{ .num_runs = runs });
 
     std.debug.print("All property tests passed.\n", .{});
 }

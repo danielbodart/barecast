@@ -35,14 +35,50 @@ pub fn build(b: *std.Build) void {
     nvfbc_mod.linkSystemLibrary("x11", .{});
     nvfbc_mod.linkSystemLibrary("gl", .{});
 
-    // --- Overlay module (X11 region indicator) ---
+    // --- Input protocol module (wire protocol, pure data) ---
+    const input_protocol_mod = b.createModule(.{
+        .root_source_file = b.path("src/input_protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // --- Keymap module (KeyboardEvent.code → Linux keycode) ---
+    const keymap_mod = b.createModule(.{
+        .root_source_file = b.path("src/keymap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // --- Viewer state module (per-viewer cursors, drawing paths) ---
+    const viewer_state_mod = b.createModule(.{
+        .root_source_file = b.path("src/viewer_state.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // --- uinput module (virtual keyboard + mouse) ---
+    const uinput_mod = b.createModule(.{
+        .root_source_file = b.path("src/uinput.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "keymap", .module = keymap_mod },
+        },
+    });
+
+    // --- Overlay module (X11 region indicator + Cairo drawing) ---
     const overlay_mod = b.createModule(.{
         .root_source_file = b.path("src/overlay.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "viewer_state", .module = viewer_state_mod },
+        },
     });
     overlay_mod.linkSystemLibrary("x11", .{});
+    overlay_mod.linkSystemLibrary("cairo", .{});
     overlay_mod.addImport("nvfbc", nvfbc_mod);
 
     // --- Encode pipeline modules ---
@@ -75,6 +111,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "input_protocol", .module = input_protocol_mod },
+            .{ .name = "viewer_state", .module = viewer_state_mod },
+        },
     });
     session_mod.addIncludePath(b.path("libdatachannel/include"));
 
@@ -115,6 +155,10 @@ pub fn build(b: *std.Build) void {
                 }) },
                 .{ .name = "session", .module = session_mod },
                 .{ .name = "overlay", .module = overlay_mod },
+                .{ .name = "input_protocol", .module = input_protocol_mod },
+                .{ .name = "keymap", .module = keymap_mod },
+                .{ .name = "viewer_state", .module = viewer_state_mod },
+                .{ .name = "uinput", .module = uinput_mod },
             },
         }),
     });
@@ -224,6 +268,39 @@ pub fn build(b: *std.Build) void {
     const run_ivf_tests = b.addRunArtifact(ivf_tests);
     test_step.dependOn(&run_ivf_tests.step);
 
+    // Input protocol tests (wire format decode/encode — pure data, no I/O)
+    const input_protocol_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/input_protocol.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_input_protocol_tests = b.addRunArtifact(input_protocol_tests);
+    test_step.dependOn(&run_input_protocol_tests.step);
+
+    // Keymap tests (KeyboardEvent.code → Linux keycode lookup)
+    const keymap_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/keymap.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_keymap_tests = b.addRunArtifact(keymap_tests);
+    test_step.dependOn(&run_keymap_tests.step);
+
+    // Viewer state tests (registry, cursors, drawing paths)
+    const viewer_state_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/viewer_state.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_viewer_state_tests = b.addRunArtifact(viewer_state_tests);
+    test_step.dependOn(&run_viewer_state_tests.step);
+
     // Session tests (JSON helpers, peer routing — no network/GPU needed)
     const session_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -259,6 +336,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "minish", .module = minish_dep.module("minish") },
                 .{ .name = "protocol", .module = protocol_mod },
+                .{ .name = "input_protocol", .module = input_protocol_mod },
             },
         }),
     });

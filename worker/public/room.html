@@ -14,7 +14,11 @@
 </head>
 <body class="viewer">
     <div id="status">Connecting...</div>
-    <div class="video-wrap"><video id="video" autoplay playsinline muted></video></div>
+    <div class="video-wrap"><video id="video" autoplay playsinline muted tabindex="0"></video></div>
+    <div id="hud-toolbar">
+        <span id="color-dot" class="viewer-color-dot"></span>
+        <button id="mode-btn" class="hud-btn" title="Mode: draw (Tab to toggle)">draw</button>
+    </div>
     <button id="toggle" class="hud-btn" title="Toggle zoom">1:1</button>
     <button id="info" class="hud-btn" title="Connection stats">info</button>
     <div id="stats-panel">

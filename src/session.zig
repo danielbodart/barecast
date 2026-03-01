@@ -3,6 +3,8 @@ const c = @cImport({
     @cDefine("RTC_STATIC", {});
     @cInclude("rtc/rtc.h");
 });
+const input_protocol = @import("input_protocol");
+const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 
 const log = std.log.scoped(.session);
 
@@ -24,12 +26,13 @@ pub const PeerState = enum(u8) {
 pub const Peer = struct {
     pc: c_int,
     track: c_int,
+    dc: c_int,
     peer_id: [PEER_ID_LEN]u8,
     state: std.atomic.Value(PeerState),
     force_keyframe: std.atomic.Value(bool),
     session: *BroadcastSession,
 
-    /// Initialize this peer slot in-place. Creates PC + AV1 track handles.
+    /// Initialize this peer slot in-place. Creates PC + AV1 track + data channel handles.
     /// Does NOT register callbacks — call start() after this returns.
     pub fn initInPlace(
         self: *Peer,
@@ -70,9 +73,20 @@ pub const Peer = struct {
         if (c.rtcChainRtcpSrReporter(track) < 0) return error.RtcpChainFailed;
         if (c.rtcChainRtcpNackResponder(track, 512) < 0) return error.RtcpChainFailed;
 
+        // Data channel for input/draw (unreliable + unordered — mouse moves are fire-and-forget)
+        var dc_init = std.mem.zeroes(c.rtcDataChannelInit);
+        dc_init.reliability.unordered = true;
+        dc_init.reliability.unreliable = true;
+        dc_init.reliability.maxRetransmits = 0;
+
+        const dc = c.rtcCreateDataChannelEx(pc, "input", &dc_init);
+        if (dc < 0) return error.DataChannelFailed;
+        errdefer _ = c.rtcDeleteDataChannel(dc);
+
         self.* = .{
             .pc = pc,
             .track = track,
+            .dc = dc,
             .peer_id = peer_id,
             .state = std.atomic.Value(PeerState).init(.connecting),
             .force_keyframe = std.atomic.Value(bool).init(false),
@@ -88,14 +102,21 @@ pub const Peer = struct {
         _ = c.rtcSetLocalCandidateCallback(self.pc, localCandidateCallback);
         _ = c.rtcSetStateChangeCallback(self.pc, stateChangeCallback);
         _ = c.rtcChainPliHandler(self.track, pliCallback);
+
+        // Data channel: set user pointer on DC handle and register message callback
+        c.rtcSetUserPointer(self.dc, @ptrCast(self));
+        _ = c.rtcSetOpenCallback(self.dc, dcOpenCallback);
+        _ = c.rtcSetMessageCallback(self.dc, dcMessageCallback);
     }
 
-    /// Close PC + track handles. Does NOT call rtcCleanup().
+    /// Close PC + track + DC handles. Does NOT call rtcCleanup().
     pub fn deinit(self: *Peer) void {
+        if (self.dc >= 0) _ = c.rtcDeleteDataChannel(self.dc);
         _ = c.rtcDeleteTrack(self.track);
         _ = c.rtcDeletePeerConnection(self.pc);
         self.pc = -1;
         self.track = -1;
+        self.dc = -1;
     }
 
     /// Send one encoded frame on this peer's track.
@@ -139,6 +160,73 @@ pub const Peer = struct {
         self.force_keyframe.store(true, .release);
     }
 
+    /// Data channel opened — send color assignment to viewer.
+    fn dcOpenCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self = ptrToPeer(ptr) orelse return;
+        const session = self.session;
+
+        // Register this viewer and get assigned color
+        if (session.viewer_registry) |reg| {
+            if (reg.addViewer(self.peer_id)) |color_index| {
+                log.info("viewer {s}: assigned color {d}", .{ self.peer_id, color_index });
+                const msg = input_protocol.encodeColorAssign(color_index);
+                _ = c.rtcSendMessage(self.dc, @ptrCast(&msg), @intCast(msg.len));
+            }
+        }
+    }
+
+    /// Data channel message — decode and dispatch input/draw events.
+    fn dcMessageCallback(_: c_int, raw_msg: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self = ptrToPeer(ptr) orelse return;
+
+        // Binary messages have positive size in libdatachannel C API
+        if (size <= 0) return;
+        const len: usize = @intCast(size);
+        const data: []const u8 = @as([*]const u8, @ptrCast(raw_msg))[0..len];
+
+        const msg = input_protocol.decode(data) catch return;
+
+        const session = self.session;
+        const reg = session.viewer_registry orelse return;
+        const peer_id = &self.peer_id;
+
+        switch (msg) {
+            .mouse_move => |m| {
+                reg.updateCursor(peer_id, m.x, m.y);
+                if (session.input_handler) |handler| handler.moveMouse(m.x, m.y);
+            },
+            .mouse_down => |m| {
+                reg.updateCursor(peer_id, m.x, m.y);
+                if (session.input_handler) |handler| {
+                    handler.moveMouse(m.x, m.y);
+                    handler.injectMouseButton(@intFromEnum(m.button), 1);
+                }
+            },
+            .mouse_up => |m| {
+                reg.updateCursor(peer_id, m.x, m.y);
+                if (session.input_handler) |handler| {
+                    handler.moveMouse(m.x, m.y);
+                    handler.injectMouseButton(@intFromEnum(m.button), 0);
+                }
+            },
+            .scroll => |s| {
+                if (session.input_handler) |handler| handler.injectScroll(s.delta);
+            },
+            .key_down => |k| {
+                if (session.input_handler) |handler| handler.injectKeyCode(k.code, 1);
+            },
+            .key_up => |k| {
+                if (session.input_handler) |handler| handler.injectKeyCode(k.code, 0);
+            },
+            .draw_start => |d| reg.drawStart(peer_id, d.x, d.y),
+            .draw_move => |d| reg.drawMove(peer_id, d.x, d.y),
+            .draw_end => reg.drawEnd(peer_id),
+            .draw_undo => reg.drawUndo(peer_id),
+            .draw_clear => reg.drawClear(peer_id),
+            .color_assign => {}, // host→viewer only, ignore if received
+        }
+    }
+
     fn localDescriptionCallback(_: c_int, sdp: [*c]const u8, desc_type: [*c]const u8, ptr: ?*anyopaque) callconv(.c) void {
         const self = ptrToPeer(ptr) orelse return;
         const sdp_slice = std.mem.span(sdp);
@@ -170,6 +258,32 @@ pub const Peer = struct {
 
 // ── BroadcastSession ─────────────────────────────────────────────────────
 
+/// Interface for input injection (uinput). Optional — null if /dev/uinput
+/// is not available or user hasn't opted in.
+pub const InputHandler = struct {
+    ptr: *anyopaque,
+    moveFn: *const fn (*anyopaque, u16, u16) void,
+    mouseButtonFn: *const fn (*anyopaque, u8, i32) void,
+    scrollFn: *const fn (*anyopaque, i16) void,
+    keyCodeFn: *const fn (*anyopaque, []const u8, i32) void,
+
+    pub fn moveMouse(self: InputHandler, x: u16, y: u16) void {
+        self.moveFn(self.ptr, x, y);
+    }
+
+    pub fn injectMouseButton(self: InputHandler, button: u8, value: i32) void {
+        self.mouseButtonFn(self.ptr, button, value);
+    }
+
+    pub fn injectScroll(self: InputHandler, delta: i16) void {
+        self.scrollFn(self.ptr, delta);
+    }
+
+    pub fn injectKeyCode(self: InputHandler, code: []const u8, value: i32) void {
+        self.keyCodeFn(self.ptr, code, value);
+    }
+};
+
 pub const BroadcastSession = struct {
     ws: c_int,
     peers: [MAX_PEERS]Peer,
@@ -180,6 +294,8 @@ pub const BroadcastSession = struct {
     ws_connected: std.atomic.Value(bool),
     ws_url_z: [513]u8,
     ws_url_len: usize,
+    viewer_registry: ?*ViewerRegistry,
+    input_handler: ?InputHandler,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8) !BroadcastSession {
@@ -209,12 +325,15 @@ pub const BroadcastSession = struct {
         session.ws_connected = std.atomic.Value(bool).init(false);
         session.ws_url_z = url_z;
         session.ws_url_len = ws_url.len;
+        session.viewer_registry = null;
+        session.input_handler = null;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {
             peer.state = std.atomic.Value(PeerState).init(.empty);
             peer.pc = -1;
             peer.track = -1;
+            peer.dc = -1;
         }
 
         return session;
@@ -298,6 +417,7 @@ pub const BroadcastSession = struct {
     pub fn freePeerById(self: *BroadcastSession, peer_id: []const u8) void {
         var pc: c_int = -1;
         var track: c_int = -1;
+        var dc: c_int = -1;
         var freed: ?*Peer = null;
 
         {
@@ -313,16 +433,26 @@ pub const BroadcastSession = struct {
                     peer.state.store(.closing, .release);
                     pc = peer.pc;
                     track = peer.track;
+                    dc = peer.dc;
                     peer.pc = -1;
                     peer.track = -1;
+                    peer.dc = -1;
                     freed = peer;
                     break;
                 }
             }
         }
 
+        // Remove viewer from registry (clears cursors and drawing paths)
+        if (freed) |peer| {
+            if (self.viewer_registry) |reg| {
+                reg.removeViewer(&peer.peer_id);
+            }
+        }
+
         // Close handles outside the mutex — rtcDeletePeerConnection blocks
         // until all scheduled callbacks for this PC complete
+        if (dc >= 0) _ = c.rtcDeleteDataChannel(dc);
         if (track >= 0) _ = c.rtcDeleteTrack(track);
         if (pc >= 0) _ = c.rtcDeletePeerConnection(pc);
 
@@ -351,6 +481,7 @@ pub const BroadcastSession = struct {
         // Collect handles under mutex, mark slots closing
         var pcs: [MAX_PEERS]c_int = .{-1} ** MAX_PEERS;
         var tracks: [MAX_PEERS]c_int = .{-1} ** MAX_PEERS;
+        var dcs: [MAX_PEERS]c_int = .{-1} ** MAX_PEERS;
         {
             self.peers_mutex.lock();
             defer self.peers_mutex.unlock();
@@ -359,8 +490,10 @@ pub const BroadcastSession = struct {
                     peer.state.store(.closing, .release);
                     pcs[i] = peer.pc;
                     tracks[i] = peer.track;
+                    dcs[i] = peer.dc;
                     peer.pc = -1;
                     peer.track = -1;
+                    peer.dc = -1;
                 }
             }
         }
@@ -368,6 +501,7 @@ pub const BroadcastSession = struct {
         // Close handles outside mutex — rtcDeletePeerConnection blocks until
         // callbacks complete, and callbacks may try to acquire peers_mutex
         for (0..MAX_PEERS) |i| {
+            if (dcs[i] >= 0) _ = c.rtcDeleteDataChannel(dcs[i]);
             if (tracks[i] >= 0) _ = c.rtcDeleteTrack(tracks[i]);
             if (pcs[i] >= 0) _ = c.rtcDeletePeerConnection(pcs[i]);
         }

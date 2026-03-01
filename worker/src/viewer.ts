@@ -1,8 +1,12 @@
+import { InputController, VIEWER_COLORS, type ViewerMode } from "./input";
+
 const video = document.getElementById("video") as HTMLVideoElement;
 const status = document.getElementById("status")!;
 const toggle = document.getElementById("toggle")!;
 const info = document.getElementById("info")!;
 const statsPanel = document.getElementById("stats-panel")!;
+const modeBtn = document.getElementById("mode-btn") as HTMLButtonElement | null;
+const colorDot = document.getElementById("color-dot") as HTMLElement | null;
 
 // Extract room ID from pathname: /room/:id
 const pattern = new URLPattern({ pathname: "/room/:id" });
@@ -25,6 +29,7 @@ if (!roomId) {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let streamSized = false;
     let isZoom = false;
+    let inputCtrl: InputController | null = null;
     let iceServers: RTCIceServer[] = [
         { urls: "stun:stun.cloudflare.com:3478" },
     ];
@@ -171,6 +176,18 @@ if (!roomId) {
         status.classList.remove("hidden");
     }
 
+    function updateModeUI(mode: ViewerMode) {
+        if (modeBtn) {
+            modeBtn.textContent = mode === "draw" ? "draw" : "input";
+            modeBtn.title = `Mode: ${mode} (Tab to toggle)`;
+        }
+        if (mode === "input") {
+            video.classList.add("input-mode");
+        } else {
+            video.classList.remove("input-mode");
+        }
+    }
+
     // ── Zoom toggle ───────────────────────────────────────────────────
 
     toggle.addEventListener("click", () => {
@@ -183,6 +200,14 @@ if (!roomId) {
             toggle.textContent = "1:1";
         }
     });
+
+    // ── Mode toggle ───────────────────────────────────────────────────
+
+    if (modeBtn) {
+        modeBtn.addEventListener("click", () => {
+            inputCtrl?.toggleMode();
+        });
+    }
 
     // ── Stats toggle ────────────────────────────────────────────────
 
@@ -280,6 +305,10 @@ if (!roomId) {
             } else if (msg.type === "sharer-left") {
                 stopStatsPolling();
                 hideStatsPanel();
+                if (inputCtrl) {
+                    inputCtrl.destroy();
+                    inputCtrl = null;
+                }
                 setStatus("Waiting for sharer...");
                 if (pc) {
                     pc.close();
@@ -292,6 +321,10 @@ if (!roomId) {
     function scheduleReconnect() {
         stopStatsPolling();
         hideStatsPanel();
+        if (inputCtrl) {
+            inputCtrl.destroy();
+            inputCtrl = null;
+        }
         if (pc) {
             pc.close();
             pc = null;
@@ -319,6 +352,26 @@ if (!roomId) {
             video.srcObject =
                 event.streams[0] || new MediaStream([event.track]);
             video.play().catch(() => {});
+        };
+
+        // Data channel for input/draw — created by host, received here
+        pc.ondatachannel = (event) => {
+            const dc = event.channel;
+            if (dc.label !== "input") return;
+
+            if (inputCtrl) inputCtrl.destroy();
+            inputCtrl = new InputController(dc, video, {
+                onModeChange: (mode) => updateModeUI(mode),
+                onColorAssign: (index) => {
+                    if (colorDot) {
+                        colorDot.style.background =
+                            VIEWER_COLORS[index % VIEWER_COLORS.length];
+                        colorDot.classList.add("visible");
+                    }
+                },
+            });
+            if (modeBtn) modeBtn.classList.add("visible");
+            updateModeUI("draw");
         };
 
         pc.onicecandidate = (event) => {
