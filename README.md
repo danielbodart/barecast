@@ -3,7 +3,7 @@
 Highly opinionated screen sharing for developers.
 
 - **Zero CPU copy** — Pixels never leave the GPU. Screen capture, layout conversion, color conversion, and AV1 encode all happen on GPU hardware. The CPU only sees the encoded bitstream. CPU usage near 0%.
-- **Zero audio, zero webcam** — Screen only. This is a pair programming tool, not a video call. Use your existing voice chat.
+- **Zero audio, zero webcam** — Screen only. This is a collaboration tool, not a video call. Use your existing voice chat.
 - **Zero legacy hardware** — Requires AV1 hardware encode (NVIDIA RTX 40-series+ or Apple M3+) to share. Requires AV1 hardware decode (most GPUs from 2020+, Apple M1+) to view. No software fallback.
 - **Zero install for viewers** — Open a URL, see the screen. PWA for a near-borderless window. No native app needed, no extension, no plugin.
 - **Zero shaders** — NvFBC gives us a GPU texture. CUDA copies it to linear device memory, then NVENC encodes it with internal ARGB→NV12 color space conversion. No CPU pixel processing, no GL shaders, no compute passes.
