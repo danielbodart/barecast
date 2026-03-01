@@ -318,6 +318,7 @@ pub const NvFbc = struct {
     glx: GlxContext,
     setup_params: ToGlSetupParams,
     session_created: bool,
+    screen_size: Size,
 
     pub fn init(capture_box: Box, fps: u32) !NvFbc {
         var glx = GlxContext.init() catch {
@@ -448,6 +449,7 @@ pub const NvFbc = struct {
             .glx = glx,
             .setup_params = setup_params,
             .session_created = true,
+            .screen_size = status_params.screenSize,
         };
     }
 

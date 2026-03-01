@@ -153,9 +153,13 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
     var viewer_registry = ViewerRegistry.init();
 
     // Virtual input device for remote keyboard/mouse (optional, non-fatal)
+    // ABS range must match full screen so libinput maps coordinates correctly.
+    // Geometry offset translates capture-region coords to screen coords.
     var vinput: ?VirtualInput = VirtualInput.init(
-        if (overlay_box.w != 0) overlay_box.w else first_frame.width,
-        if (overlay_box.h != 0) overlay_box.h else first_frame.height,
+        fbc.screen_size.w,
+        fbc.screen_size.h,
+        @intCast(geometry.x),
+        @intCast(geometry.y),
     ) catch |err| blk: {
         std.debug.print("Virtual input init failed (non-fatal): {}\n", .{err});
         break :blk null;

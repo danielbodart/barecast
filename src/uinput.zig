@@ -39,8 +39,8 @@ const IOC_WRITE: u32 = 1;
 
 const UI_SET_EVBIT = _ioc(IOC_WRITE, 'U', 100, @sizeOf(c_int));
 const UI_SET_KEYBIT = _ioc(IOC_WRITE, 'U', 101, @sizeOf(c_int));
-const UI_SET_RELBIT = _ioc(IOC_WRITE, 'U', 103, @sizeOf(c_int));
-const UI_SET_ABSBIT = _ioc(IOC_WRITE, 'U', 104, @sizeOf(c_int));
+const UI_SET_RELBIT = _ioc(IOC_WRITE, 'U', 102, @sizeOf(c_int));
+const UI_SET_ABSBIT = _ioc(IOC_WRITE, 'U', 103, @sizeOf(c_int));
 const UI_SET_PROPBIT = _ioc(IOC_WRITE, 'U', 110, @sizeOf(c_int));
 const UI_DEV_SETUP = _ioc(IOC_WRITE, 'U', 3, @sizeOf(UinputSetup));
 const UI_DEV_CREATE = _ioc(IOC_NONE, 'U', 1, 0);
@@ -100,11 +100,15 @@ fn doIoctl(fd: posix.fd_t, request: u32, arg: usize) !void {
 
 /// Virtual keyboard + absolute mouse via Linux uinput.
 /// EV_ABS with ABS_MAX = screen_res - 1 and INPUT_PROP_DIRECT
-/// to get correct coordinate mapping (avoids Sunshine calibration bug).
+/// so libinput maps device coordinates 1:1 to screen pixels.
+/// When capturing a sub-region (--geometry), x_offset/y_offset translate
+/// capture-region coordinates to full-screen coordinates.
 pub const VirtualInput = struct {
     fd: posix.fd_t,
+    x_offset: u16,
+    y_offset: u16,
 
-    pub fn init(screen_width: u32, screen_height: u32) !VirtualInput {
+    pub fn init(screen_width: u32, screen_height: u32, x_offset: u16, y_offset: u16) !VirtualInput {
         const fd = posix.open("/dev/uinput", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch |err| {
             log.warn("cannot open /dev/uinput: {} (is user in 'input' group?)", .{err});
             return error.UinputUnavailable;
@@ -117,33 +121,39 @@ pub const VirtualInput = struct {
         try doIoctl(fd, UI_SET_EVBIT, EV_ABS);
         try doIoctl(fd, UI_SET_EVBIT, EV_REL);
 
-        // Register all keyboard keys
+        // Register keyboard keys (0-255 only). Registering up to KEY_MAX (0x2FF)
+        // would include BTN_TOOL_PEN (0x140) and similar codes that cause libinput
+        // to classify the device as a tablet, which requires capabilities we don't have.
         var key_code: u32 = 0;
-        while (key_code <= KEY_MAX) : (key_code += 1) {
+        while (key_code <= 255) : (key_code += 1) {
             try doIoctl(fd, UI_SET_KEYBIT, key_code);
         }
 
-        // Mouse buttons
+        // Mouse buttons (in the BTN_MOUSE range, safe for pointer classification)
         try doIoctl(fd, UI_SET_KEYBIT, BTN_LEFT);
         try doIoctl(fd, UI_SET_KEYBIT, BTN_RIGHT);
         try doIoctl(fd, UI_SET_KEYBIT, BTN_MIDDLE);
 
-        // Absolute axes (touchscreen-style direct mapping)
+        // Absolute axes
         try doIoctl(fd, UI_SET_ABSBIT, ABS_X);
         try doIoctl(fd, UI_SET_ABSBIT, ABS_Y);
 
         // Scroll (relative)
         try doIoctl(fd, UI_SET_RELBIT, REL_WHEEL);
 
-        // INPUT_PROP_DIRECT — tells the kernel this is a direct input device
-        // (like a touchscreen), so coordinates map 1:1 to screen pixels
-        try doIoctl(fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
+        // Note: INPUT_PROP_DIRECT is intentionally NOT set. Setting it causes
+        // udev to tag the device as "Tablet", which requires capabilities
+        // (stylus pressure, tilt) that we don't have. Without it, libinput
+        // treats this as a standard absolute pointer. X11/libinput maps the
+        // ABS range to the screen automatically.
 
-        // Configure absolute axes with screen resolution
+        // Configure absolute axes with screen resolution.
+        // Resolution must be non-zero for libinput to accept the device.
         var abs_x = UinputAbsSetup{
             .code = ABS_X,
             .minimum = 0,
             .maximum = @intCast(screen_width - 1),
+            .resolution = 4, // ~units per mm (approximate, libinput requires non-zero)
         };
         try doIoctl(fd, UI_ABS_SETUP, @intFromPtr(&abs_x));
 
@@ -151,6 +161,7 @@ pub const VirtualInput = struct {
             .code = ABS_Y,
             .minimum = 0,
             .maximum = @intCast(screen_height - 1),
+            .resolution = 4,
         };
         try doIoctl(fd, UI_ABS_SETUP, @intFromPtr(&abs_y));
 
@@ -168,8 +179,8 @@ pub const VirtualInput = struct {
         try doIoctl(fd, UI_DEV_SETUP, @intFromPtr(&setup));
         try doIoctl(fd, UI_DEV_CREATE, 0);
 
-        log.info("virtual input device created ({d}x{d})", .{ screen_width, screen_height });
-        return .{ .fd = fd };
+        log.info("virtual input device created ({d}x{d}, offset +{d}+{d})", .{ screen_width, screen_height, x_offset, y_offset });
+        return .{ .fd = fd, .x_offset = x_offset, .y_offset = y_offset };
     }
 
     pub fn deinit(self: *VirtualInput) void {
@@ -190,10 +201,10 @@ pub const VirtualInput = struct {
         }
     }
 
-    /// Move mouse to absolute coordinates.
+    /// Move mouse to absolute screen coordinates (applies geometry offset).
     pub fn moveMouse(self: *VirtualInput, x: u16, y: u16) void {
-        self.writeEvent(EV_ABS, ABS_X, @intCast(x));
-        self.writeEvent(EV_ABS, ABS_Y, @intCast(y));
+        self.writeEvent(EV_ABS, ABS_X, @as(i32, x) + self.x_offset);
+        self.writeEvent(EV_ABS, ABS_Y, @as(i32, y) + self.y_offset);
         self.writeEvent(EV_SYN, SYN_REPORT, 0);
     }
 
@@ -233,9 +244,15 @@ pub const VirtualInput = struct {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-test "ioctl constants computed correctly" {
+test "ioctl constants match linux/uinput.h" {
     // UI_SET_EVBIT: _IOW('U', 100, int) = direction=1, type='U', nr=100, size=4
     try std.testing.expectEqual(UI_SET_EVBIT, (1 << 30) | (@as(u32, 'U') << 8) | 100 | (4 << 16));
+    // UI_SET_KEYBIT: _IOW('U', 101, int)
+    try std.testing.expectEqual(UI_SET_KEYBIT, (1 << 30) | (@as(u32, 'U') << 8) | 101 | (4 << 16));
+    // UI_SET_RELBIT: _IOW('U', 102, int)
+    try std.testing.expectEqual(UI_SET_RELBIT, (1 << 30) | (@as(u32, 'U') << 8) | 102 | (4 << 16));
+    // UI_SET_ABSBIT: _IOW('U', 103, int)
+    try std.testing.expectEqual(UI_SET_ABSBIT, (1 << 30) | (@as(u32, 'U') << 8) | 103 | (4 << 16));
     try std.testing.expectEqual(UI_DEV_CREATE, (@as(u32, 'U') << 8) | 1);
     try std.testing.expectEqual(UI_DEV_DESTROY, (@as(u32, 'U') << 8) | 2);
 }
