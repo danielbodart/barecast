@@ -22,8 +22,6 @@ const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
 
-const KEY_MAX: u32 = 0x2FF;
-
 const BUS_VIRTUAL: u16 = 0x06;
 
 const INPUT_PROP_DIRECT: u32 = 0x01;
@@ -98,64 +96,55 @@ fn doIoctl(fd: posix.fd_t, request: u32, arg: usize) !void {
 
 // ── VirtualInput ─────────────────────────────────────────────────────────
 
-/// Virtual keyboard + absolute mouse via Linux uinput.
-/// EV_ABS with ABS_MAX = screen_res - 1 and INPUT_PROP_DIRECT
-/// so libinput maps device coordinates 1:1 to screen pixels.
+/// Virtual keyboard + absolute pointer via Linux uinput.
+/// Two separate devices to avoid libinput classification conflicts:
+/// - Pointer: EV_ABS + INPUT_PROP_DIRECT + BTN_LEFT/RIGHT/MIDDLE + REL_WHEEL
+///   (no keyboard keys → avoids tablet classification)
+/// - Keyboard: EV_KEY only (standard keyboard keycodes)
 /// When capturing a sub-region (--geometry), x_offset/y_offset translate
 /// capture-region coordinates to full-screen coordinates.
 pub const VirtualInput = struct {
-    fd: posix.fd_t,
+    pointer_fd: posix.fd_t,
+    keyboard_fd: posix.fd_t,
     x_offset: u16,
     y_offset: u16,
 
     pub fn init(screen_width: u32, screen_height: u32, x_offset: u16, y_offset: u16) !VirtualInput {
-        const fd = posix.open("/dev/uinput", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch |err| {
+        // ── Pointer device: absolute mouse + scroll ──────────────────
+        const ptr_fd = posix.open("/dev/uinput", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch |err| {
             log.warn("cannot open /dev/uinput: {} (is user in 'input' group?)", .{err});
             return error.UinputUnavailable;
         };
-        errdefer posix.close(fd);
+        errdefer posix.close(ptr_fd);
 
-        // Register event types
-        try doIoctl(fd, UI_SET_EVBIT, EV_SYN);
-        try doIoctl(fd, UI_SET_EVBIT, EV_KEY);
-        try doIoctl(fd, UI_SET_EVBIT, EV_ABS);
-        try doIoctl(fd, UI_SET_EVBIT, EV_REL);
+        try doIoctl(ptr_fd, UI_SET_EVBIT, EV_SYN);
+        try doIoctl(ptr_fd, UI_SET_EVBIT, EV_KEY);
+        try doIoctl(ptr_fd, UI_SET_EVBIT, EV_ABS);
+        try doIoctl(ptr_fd, UI_SET_EVBIT, EV_REL);
 
-        // Register keyboard keys (0-255 only). Registering up to KEY_MAX (0x2FF)
-        // would include BTN_TOOL_PEN (0x140) and similar codes that cause libinput
-        // to classify the device as a tablet, which requires capabilities we don't have.
-        var key_code: u32 = 0;
-        while (key_code <= 255) : (key_code += 1) {
-            try doIoctl(fd, UI_SET_KEYBIT, key_code);
-        }
+        // Only mouse buttons — no keyboard keys, so libinput won't
+        // classify this as a tablet or keyboard
+        try doIoctl(ptr_fd, UI_SET_KEYBIT, BTN_LEFT);
+        try doIoctl(ptr_fd, UI_SET_KEYBIT, BTN_RIGHT);
+        try doIoctl(ptr_fd, UI_SET_KEYBIT, BTN_MIDDLE);
 
-        // Mouse buttons (in the BTN_MOUSE range, safe for pointer classification)
-        try doIoctl(fd, UI_SET_KEYBIT, BTN_LEFT);
-        try doIoctl(fd, UI_SET_KEYBIT, BTN_RIGHT);
-        try doIoctl(fd, UI_SET_KEYBIT, BTN_MIDDLE);
+        try doIoctl(ptr_fd, UI_SET_ABSBIT, ABS_X);
+        try doIoctl(ptr_fd, UI_SET_ABSBIT, ABS_Y);
+        try doIoctl(ptr_fd, UI_SET_RELBIT, REL_WHEEL);
 
-        // Absolute axes
-        try doIoctl(fd, UI_SET_ABSBIT, ABS_X);
-        try doIoctl(fd, UI_SET_ABSBIT, ABS_Y);
+        // INPUT_PROP_DIRECT: coordinates map 1:1 to screen pixels.
+        // Safe here because without keyboard keys, udev classifies this
+        // as a touchscreen/pointer, not a tablet.
+        try doIoctl(ptr_fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
-        // Scroll (relative)
-        try doIoctl(fd, UI_SET_RELBIT, REL_WHEEL);
-
-        // Note: INPUT_PROP_DIRECT is intentionally NOT set. Setting it causes
-        // udev to tag the device as "Tablet", which requires capabilities
-        // (stylus pressure, tilt) that we don't have. Without it, libinput
-        // treats this as a standard absolute pointer. X11/libinput maps the
-        // ABS range to the screen automatically.
-
-        // Configure absolute axes with screen resolution.
-        // Resolution must be non-zero for libinput to accept the device.
+        // ABS ranges match full screen resolution
         var abs_x = UinputAbsSetup{
             .code = ABS_X,
             .minimum = 0,
             .maximum = @intCast(screen_width - 1),
-            .resolution = 4, // ~units per mm (approximate, libinput requires non-zero)
+            .resolution = 4,
         };
-        try doIoctl(fd, UI_ABS_SETUP, @intFromPtr(&abs_x));
+        try doIoctl(ptr_fd, UI_ABS_SETUP, @intFromPtr(&abs_x));
 
         var abs_y = UinputAbsSetup{
             .code = ABS_Y,
@@ -163,35 +152,52 @@ pub const VirtualInput = struct {
             .maximum = @intCast(screen_height - 1),
             .resolution = 4,
         };
-        try doIoctl(fd, UI_ABS_SETUP, @intFromPtr(&abs_y));
+        try doIoctl(ptr_fd, UI_ABS_SETUP, @intFromPtr(&abs_y));
 
-        // Device metadata
-        var setup = std.mem.zeroes(UinputSetup);
-        setup.id = .{
-            .bustype = BUS_VIRTUAL,
-            .vendor = 0x0CA5,
-            .product = 0x0001,
-            .version = 1,
+        var ptr_setup = std.mem.zeroes(UinputSetup);
+        ptr_setup.id = .{ .bustype = BUS_VIRTUAL, .vendor = 0x0CA5, .product = 0x0001, .version = 1 };
+        const ptr_name = "zerocast-pointer";
+        @memcpy(ptr_setup.name[0..ptr_name.len], ptr_name);
+        try doIoctl(ptr_fd, UI_DEV_SETUP, @intFromPtr(&ptr_setup));
+        try doIoctl(ptr_fd, UI_DEV_CREATE, 0);
+
+        // ── Keyboard device: keys only ───────────────────────────────
+        const kbd_fd = posix.open("/dev/uinput", .{ .ACCMODE = .WRONLY, .CLOEXEC = true }, 0) catch |err| {
+            log.warn("cannot open /dev/uinput for keyboard: {}", .{err});
+            return error.UinputUnavailable;
         };
-        const name = "zerocast-input";
-        @memcpy(setup.name[0..name.len], name);
+        errdefer posix.close(kbd_fd);
 
-        try doIoctl(fd, UI_DEV_SETUP, @intFromPtr(&setup));
-        try doIoctl(fd, UI_DEV_CREATE, 0);
+        try doIoctl(kbd_fd, UI_SET_EVBIT, EV_SYN);
+        try doIoctl(kbd_fd, UI_SET_EVBIT, EV_KEY);
 
-        log.info("virtual input device created ({d}x{d}, offset +{d}+{d})", .{ screen_width, screen_height, x_offset, y_offset });
-        return .{ .fd = fd, .x_offset = x_offset, .y_offset = y_offset };
+        var key_code: u32 = 0;
+        while (key_code <= 255) : (key_code += 1) {
+            try doIoctl(kbd_fd, UI_SET_KEYBIT, key_code);
+        }
+
+        var kbd_setup = std.mem.zeroes(UinputSetup);
+        kbd_setup.id = .{ .bustype = BUS_VIRTUAL, .vendor = 0x0CA5, .product = 0x0002, .version = 1 };
+        const kbd_name = "zerocast-keyboard";
+        @memcpy(kbd_setup.name[0..kbd_name.len], kbd_name);
+        try doIoctl(kbd_fd, UI_DEV_SETUP, @intFromPtr(&kbd_setup));
+        try doIoctl(kbd_fd, UI_DEV_CREATE, 0);
+
+        log.info("virtual input: pointer ({d}x{d}, offset +{d}+{d}) + keyboard", .{ screen_width, screen_height, x_offset, y_offset });
+        return .{ .pointer_fd = ptr_fd, .keyboard_fd = kbd_fd, .x_offset = x_offset, .y_offset = y_offset };
     }
 
     pub fn deinit(self: *VirtualInput) void {
-        doIoctl(self.fd, UI_DEV_DESTROY, 0) catch {};
-        posix.close(self.fd);
+        doIoctl(self.pointer_fd, UI_DEV_DESTROY, 0) catch {};
+        posix.close(self.pointer_fd);
+        doIoctl(self.keyboard_fd, UI_DEV_DESTROY, 0) catch {};
+        posix.close(self.keyboard_fd);
     }
 
     /// Inject a key press or release. `value`: 1=down, 0=up.
     pub fn injectKey(self: *VirtualInput, linux_keycode: u16, value: i32) void {
-        self.writeEvent(EV_KEY, linux_keycode, value);
-        self.writeEvent(EV_SYN, SYN_REPORT, 0);
+        self.writeKbd(EV_KEY, linux_keycode, value);
+        self.writeKbd(EV_SYN, SYN_REPORT, 0);
     }
 
     /// Inject a key event from a KeyboardEvent.code string.
@@ -203,9 +209,9 @@ pub const VirtualInput = struct {
 
     /// Move mouse to absolute screen coordinates (applies geometry offset).
     pub fn moveMouse(self: *VirtualInput, x: u16, y: u16) void {
-        self.writeEvent(EV_ABS, ABS_X, @as(i32, x) + self.x_offset);
-        self.writeEvent(EV_ABS, ABS_Y, @as(i32, y) + self.y_offset);
-        self.writeEvent(EV_SYN, SYN_REPORT, 0);
+        self.writePtr(EV_ABS, ABS_X, @as(i32, x) + self.x_offset);
+        self.writePtr(EV_ABS, ABS_Y, @as(i32, y) + self.y_offset);
+        self.writePtr(EV_SYN, SYN_REPORT, 0);
     }
 
     /// Inject a mouse button press or release.
@@ -216,21 +222,28 @@ pub const VirtualInput = struct {
             2 => BTN_MIDDLE,
             else => return,
         };
-        self.writeEvent(EV_KEY, btn, value);
-        self.writeEvent(EV_SYN, SYN_REPORT, 0);
+        self.writePtr(EV_KEY, btn, value);
+        self.writePtr(EV_SYN, SYN_REPORT, 0);
     }
 
     /// Inject scroll event.
     pub fn injectScroll(self: *VirtualInput, delta: i16) void {
-        // Normalize to discrete steps — browser sends delta in pixels (120 = 1 notch)
         const steps: i32 = @divTrunc(@as(i32, delta), 120);
         if (steps != 0) {
-            self.writeEvent(EV_REL, REL_WHEEL, steps);
-            self.writeEvent(EV_SYN, SYN_REPORT, 0);
+            self.writePtr(EV_REL, REL_WHEEL, steps);
+            self.writePtr(EV_SYN, SYN_REPORT, 0);
         }
     }
 
-    fn writeEvent(self: *VirtualInput, ev_type: u16, code: u16, value: i32) void {
+    fn writePtr(self: *VirtualInput, ev_type: u16, code: u16, value: i32) void {
+        writeEvent(self.pointer_fd, ev_type, code, value);
+    }
+
+    fn writeKbd(self: *VirtualInput, ev_type: u16, code: u16, value: i32) void {
+        writeEvent(self.keyboard_fd, ev_type, code, value);
+    }
+
+    fn writeEvent(fd: posix.fd_t, ev_type: u16, code: u16, value: i32) void {
         const event = InputEvent{
             .tv_sec = 0,
             .tv_usec = 0,
@@ -238,7 +251,7 @@ pub const VirtualInput = struct {
             .code = code,
             .value = value,
         };
-        _ = posix.write(self.fd, std.mem.asBytes(&event)) catch {};
+        _ = posix.write(fd, std.mem.asBytes(&event)) catch {};
     }
 };
 

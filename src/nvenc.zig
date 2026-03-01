@@ -234,7 +234,7 @@ const MeHintCounts = extern struct {
 const InitializeParams = extern struct {
     version: u32 = structVersionHigh(5),
     encodeGUID: Guid = codec_av1_guid,
-    presetGUID: Guid = preset_p5_guid,
+    presetGUID: Guid = preset_p4_guid,
     encodeWidth: u32,
     encodeHeight: u32,
     darWidth: u32,
@@ -583,7 +583,7 @@ pub const Nvenc = struct {
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
-        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p5_guid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset_config);
+        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset_config);
         if (status != .success) {
             logNvencError(&fns, encoder_handle, "nvEncGetEncodePresetConfigEx", status);
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
