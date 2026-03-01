@@ -32,8 +32,9 @@ pub const Peer = struct {
     force_keyframe: std.atomic.Value(bool),
     session: *BroadcastSession,
 
-    /// Initialize this peer slot in-place. Creates PC + AV1 track + data channel handles.
-    /// Does NOT register callbacks — call start() after this returns.
+    /// Initialize this peer slot in-place. Creates only the PC handle.
+    /// Track and data channel are created in start() after callbacks are registered,
+    /// because they trigger auto-negotiation which needs the localDescriptionCallback.
     pub fn initInPlace(
         self: *Peer,
         session: *BroadcastSession,
@@ -41,7 +42,25 @@ pub const Peer = struct {
     ) !void {
         const pc = c.rtcCreatePeerConnection(&session.pc_config);
         if (pc < 0) return error.PeerConnectionFailed;
-        errdefer _ = c.rtcDeletePeerConnection(pc);
+
+        self.* = .{
+            .pc = pc,
+            .track = -1,
+            .dc = -1,
+            .peer_id = peer_id,
+            .state = std.atomic.Value(PeerState).init(.connecting),
+            .force_keyframe = std.atomic.Value(bool).init(false),
+            .session = session,
+        };
+    }
+
+    /// Register callbacks, add AV1 track + data channel, and generate offer.
+    /// MUST be called after initInPlace, once Peer is at its final memory location.
+    pub fn start(self: *Peer) void {
+        c.rtcSetUserPointer(self.pc, @ptrCast(self));
+        _ = c.rtcSetLocalDescriptionCallback(self.pc, localDescriptionCallback);
+        _ = c.rtcSetLocalCandidateCallback(self.pc, localCandidateCallback);
+        _ = c.rtcSetStateChangeCallback(self.pc, stateChangeCallback);
 
         // Add sendonly AV1 track
         var track_init = std.mem.zeroes(c.rtcTrackInit);
@@ -54,59 +73,48 @@ pub const Peer = struct {
         track_init.msid = "zerocast";
         track_init.trackId = "video";
 
-        const track = c.rtcAddTrackEx(pc, &track_init);
-        if (track < 0) return error.AddTrackFailed;
-        errdefer _ = c.rtcDeleteTrack(track);
+        const track = c.rtcAddTrackEx(self.pc, &track_init);
+        if (track >= 0) {
+            self.track = track;
 
-        // AV1 packetizer
-        var pkt_init = std.mem.zeroes(c.rtcPacketizerInit);
-        pkt_init.ssrc = 1;
-        pkt_init.cname = "zerocast";
-        pkt_init.payloadType = 96;
-        pkt_init.clockRate = 90000;
-        pkt_init.maxFragmentSize = 1200;
-        pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
+            // AV1 packetizer
+            var pkt_init = std.mem.zeroes(c.rtcPacketizerInit);
+            pkt_init.ssrc = 1;
+            pkt_init.cname = "zerocast";
+            pkt_init.payloadType = 96;
+            pkt_init.clockRate = 90000;
+            pkt_init.maxFragmentSize = 1200;
+            pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
+            _ = c.rtcSetAV1Packetizer(track, &pkt_init);
 
-        if (c.rtcSetAV1Packetizer(track, &pkt_init) < 0) return error.PacketizerFailed;
+            // RTCP chain
+            _ = c.rtcChainRtcpSrReporter(track);
+            _ = c.rtcChainRtcpNackResponder(track, 512);
+            _ = c.rtcChainPliHandler(track, pliCallback);
+        } else {
+            log.warn("track creation failed: {d}", .{track});
+        }
 
-        // RTCP chain
-        if (c.rtcChainRtcpSrReporter(track) < 0) return error.RtcpChainFailed;
-        if (c.rtcChainRtcpNackResponder(track, 512) < 0) return error.RtcpChainFailed;
-
-        // Data channel for input/draw (unreliable + unordered — mouse moves are fire-and-forget)
+        // Data channel for input/draw (unreliable + unordered)
         var dc_init = std.mem.zeroes(c.rtcDataChannelInit);
         dc_init.reliability.unordered = true;
         dc_init.reliability.unreliable = true;
         dc_init.reliability.maxRetransmits = 0;
 
-        const dc = c.rtcCreateDataChannelEx(pc, "input", &dc_init);
-        if (dc < 0) return error.DataChannelFailed;
-        errdefer _ = c.rtcDeleteDataChannel(dc);
+        const dc = c.rtcCreateDataChannelEx(self.pc, "input", &dc_init);
+        if (dc >= 0) {
+            self.dc = dc;
+            c.rtcSetUserPointer(dc, @ptrCast(self));
+            _ = c.rtcSetOpenCallback(dc, dcOpenCallback);
+            _ = c.rtcSetMessageCallback(dc, dcMessageCallback);
+        } else {
+            log.warn("data channel creation failed: {d}", .{dc});
+        }
 
-        self.* = .{
-            .pc = pc,
-            .track = track,
-            .dc = dc,
-            .peer_id = peer_id,
-            .state = std.atomic.Value(PeerState).init(.connecting),
-            .force_keyframe = std.atomic.Value(bool).init(false),
-            .session = session,
-        };
-    }
-
-    /// Register callbacks. MUST be called after initInPlace, once the Peer is
-    /// at its final memory location.
-    pub fn start(self: *Peer) void {
-        c.rtcSetUserPointer(self.pc, @ptrCast(self));
-        _ = c.rtcSetLocalDescriptionCallback(self.pc, localDescriptionCallback);
-        _ = c.rtcSetLocalCandidateCallback(self.pc, localCandidateCallback);
-        _ = c.rtcSetStateChangeCallback(self.pc, stateChangeCallback);
-        _ = c.rtcChainPliHandler(self.track, pliCallback);
-
-        // Data channel: set user pointer on DC handle and register message callback
-        c.rtcSetUserPointer(self.dc, @ptrCast(self));
-        _ = c.rtcSetOpenCallback(self.dc, dcOpenCallback);
-        _ = c.rtcSetMessageCallback(self.dc, dcMessageCallback);
+        // Generate offer explicitly — auto-negotiation is disabled, so
+        // rtcAddTrackEx/rtcCreateDataChannelEx didn't trigger one.
+        // This produces the final SDP with both the AV1 track and input data channel.
+        _ = c.rtcSetLocalDescription(self.pc, "offer");
     }
 
     /// Close PC + track + DC handles. Does NOT call rtcCleanup().
@@ -322,6 +330,7 @@ pub const BroadcastSession = struct {
         session.pc_config = std.mem.zeroes(c.rtcConfiguration);
         session.pc_config.iceServers = &session.ice_servers;
         session.pc_config.iceServersCount = 1;
+        session.pc_config.disableAutoNegotiation = true;
         session.ws_connected = std.atomic.Value(bool).init(false);
         session.ws_url_z = url_z;
         session.ws_url_len = ws_url.len;
@@ -614,8 +623,9 @@ pub const BroadcastSession = struct {
 
             const peer = self.allocPeer(peer_id);
             if (peer) |p| {
+                // start() registers callbacks then creates data channel,
+                // which triggers offer generation via localDescriptionCallback
                 p.start();
-                _ = c.rtcSetLocalDescription(p.pc, "offer");
             }
         } else if (std.mem.eql(u8, msg_type, "viewer-left")) {
             const peer_id_str = jsonExtract(msg, "peer_id") orelse return;
