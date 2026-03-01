@@ -25,7 +25,6 @@ pub const Encoder = struct {
     timer: std.time.Timer,
     width: u32,
     height: u32,
-    keyframe_interval: u32,
     fps: u32,
 
     pub fn init(
@@ -50,7 +49,6 @@ pub const Encoder = struct {
             .timer = try std.time.Timer.start(),
             .width = first_frame.width,
             .height = first_frame.height,
-            .keyframe_interval = fps * 4,
             .fps = fps,
         };
     }
@@ -71,12 +69,11 @@ pub const Encoder = struct {
         // Copy GL texture to linear CUDA device memory
         try self.cuda_ctx.copyGlTexture();
 
-        // Encode — check PLI-triggered keyframe for WebRTC, plus periodic interval
-        const pli_key = switch (self.sink) {
+        // Encode — force keyframe only on PLI (viewer join / packet loss recovery)
+        const force_key = switch (self.sink) {
             .session => |s| s.shouldForceKeyframe(),
             .ivf => false,
         };
-        const force_key = pli_key or (self.stats.frames_encoded % self.keyframe_interval == 0);
         const maybe_encoded = try self.nvenc.encodeFrame(force_key);
 
         if (maybe_encoded) |encoded| {

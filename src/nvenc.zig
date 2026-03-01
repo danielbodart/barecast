@@ -70,6 +70,11 @@ pub const preset_p4_guid = Guid{
     .data4 = .{ 0xb9, 0xd2, 0xcd, 0x6d, 0x73, 0xa0, 0x86, 0x81 },
 };
 
+pub const preset_p5_guid = Guid{
+    .data1 = 0x532e2bca, .data2 = 0xaacd, .data3 = 0x4b60,
+    .data4 = .{ 0xa6, 0x79, 0xbf, 0xa8, 0x5d, 0x02, 0x99, 0xb2 },
+};
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -82,6 +87,7 @@ pub const NV_ENC_BUFFER_FORMAT_ARGB: u32 = 0x01000000;
 pub const NV_ENC_BUFFER_FORMAT_ABGR: u32 = 0x10000000;
 
 const NV_ENC_TUNING_INFO_LOW_LATENCY: u32 = 2;
+const NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY: u32 = 3;
 const NV_ENC_PARAMS_RC_CONSTQP: u32 = 0x0;
 const NV_ENC_PARAMS_RC_VBR: u32 = 0x1;
 const NV_ENC_PARAMS_RC_CBR: u32 = 0x2;
@@ -228,7 +234,7 @@ const MeHintCounts = extern struct {
 const InitializeParams = extern struct {
     version: u32 = structVersionHigh(5),
     encodeGUID: Guid = codec_av1_guid,
-    presetGUID: Guid = preset_p4_guid,
+    presetGUID: Guid = preset_p5_guid,
     encodeWidth: u32,
     encodeHeight: u32,
     darWidth: u32,
@@ -245,7 +251,7 @@ const InitializeParams = extern struct {
     maxEncodeWidth: u32 = 0,
     maxEncodeHeight: u32 = 0,
     meHintCounts: [2]MeHintCounts = [_]MeHintCounts{.{}} ** 2,
-    tuningInfo: u32 = NV_ENC_TUNING_INFO_LOW_LATENCY,
+    tuningInfo: u32 = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
     bufferFormat: u32 = 0,
     _reserved: [287]u32 = [_]u32{0} ** 287,
     _pad1: u32 = 0,
@@ -577,7 +583,7 @@ pub const Nvenc = struct {
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
-        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_LOW_LATENCY, &preset_config);
+        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p5_guid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset_config);
         if (status != .success) {
             logNvencError(&fns, encoder_handle, "nvEncGetEncodePresetConfigEx", status);
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
@@ -588,14 +594,17 @@ pub const Nvenc = struct {
         var config = preset_config.presetCfg;
         config.version = structVersionHigh(8);
         config.profileGUID = profile_av1_main_guid;
-        config.gopLength = fps * 4;
+        config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        config.rcParams.constQP = .{ .qpInterP = 28, .qpInterB = 28, .qpIntra = 24 };
+        config.rcParams.constQP = .{ .qpInterP = 28, .qpInterB = 28, .qpIntra = 28 };
+        // Spatial AQ: redistributes bits to high-contrast edges (text strokes).
+        // enableFlags bit 3 = enableAQ, bits 12-15 = aqStrength (1-15, 8 = default).
+        config.rcParams.enableFlags |= (1 << 3) | (8 << 12);
 
         // AV1 specific config
         const av1 = config.av1Config();
-        av1.idrPeriod = fps * 4;
+        av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
         // Set bitfield_flags: repeatSeqHdr=1 (bit 5), chromaFormatIDC=1 (bits 7-8)
         av1.bitfield_flags = (av1.bitfield_flags & ~@as(u32, (1 << 5) | (0x3 << 7))) | (1 << 5) | (1 << 7);
 
