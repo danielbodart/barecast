@@ -97,6 +97,18 @@ pub const Encoder = struct {
         // Real wall clock PTS in milliseconds
         const pts_ms = self.timer.read() / std.time.ns_per_ms;
 
+        // NTP capture timestamp for abs-capture-time RTP extension.
+        // CLOCK_REALTIME → NTP epoch (Jan 1, 1900) in UQ32.32 fixed-point.
+        const capture_ntp = blk: {
+            const ntp_epoch_offset: u64 = 2_208_988_800; // seconds between 1900 and 1970
+            const realtime_ns: u128 = @bitCast(std.time.nanoTimestamp());
+            const secs: u64 = @intCast(realtime_ns / std.time.ns_per_s);
+            const frac_ns: u64 = @intCast(realtime_ns % std.time.ns_per_s);
+            const ntp_secs: u64 = secs + ntp_epoch_offset;
+            const ntp_frac: u64 = (frac_ns << 32) / std.time.ns_per_s;
+            break :blk (ntp_secs << 32) | ntp_frac;
+        };
+
         // ── Stage timing ──────────────────────────────────────────
         const t0 = std.time.Instant.now() catch null;
 
@@ -119,7 +131,7 @@ pub const Encoder = struct {
 
             switch (self.sink) {
                 .ivf => |*ivf| try ivf.writeFrame(encoded.data, pts_ms),
-                .session => |s| s.sendFrame(encoded.data, pts_ms),
+                .session => |s| s.sendFrame(encoded.data, pts_ms, capture_ntp),
             }
             self.stats.total_bytes += encoded.data.len;
             if (encoded.is_key) self.stats.keyframes += 1;

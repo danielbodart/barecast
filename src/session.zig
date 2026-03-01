@@ -85,6 +85,7 @@ pub const Peer = struct {
             pkt_init.clockRate = 90000;
             pkt_init.maxFragmentSize = 1200;
             pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
+            pkt_init.absCaptureTimeId = 3; // extmap ID for abs-capture-time
             _ = c.rtcSetAV1Packetizer(track, &pkt_init);
 
             // RTCP chain
@@ -128,8 +129,9 @@ pub const Peer = struct {
     }
 
     /// Send one encoded frame on this peer's track.
-    pub fn sendFrame(self: *Peer, data: []const u8, rtp_ts: u32) void {
+    pub fn sendFrame(self: *Peer, data: []const u8, rtp_ts: u32, capture_ntp: u64) void {
         _ = c.rtcSetTrackRtpTimestamp(self.track, rtp_ts);
+        _ = c.rtcSetTrackAbsCaptureTime(self.track, capture_ntp);
         const result = c.rtcSendMessage(self.track, @ptrCast(data.ptr), @intCast(data.len));
         if (result < 0) {
             log.warn("sendMessage to {s} failed: {d}", .{ self.peer_id, result });
@@ -373,13 +375,13 @@ pub const BroadcastSession = struct {
     /// Called from the main thread within the NVENC bitstream lock window.
     /// Holds peers_mutex to prevent deinit from invalidating track handles
     /// mid-send. The critical section is short — rtcSendMessage just enqueues.
-    pub fn sendFrame(self: *BroadcastSession, data: []const u8, pts_ms: u64) void {
+    pub fn sendFrame(self: *BroadcastSession, data: []const u8, pts_ms: u64, capture_ntp: u64) void {
         const rtp_ts: u32 = @truncate(pts_ms * 90);
         self.peers_mutex.lock();
         defer self.peers_mutex.unlock();
         for (&self.peers) |*peer| {
             if (peer.state.load(.acquire) == .connected) {
-                peer.sendFrame(data, rtp_ts);
+                peer.sendFrame(data, rtp_ts, capture_ntp);
             }
         }
     }

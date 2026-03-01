@@ -51,6 +51,8 @@ if (!roomId) {
     let lastSample: StatsSample | null = null;
     let rvfcHandle: number | null = null;
     let lastBrowserDelay: number | null = null;
+    let lastE2eLatency: number | null = null;
+    let videoReceiver: RTCRtpReceiver | null = null;
 
     const sRes = document.getElementById("s-res")!;
     const sFps = document.getElementById("s-fps")!;
@@ -66,6 +68,7 @@ if (!roomId) {
     const sDelay = document.getElementById("s-delay")!;
     const sDropped = document.getElementById("s-dropped")!;
     const sDecoder = document.getElementById("s-decoder")!;
+    const sE2e = document.getElementById("s-e2e")!;
 
     function startStatsPolling() {
         stopStatsPolling();
@@ -212,6 +215,11 @@ if (!roomId) {
             if (lastBrowserDelay !== null) {
                 sDelay.textContent = `${Math.round(lastBrowserDelay)} ms`;
             }
+
+            // End-to-end latency via abs-capture-time
+            if (lastE2eLatency !== null) {
+                sE2e.textContent = `${Math.round(lastE2eLatency)} ms`;
+            }
         }, 1000);
     }
 
@@ -220,6 +228,16 @@ if (!roomId) {
         const onFrame = (_now: number, metadata: Record<string, any>) => {
             if (typeof metadata.receiveTime === "number") {
                 lastBrowserDelay = performance.now() - metadata.receiveTime;
+            }
+            // End-to-end latency via abs-capture-time extension
+            if (videoReceiver) {
+                const sources = videoReceiver.getSynchronizationSources();
+                if (sources.length > 0) {
+                    const ts = (sources[0] as any).captureTimestamp;
+                    if (typeof ts === "number") {
+                        lastE2eLatency = performance.now() - ts;
+                    }
+                }
             }
             rvfcHandle = (video as any).requestVideoFrameCallback(onFrame);
         };
@@ -232,6 +250,8 @@ if (!roomId) {
             rvfcHandle = null;
         }
         lastBrowserDelay = null;
+        lastE2eLatency = null;
+        videoReceiver = null;
     }
 
     function stopStatsPolling() {
@@ -421,6 +441,7 @@ if (!roomId) {
         pc = new RTCPeerConnection({ iceServers });
 
         pc.ontrack = (event) => {
+            videoReceiver = event.receiver;
             video.srcObject =
                 event.streams[0] || new MediaStream([event.track]);
             video.play().catch(() => {});
