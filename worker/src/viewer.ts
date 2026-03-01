@@ -52,7 +52,6 @@ if (!roomId) {
     let rvfcHandle: number | null = null;
     let lastBrowserDelay: number | null = null;
     let lastE2eLatency: number | null = null;
-    let videoReceiver: RTCRtpReceiver | null = null;
 
     const sRes = document.getElementById("s-res")!;
     const sFps = document.getElementById("s-fps")!;
@@ -229,13 +228,25 @@ if (!roomId) {
             if (typeof metadata.receiveTime === "number") {
                 lastBrowserDelay = performance.now() - metadata.receiveTime;
             }
-            // End-to-end latency via abs-capture-time extension
-            if (videoReceiver) {
-                const sources = videoReceiver.getSynchronizationSources();
+            // End-to-end latency via abs-capture-time RTP extension.
+            // W3C spec defines captureTimestamp as DOMHighResTimeStamp, but
+            // Chrome (as of M120+) returns NTP milliseconds (ms since 1900-01-01).
+            // Detect which format by checking if the value is plausibly NTP
+            // (> year 2000 in NTP = 3155673600000 ms) vs DOMHighResTimeStamp
+            // (typically < 86400000 ms = 24h since page load).
+            const receiver = pc?.getReceivers().find(r => r.track?.kind === "video");
+            if (receiver) {
+                const sources = receiver.getSynchronizationSources();
                 if (sources.length > 0) {
-                    const ts = (sources[0] as any).captureTimestamp;
-                    if (typeof ts === "number") {
-                        lastE2eLatency = performance.now() - ts;
+                    const ct = (sources[0] as any).captureTimestamp;
+                    if (typeof ct === "number") {
+                        if (ct > 3_155_673_600_000) {
+                            // NTP milliseconds — subtract epoch offset, compare with Date.now()
+                            lastE2eLatency = Date.now() - (ct - 2_208_988_800_000);
+                        } else {
+                            // DOMHighResTimeStamp — compare with performance.now()
+                            lastE2eLatency = performance.now() - ct;
+                        }
                     }
                 }
             }
@@ -251,7 +262,6 @@ if (!roomId) {
         }
         lastBrowserDelay = null;
         lastE2eLatency = null;
-        videoReceiver = null;
     }
 
     function stopStatsPolling() {
@@ -441,7 +451,6 @@ if (!roomId) {
         pc = new RTCPeerConnection({ iceServers });
 
         pc.ontrack = (event) => {
-            videoReceiver = event.receiver;
             video.srcObject =
                 event.streams[0] || new MediaStream([event.track]);
             video.play().catch(() => {});
