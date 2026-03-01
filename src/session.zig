@@ -200,8 +200,10 @@ pub const Peer = struct {
 
         switch (msg) {
             .mouse_move => |m| {
+                // Only update the overlay cursor — don't move the host's
+                // system pointer. The system pointer is positioned just
+                // before mouse_down/mouse_up so it lands at the click target.
                 reg.updateCursor(peer_id, m.x, m.y);
-                if (session.input_handler) |handler| handler.moveMouse(m.x, m.y);
             },
             .mouse_down => |m| {
                 reg.updateCursor(peer_id, m.x, m.y);
@@ -218,7 +220,10 @@ pub const Peer = struct {
                 }
             },
             .scroll => |s| {
-                if (session.input_handler) |handler| handler.injectScroll(s.delta);
+                if (session.input_handler) |handler| {
+                    handler.moveMouse(s.x, s.y);
+                    handler.injectScroll(s.delta);
+                }
             },
             .key_down => |k| {
                 if (session.input_handler) |handler| handler.injectKeyCode(k.code, 1);
