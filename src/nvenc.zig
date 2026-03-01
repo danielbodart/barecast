@@ -251,7 +251,7 @@ const InitializeParams = extern struct {
     maxEncodeWidth: u32 = 0,
     maxEncodeHeight: u32 = 0,
     meHintCounts: [2]MeHintCounts = [_]MeHintCounts{.{}} ** 2,
-    tuningInfo: u32 = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+    tuningInfo: u32 = NV_ENC_TUNING_INFO_LOW_LATENCY,
     bufferFormat: u32 = 0,
     _reserved: [287]u32 = [_]u32{0} ** 287,
     _pad1: u32 = 0,
@@ -583,7 +583,7 @@ pub const Nvenc = struct {
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
-        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset_config);
+        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_LOW_LATENCY, &preset_config);
         if (status != .success) {
             logNvencError(&fns, encoder_handle, "nvEncGetEncodePresetConfigEx", status);
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
@@ -597,10 +597,7 @@ pub const Nvenc = struct {
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        config.rcParams.constQP = .{ .qpInterP = 28, .qpInterB = 28, .qpIntra = 28 };
-        // Spatial AQ: redistributes bits to high-contrast edges (text strokes).
-        // enableFlags bit 3 = enableAQ, bits 12-15 = aqStrength (1-15, 8 = default).
-        config.rcParams.enableFlags |= (1 << 3) | (8 << 12);
+        config.rcParams.constQP = .{ .qpInterP = 24, .qpInterB = 24, .qpIntra = 24 };
 
         // AV1 specific config
         const av1 = config.av1Config();

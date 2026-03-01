@@ -1,7 +1,7 @@
 import { InputController, VIEWER_COLORS, type ViewerMode } from "./input";
 
 const video = document.getElementById("video") as HTMLVideoElement;
-const status = document.getElementById("status")!;
+const statusEl = document.getElementById("status")!;
 const toggle = document.getElementById("toggle")!;
 const info = document.getElementById("info")!;
 const statsPanel = document.getElementById("stats-panel")!;
@@ -137,6 +137,7 @@ if (!roomId) {
                     sBitrate.textContent = bitrateKbps >= 1000
                         ? `${(bitrateKbps / 1000).toFixed(1)} Mbps`
                         : `${Math.round(bitrateKbps)} kbps`;
+                    console.log(`[stats] bitrate=${bitrateKbps.toFixed(1)}kbps fps=${fps.toFixed(1)} rtt=${rtt >= 0 ? Math.round(rtt * 1000) : -1}ms lost=${packetsLost} jitter=${(jitter * 1000).toFixed(1)}ms res=${frameWidth}x${frameHeight}`);
                 }
             }
             lastSample = { ts: now, framesDecoded, bytesReceived };
@@ -172,8 +173,8 @@ if (!roomId) {
     }
 
     function setStatus(msg: string) {
-        status.textContent = msg;
-        status.classList.remove("hidden");
+        statusEl.textContent = msg;
+        statusEl.classList.remove("hidden");
     }
 
     function updateModeUI(mode: ViewerMode) {
@@ -218,7 +219,7 @@ if (!roomId) {
     // ── Auto-resize on first frame ────────────────────────────────────
 
     video.addEventListener("playing", () => {
-        status.classList.add("hidden");
+        statusEl.classList.add("hidden");
         toggle.classList.add("visible");
         info.classList.add("visible");
         startStatsPolling();
