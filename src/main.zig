@@ -207,6 +207,8 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
         return;
     };
 
+    var overlay_was_active = false;
+
     while (!should_exit.load(.acquire)) {
         // Periodic signaling keepalive / reconnect check
         if (ping_timer.read() >= ping_interval_ns) {
@@ -220,9 +222,11 @@ fn runStream(cli_room_id: ?[]const u8, geometry: Box, fps: u32) void {
         if (overlay_timer.read() >= overlay_interval_ns) {
             overlay_timer.reset();
             if (overlay) |*o| {
-                if (viewer_registry.hasActiveContent()) {
+                const active = viewer_registry.hasActiveContent();
+                if (active or overlay_was_active) {
                     o.redraw(&viewer_registry);
                 }
+                overlay_was_active = active;
             }
         }
 

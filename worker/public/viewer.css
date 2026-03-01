@@ -121,7 +121,7 @@ body.zoom video {
     opacity: 1;
 }
 
-video.input-mode {
+video {
     cursor: none;
 }
 

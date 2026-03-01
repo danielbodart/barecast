@@ -51,7 +51,7 @@ pub const Overlay = struct {
 
     const bracket_len = 40;
     const bracket_width = 3.0;
-    const cursor_size = 16.0;
+    const cursor_size = 24.0;
     const draw_line_width = 2.5;
 
     pub fn init(box: Box) !Overlay {

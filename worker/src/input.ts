@@ -64,11 +64,16 @@ export class InputController {
     }
 
     toggleMode(): void {
-        this.mode = this.mode === "draw" ? "input" : "draw";
+        const was = this.mode;
+        this.mode = was === "draw" ? "input" : "draw";
         // End any in-progress drawing when switching modes
         if (this.drawing) {
             this.send1(MSG_DRAW_END);
             this.drawing = false;
+        }
+        // Clear all drawings when entering input mode
+        if (was === "draw" && this.mode === "input") {
+            this.send1(MSG_DRAW_CLEAR);
         }
         this.onModeChange?.(this.mode);
     }
@@ -165,12 +170,11 @@ export class InputController {
         const pt = this.mapCoords(e.clientX, e.clientY);
         if (!pt) return;
 
-        if (this.mode === "draw") {
-            if (this.drawing) {
-                this.sendXY(MSG_DRAW_MOVE, pt.x, pt.y);
-            }
-        } else {
-            this.sendXY(MSG_MOUSE_MOVE, pt.x, pt.y);
+        // Always send cursor position so overlay shows colored cursor in both modes
+        this.sendXY(MSG_MOUSE_MOVE, pt.x, pt.y);
+
+        if (this.mode === "draw" && this.drawing) {
+            this.sendXY(MSG_DRAW_MOVE, pt.x, pt.y);
         }
     }
 

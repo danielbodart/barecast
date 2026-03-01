@@ -9,6 +9,7 @@ zerocast-linux-x86_64.tar.gz.sha256
 .claude/worktrees/
 .worktrees/
 .playwright-mcp
+.playwright/
 worker/node_modules/
 worker/.wrangler/
 worker/public/viewer.js

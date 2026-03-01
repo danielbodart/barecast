@@ -181,11 +181,6 @@ if (!roomId) {
             modeBtn.textContent = mode === "draw" ? "draw" : "input";
             modeBtn.title = `Mode: ${mode} (Tab to toggle)`;
         }
-        if (mode === "input") {
-            video.classList.add("input-mode");
-        } else {
-            video.classList.remove("input-mode");
-        }
     }
 
     // ── Zoom toggle ───────────────────────────────────────────────────
