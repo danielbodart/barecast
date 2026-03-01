@@ -13,6 +13,10 @@ const Overlay = @import("overlay").Overlay;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const VirtualInput = @import("uinput").VirtualInput;
 
+pub const std_options: std.Options = .{
+    .log_level = .info,
+};
+
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 pub fn main() void {

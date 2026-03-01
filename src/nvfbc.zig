@@ -309,6 +309,9 @@ pub const FrameResult = struct {
     width: u32,
     height: u32,
     is_new: bool,
+    /// NvFBC hardware capture timestamp (microseconds). Populated for future
+    /// use in end-to-end latency measurement (abs-capture-time RTP extension).
+    capture_timestamp_us: u64,
 };
 
 pub const NvFbc = struct {
@@ -473,6 +476,7 @@ pub const NvFbc = struct {
             .width = frame_info.dwWidth,
             .height = frame_info.dwHeight,
             .is_new = frame_info.bIsNewFrame == .true_,
+            .capture_timestamp_us = frame_info.ulTimestampUs,
         };
     }
 

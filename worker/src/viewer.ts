@@ -40,11 +40,17 @@ if (!roomId) {
         ts: number;
         framesDecoded: number;
         bytesReceived: number;
+        totalDecodeTime: number;
+        totalProcessingDelay: number;
+        jitterBufferDelay: number;
+        jitterBufferEmittedCount: number;
     }
 
     let statsInterval: ReturnType<typeof setInterval> | null = null;
     let statsPanelVisible = false;
     let lastSample: StatsSample | null = null;
+    let rvfcHandle: number | null = null;
+    let lastBrowserDelay: number | null = null;
 
     const sRes = document.getElementById("s-res")!;
     const sFps = document.getElementById("s-fps")!;
@@ -54,9 +60,16 @@ if (!roomId) {
     const sLost = document.getElementById("s-lost")!;
     const sJitter = document.getElementById("s-jitter")!;
     const sVia = document.getElementById("s-via")!;
+    const sDecode = document.getElementById("s-decode")!;
+    const sJbuf = document.getElementById("s-jbuf")!;
+    const sProcess = document.getElementById("s-process")!;
+    const sDelay = document.getElementById("s-delay")!;
+    const sDropped = document.getElementById("s-dropped")!;
+    const sDecoder = document.getElementById("s-decoder")!;
 
     function startStatsPolling() {
         stopStatsPolling();
+        startVideoFrameCallbacks();
         if (statsPanelVisible) {
             statsPanel.classList.add("visible");
         }
@@ -81,6 +94,12 @@ if (!roomId) {
             let rtt = -1;
             let localCandidateId = "";
             let candidateType = "\u2014";
+            let totalDecodeTime = 0;
+            let totalProcessingDelay = 0;
+            let jitterBufferDelay = 0;
+            let jitterBufferEmittedCount = 0;
+            let framesDropped = 0;
+            let decoderImpl = "";
 
             for (const stat of report.values()) {
                 if (stat.type === "inbound-rtp" && (stat as any).kind === "video") {
@@ -92,6 +111,12 @@ if (!roomId) {
                     packetsLost = s.packetsLost || 0;
                     jitter = s.jitter || 0;
                     codecId = s.codecId || "";
+                    totalDecodeTime = s.totalDecodeTime || 0;
+                    totalProcessingDelay = s.totalProcessingDelay || 0;
+                    jitterBufferDelay = s.jitterBufferDelay || 0;
+                    jitterBufferEmittedCount = s.jitterBufferEmittedCount || 0;
+                    framesDropped = s.framesDropped || 0;
+                    decoderImpl = s.decoderImplementation || "";
                 } else if (stat.type === "codec" && stat.id === codecId) {
                     codecName = ((stat as any).mimeType || "").replace("video/", "");
                 } else if (stat.type === "candidate-pair" && (stat as any).state === "succeeded") {
@@ -126,21 +151,39 @@ if (!roomId) {
             // Resolution
             sRes.textContent = frameWidth > 0 ? `${frameWidth}\u00d7${frameHeight}` : "\u2014";
 
-            // FPS and bitrate from deltas
+            // FPS, bitrate, and latency from deltas
             const now = Date.now();
             if (lastSample) {
                 const dtSec = (now - lastSample.ts) / 1000;
+                const dFrames = framesDecoded - lastSample.framesDecoded;
                 if (dtSec > 0) {
-                    const fps = (framesDecoded - lastSample.framesDecoded) / dtSec;
+                    const fps = dFrames / dtSec;
                     sFps.textContent = fps.toFixed(1);
                     const bitrateKbps = ((bytesReceived - lastSample.bytesReceived) * 8) / dtSec / 1000;
                     sBitrate.textContent = bitrateKbps >= 1000
                         ? `${(bitrateKbps / 1000).toFixed(1)} Mbps`
                         : `${Math.round(bitrateKbps)} kbps`;
-                    console.log(`[stats] bitrate=${bitrateKbps.toFixed(1)}kbps fps=${fps.toFixed(1)} rtt=${rtt >= 0 ? Math.round(rtt * 1000) : -1}ms lost=${packetsLost} jitter=${(jitter * 1000).toFixed(1)}ms res=${frameWidth}x${frameHeight}`);
+
+                    // Decode time (delta of cumulative seconds → ms per frame)
+                    if (dFrames > 0) {
+                        const dDecode = totalDecodeTime - lastSample.totalDecodeTime;
+                        sDecode.textContent = `${((dDecode / dFrames) * 1000).toFixed(1)} ms`;
+
+                        const dProcess = totalProcessingDelay - lastSample.totalProcessingDelay;
+                        sProcess.textContent = `${((dProcess / dFrames) * 1000).toFixed(1)} ms`;
+                    }
+
+                    // Jitter buffer delay (delta of cumulative)
+                    const dJbufEmitted = jitterBufferEmittedCount - lastSample.jitterBufferEmittedCount;
+                    if (dJbufEmitted > 0) {
+                        const dJbuf = jitterBufferDelay - lastSample.jitterBufferDelay;
+                        sJbuf.textContent = `${((dJbuf / dJbufEmitted) * 1000).toFixed(1)} ms`;
+                    }
+
+                    console.debug(`[stats] bitrate=${bitrateKbps.toFixed(1)}kbps fps=${fps.toFixed(1)} rtt=${rtt >= 0 ? Math.round(rtt * 1000) : -1}ms lost=${packetsLost} jitter=${(jitter * 1000).toFixed(1)}ms res=${frameWidth}x${frameHeight}`);
                 }
             }
-            lastSample = { ts: now, framesDecoded, bytesReceived };
+            lastSample = { ts: now, framesDecoded, bytesReceived, totalDecodeTime, totalProcessingDelay, jitterBufferDelay, jitterBufferEmittedCount };
 
             // RTT
             sRtt.textContent = rtt >= 0 ? `${Math.round(rtt * 1000)} ms` : "\u2014";
@@ -156,7 +199,39 @@ if (!roomId) {
 
             // Connection type
             sVia.textContent = candidateType;
+
+            // Dropped frames
+            sDropped.textContent = String(framesDropped);
+
+            // Decoder implementation
+            if (decoderImpl) {
+                sDecoder.textContent = decoderImpl === "ExternalDecoder" ? "hw" : decoderImpl;
+            }
+
+            // Browser delay from requestVideoFrameCallback
+            if (lastBrowserDelay !== null) {
+                sDelay.textContent = `${Math.round(lastBrowserDelay)} ms`;
+            }
         }, 1000);
+    }
+
+    function startVideoFrameCallbacks() {
+        if (!("requestVideoFrameCallback" in video)) return;
+        const onFrame = (_now: number, metadata: Record<string, any>) => {
+            if (typeof metadata.receiveTime === "number") {
+                lastBrowserDelay = performance.now() - metadata.receiveTime;
+            }
+            rvfcHandle = (video as any).requestVideoFrameCallback(onFrame);
+        };
+        rvfcHandle = (video as any).requestVideoFrameCallback(onFrame);
+    }
+
+    function stopVideoFrameCallbacks() {
+        if (rvfcHandle !== null && "cancelVideoFrameCallback" in video) {
+            (video as any).cancelVideoFrameCallback(rvfcHandle);
+            rvfcHandle = null;
+        }
+        lastBrowserDelay = null;
     }
 
     function stopStatsPolling() {
@@ -164,6 +239,7 @@ if (!roomId) {
             clearInterval(statsInterval);
             statsInterval = null;
         }
+        stopVideoFrameCallbacks();
         lastSample = null;
     }
 
