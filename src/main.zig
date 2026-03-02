@@ -446,6 +446,7 @@ fn installSignalHandler() void {
     };
     posix.sigaction(posix.SIG.INT, &act, null);
     posix.sigaction(posix.SIG.TERM, &act, null);
+    posix.sigaction(posix.SIG.HUP, &act, null);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────

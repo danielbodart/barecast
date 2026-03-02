@@ -22,21 +22,22 @@
     <button id="toggle" class="hud-btn" title="Toggle zoom">1:1</button>
     <button id="info" class="hud-btn" title="Connection stats">info</button>
     <div id="stats-panel">
+        <div class="stats-section">stream</div>
         <div class="stats-row"><span class="stats-label">res</span><span class="stats-value" id="s-res">&mdash;</span></div>
         <div class="stats-row"><span class="stats-label">fps</span><span class="stats-value" id="s-fps">&mdash;</span></div>
         <div class="stats-row"><span class="stats-label">bitrate</span><span class="stats-value" id="s-bitrate">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">rtt</span><span class="stats-value" id="s-rtt">&mdash;</span></div>
         <div class="stats-row"><span class="stats-label">codec</span><span class="stats-value" id="s-codec">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">lost</span><span class="stats-value" id="s-lost">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">jitter</span><span class="stats-value" id="s-jitter">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">via</span><span class="stats-value" id="s-via">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">decode</span><span class="stats-value" id="s-decode">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">jbuf</span><span class="stats-value" id="s-jbuf">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">process</span><span class="stats-value" id="s-process">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">delay</span><span class="stats-value" id="s-delay">&mdash;</span></div>
+        <div class="stats-section">latency</div>
         <div class="stats-row"><span class="stats-label">e2e</span><span class="stats-value" id="s-e2e">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">dropped</span><span class="stats-value" id="s-dropped">&mdash;</span></div>
-        <div class="stats-row"><span class="stats-label">decoder</span><span class="stats-value" id="s-decoder">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">  server</span><span class="stats-value" id="s-server">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">  network</span><span class="stats-value" id="s-network">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">  decode</span><span class="stats-value" id="s-decode">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">  jbuf</span><span class="stats-value" id="s-jbuf">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">  render</span><span class="stats-value" id="s-render">&mdash;</span></div>
+        <div class="stats-section">connection</div>
+        <div class="stats-row"><span class="stats-label">rtt</span><span class="stats-value" id="s-rtt">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">lost</span><span class="stats-value" id="s-lost">&mdash;</span></div>
+        <div class="stats-row"><span class="stats-label">via</span><span class="stats-value" id="s-via">&mdash;</span></div>
     </div>
     <script src="/viewer.js"></script>
 </body>

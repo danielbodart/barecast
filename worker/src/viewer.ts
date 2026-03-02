@@ -52,22 +52,24 @@ if (!roomId) {
     let rvfcHandle: number | null = null;
     let lastBrowserDelay: number | null = null;
     let lastE2eLatency: number | null = null;
+    let lastProcessMs: number | null = null;
 
+    // Stream section
     const sRes = document.getElementById("s-res")!;
     const sFps = document.getElementById("s-fps")!;
     const sBitrate = document.getElementById("s-bitrate")!;
-    const sRtt = document.getElementById("s-rtt")!;
     const sCodec = document.getElementById("s-codec")!;
-    const sLost = document.getElementById("s-lost")!;
-    const sJitter = document.getElementById("s-jitter")!;
-    const sVia = document.getElementById("s-via")!;
+    // Latency section
+    const sE2e = document.getElementById("s-e2e")!;
+    const sServer = document.getElementById("s-server")!;
+    const sNetwork = document.getElementById("s-network")!;
     const sDecode = document.getElementById("s-decode")!;
     const sJbuf = document.getElementById("s-jbuf")!;
-    const sProcess = document.getElementById("s-process")!;
-    const sDelay = document.getElementById("s-delay")!;
-    const sDropped = document.getElementById("s-dropped")!;
-    const sDecoder = document.getElementById("s-decoder")!;
-    const sE2e = document.getElementById("s-e2e")!;
+    const sRender = document.getElementById("s-render")!;
+    // Connection section
+    const sRtt = document.getElementById("s-rtt")!;
+    const sLost = document.getElementById("s-lost")!;
+    const sVia = document.getElementById("s-via")!;
 
     function startStatsPolling() {
         stopStatsPolling();
@@ -172,7 +174,7 @@ if (!roomId) {
                         sDecode.textContent = `${((dDecode / dFrames) * 1000).toFixed(1)} ms`;
 
                         const dProcess = totalProcessingDelay - lastSample.totalProcessingDelay;
-                        sProcess.textContent = `${((dProcess / dFrames) * 1000).toFixed(1)} ms`;
+                        lastProcessMs = (dProcess / dFrames) * 1000;
                     }
 
                     // Jitter buffer delay (delta of cumulative)
@@ -190,34 +192,35 @@ if (!roomId) {
             // RTT
             sRtt.textContent = rtt >= 0 ? `${Math.round(rtt * 1000)} ms` : "\u2014";
 
-            // Codec
-            sCodec.textContent = codecName;
+            // Codec + raw decoder implementation
+            if (codecName !== "\u2014") {
+                sCodec.textContent = decoderImpl ? `${codecName} (${decoderImpl})` : codecName;
+            }
 
             // Packets lost
             sLost.textContent = String(packetsLost);
 
-            // Jitter
-            sJitter.textContent = jitter > 0 ? `${(jitter * 1000).toFixed(1)} ms` : "\u2014";
-
-            // Connection type
+            // Connection
             sVia.textContent = candidateType;
 
-            // Dropped frames
-            sDropped.textContent = String(framesDropped);
+            // Latency breakdown
+            const rttMs = rtt >= 0 ? Math.round(rtt * 1000) : null;
+            sNetwork.textContent = rttMs !== null ? `${Math.round(rttMs / 2)} ms` : "\u2014";
 
-            // Decoder implementation
-            if (decoderImpl) {
-                sDecoder.textContent = decoderImpl === "ExternalDecoder" ? "hw" : decoderImpl;
-            }
-
-            // Browser delay from requestVideoFrameCallback
-            if (lastBrowserDelay !== null) {
-                sDelay.textContent = `${Math.round(lastBrowserDelay)} ms`;
-            }
-
-            // End-to-end latency via abs-capture-time
             if (lastE2eLatency !== null) {
                 sE2e.textContent = `${Math.round(lastE2eLatency)} ms`;
+            }
+
+            // Server = e2e - browser delay (derived)
+            if (lastE2eLatency !== null && lastBrowserDelay !== null) {
+                const serverMs = Math.max(0, Math.round(lastE2eLatency - lastBrowserDelay));
+                sServer.textContent = `${serverMs} ms`;
+            }
+
+            // Render = browser delay - process (compositor + vsync wait)
+            if (lastBrowserDelay !== null && lastProcessMs !== null) {
+                const renderMs = Math.max(0, Math.round(lastBrowserDelay - lastProcessMs));
+                sRender.textContent = `${renderMs} ms`;
             }
         }, 1000);
     }
@@ -262,6 +265,7 @@ if (!roomId) {
         }
         lastBrowserDelay = null;
         lastE2eLatency = null;
+        lastProcessMs = null;
     }
 
     function stopStatsPolling() {

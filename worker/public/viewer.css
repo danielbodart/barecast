@@ -159,6 +159,19 @@ video {
     gap: 16px;
 }
 
+.stats-section {
+    color: #555;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 6px;
+    padding-bottom: 1px;
+}
+
+.stats-section:first-child {
+    margin-top: 0;
+}
+
 .stats-label {
     color: #666;
 }
