@@ -59,6 +59,9 @@ pub const Encoder = struct {
     width: u32,
     height: u32,
     fps: u32,
+    consecutive_skips: u64 = 0,
+    idle_logged: bool = false,
+    idle_keyframe_sent: bool = false,
 
     pub fn init(
         fbc: *nvfbc.NvFbc,
@@ -89,9 +92,38 @@ pub const Encoder = struct {
 
     /// Process one captured frame: CUDA copy → NVENC encode → sink dispatch.
     pub fn processFrame(self: *Encoder, frame: nvfbc.FrameResult) !void {
-        if (!frame.is_new) {
+        // Even when idle, the first PLI (viewer join) must be serviced — encode
+        // the last captured texture as a keyframe so new viewers can start decoding.
+        // Subsequent PLIs while still idle are ignored to avoid periodic keyframe bursts.
+        const pli_raw = switch (self.sink) {
+            .session => |s| s.shouldForceKeyframe(),
+            .ivf => false,
+        };
+        const pli_pending = pli_raw and !self.idle_keyframe_sent;
+
+        if (!frame.is_new and !pli_pending) {
             self.stats.frames_skipped += 1;
+            self.consecutive_skips += 1;
+            // Log idle state once after ~1s of no changes
+            if (!self.idle_logged and self.consecutive_skips >= self.fps) {
+                log.info("idle — screen unchanged for {d} frames, suspending encode", .{self.consecutive_skips});
+                self.idle_logged = true;
+            }
             return;
+        }
+
+        if (pli_pending and !frame.is_new) {
+            // Idle PLI — send one keyframe but stay in idle state
+            log.info("idle PLI — sending keyframe after {d} skipped frames", .{self.consecutive_skips});
+            self.idle_keyframe_sent = true;
+        } else if (frame.is_new) {
+            // Real content change — reset idle tracking
+            if (self.idle_logged) {
+                log.info("resuming encode after {d} skipped frames", .{self.consecutive_skips});
+            }
+            self.consecutive_skips = 0;
+            self.idle_logged = false;
+            self.idle_keyframe_sent = false;
         }
 
         // Real wall clock PTS in milliseconds
@@ -117,11 +149,8 @@ pub const Encoder = struct {
 
         const t1 = std.time.Instant.now() catch null;
 
-        // Encode — force keyframe only on PLI (viewer join / packet loss recovery)
-        const force_key = switch (self.sink) {
-            .session => |s| s.shouldForceKeyframe(),
-            .ivf => false,
-        };
+        // Encode — force keyframe on PLI (already consumed above) or first frame
+        const force_key = pli_pending;
         const maybe_encoded = try self.nvenc.encodeFrame(force_key);
 
         const t2 = std.time.Instant.now() catch null;
@@ -159,7 +188,7 @@ pub const Encoder = struct {
         if (summary_interval > 0 and self.timings.samples >= summary_interval) {
             const n = self.timings.samples;
             log.info(
-                "pipeline avg: cuda={d}us encode={d}us send={d}us total={d}us | max: cuda={d}us encode={d}us send={d}us total={d}us ({d} frames)",
+                "pipeline avg: cuda={d}us encode={d}us send={d}us total={d}us | max: cuda={d}us encode={d}us send={d}us total={d}us ({d} frames, {d} skipped)",
                 .{
                     self.timings.cuda_copy_us / n,
                     self.timings.encode_us / n,
@@ -170,6 +199,7 @@ pub const Encoder = struct {
                     self.timings.max_send_us,
                     self.timings.max_total_us,
                     n,
+                    self.stats.frames_skipped,
                 },
             );
             self.timings.reset();

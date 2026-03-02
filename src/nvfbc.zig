@@ -322,6 +322,11 @@ pub const NvFbc = struct {
     setup_params: ToGlSetupParams,
     session_created: bool,
     screen_size: Size,
+    last_frame_id: u32 = 0,
+    /// Heap-allocated stable storage for the diff map pointer. NvFBC writes
+    /// the address of its internal diff map buffer here on each grab.
+    diff_map_storage: ?*?[*]u8 = null,
+    diff_map_size: usize = 0,
 
     pub fn init(capture_box: Box, fps: u32) !NvFbc {
         var glx = GlxContext.init() catch {
@@ -427,12 +432,21 @@ pub const NvFbc = struct {
             return error.NvFbcInitFailed;
         }
 
-        // GL setup
-        var setup_params = ToGlSetupParams{};
+        // GL setup — enable diff map for pixel-level change detection.
+        // NvFBC writes the diff map address into *ppDiffMap on each grab,
+        // so the storage must outlive the stack frame. Heap-allocate one pointer.
+        const diff_map_storage = std.heap.c_allocator.create(?[*]u8) catch return error.NvFbcInitFailed;
+        diff_map_storage.* = null;
+        var setup_params = ToGlSetupParams{
+            .bWithDiffMap = .true_,
+            .ppDiffMap = @ptrCast(diff_map_storage),
+            .dwDiffMapScalingFactor = 128, // one byte per 128x128 block
+        };
         status = (fns.nvFBCToGLSetUp orelse return error.NvFbcInitFailed)(session, &setup_params);
         if (status != .success) {
             const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
             std.debug.print("NvFBC: ToGLSetUp failed: {s}\n", .{err_str orelse "unknown"});
+            std.heap.c_allocator.destroy(diff_map_storage);
             var dsp = DestroyCaptureSessionParams{};
             _ = (fns.nvFBCDestroyCaptureSession orelse unreachable)(session, &dsp);
             var dp = DestroyHandleParams{};
@@ -440,9 +454,11 @@ pub const NvFbc = struct {
             return error.NvFbcInitFailed;
         }
 
-        std.debug.print("NvFBC: textures=[{}, {}], target=0x{X}, format=0x{X}\n", .{
+        const dm_size: usize = @as(usize, setup_params.diffMapSize.w) * @as(usize, setup_params.diffMapSize.h);
+        std.debug.print("NvFBC: textures=[{}, {}], target=0x{X}, format=0x{X}, diffmap={}x{} ({} bytes)\n", .{
             setup_params.dwTextures[0], setup_params.dwTextures[1],
             setup_params.dwTexTarget,   setup_params.dwTexFormat,
+            setup_params.diffMapSize.w, setup_params.diffMapSize.h, dm_size,
         });
 
         return .{
@@ -453,13 +469,15 @@ pub const NvFbc = struct {
             .setup_params = setup_params,
             .session_created = true,
             .screen_size = status_params.screenSize,
+            .diff_map_storage = diff_map_storage,
+            .diff_map_size = dm_size,
         };
     }
 
     pub fn grabFrame(self: *NvFbc) !FrameResult {
         var frame_info = FrameGrabInfo{};
         var grab_params = ToGlGrabFrameParams{
-            .dwFlags = 0x02, // FORCE_REFRESH (blocking — waits for sampling rate)
+            .dwFlags = 0x00, // blocking grab, no FORCE_REFRESH
             .pFrameGrabInfo = &frame_info,
             .dwTimeoutMs = 100,
         };
@@ -471,11 +489,31 @@ pub const NvFbc = struct {
             return error.NvFbcGrabFailed;
         }
 
+        // Determine if frame has new content:
+        // 1. Frame ID unchanged → compositor had no new frame
+        var is_new = frame_info.dwCurrentFrame != self.last_frame_id;
+        self.last_frame_id = frame_info.dwCurrentFrame;
+
+        // 2. Diff map all-zero → pixels identical even if frame ID changed
+        if (is_new and self.diff_map_storage != null) {
+            if (self.diff_map_storage.?.*) |map| {
+                const bytes = map[0..self.diff_map_size];
+                var any_diff = false;
+                for (bytes) |b| {
+                    if (b != 0) {
+                        any_diff = true;
+                        break;
+                    }
+                }
+                if (!any_diff) is_new = false;
+            }
+        }
+
         return .{
             .texture_id = self.setup_params.dwTextures[grab_params.dwTextureIndex],
             .width = frame_info.dwWidth,
             .height = frame_info.dwHeight,
-            .is_new = frame_info.bIsNewFrame == .true_,
+            .is_new = is_new,
             .capture_timestamp_us = frame_info.ulTimestampUs,
         };
     }
@@ -487,6 +525,7 @@ pub const NvFbc = struct {
         }
         var dp = DestroyHandleParams{};
         _ = (self.fns.nvFBCDestroyHandle orelse unreachable)(self.handle, &dp);
+        if (self.diff_map_storage) |s| std.heap.c_allocator.destroy(s);
         _ = std.c.dlclose(self.lib);
         self.glx.deinit();
     }
