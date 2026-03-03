@@ -237,10 +237,11 @@ install_files() {
         rm -rf "$dir"
     done
 
-    # Symlink binaries into ~/.local/bin
+    # Symlink binaries + update command into ~/.local/bin
     mkdir -p "$HOME/.local/bin"
     ln -sf "$INSTALL_DIR/current/bin/zerocast" "$HOME/.local/bin/zerocast"
     ln -sf "$INSTALL_DIR/current/bin/zerocast-kms" "$HOME/.local/bin/zerocast-kms"
+    ln -sf "$INSTALL_DIR/zerocast-update.sh" "$HOME/.local/bin/zerocast-update"
 
     # Create recordings directory
     mkdir -p "$RECORDINGS_DIR"
