@@ -59,6 +59,8 @@ fn handleShare(args: *std.process.ArgIterator) void {
     w.writeAll(share_type) catch return;
     w.writeByte('"') catch return;
 
+    const is_screen = std.mem.eql(u8, share_type, "screen");
+
     // Parse remaining flags
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--room")) {
@@ -70,6 +72,10 @@ fn handleShare(args: *std.process.ArgIterator) void {
             w.writeAll(room) catch return;
             w.writeByte('"') catch return;
         } else if (std.mem.eql(u8, arg, "--fps")) {
+            if (!is_screen) {
+                std.debug.print("--fps is only valid for screen shares\n", .{});
+                std.process.exit(1);
+            }
             const fps = args.next() orelse {
                 std.debug.print("--fps requires a value\n", .{});
                 std.process.exit(1);
@@ -78,7 +84,7 @@ fn handleShare(args: *std.process.ArgIterator) void {
             w.writeAll(fps) catch return;
         } else if (std.mem.eql(u8, arg, "--record")) {
             w.writeAll(",\"record\":true") catch return;
-        } else if (std.mem.eql(u8, arg, "--geometry") or isPossibleGeometry(arg)) {
+        } else if (is_screen and (std.mem.eql(u8, arg, "--geometry") or isPossibleGeometry(arg))) {
             const geom = if (std.mem.eql(u8, arg, "--geometry"))
                 (args.next() orelse {
                     std.debug.print("--geometry requires a WxH+X+Y value\n", .{});
@@ -89,7 +95,7 @@ fn handleShare(args: *std.process.ArgIterator) void {
             w.writeAll(",\"geometry\":\"") catch return;
             w.writeAll(geom) catch return;
             w.writeByte('"') catch return;
-        } else if (std.mem.eql(u8, share_type, "terminal")) {
+        } else if (!is_screen) {
             // Positional arg in terminal mode = command
             w.writeAll(",\"command\":\"") catch return;
             w.writeAll(arg) catch return;
@@ -244,29 +250,21 @@ fn printUsage() void {
         \\zerocast v{s}
         \\
         \\Usage:
-        \\  zerocast daemon                             Enter daemon mode (used by systemd)
-        \\  zerocast status                             List active shares + viewer counts
+        \\  zerocast share screen [WxH+X+Y] [--room <id>] [--fps <n>] [--record]
+        \\  zerocast share terminal [command] [--record]
+        \\  zerocast unshare [screen | terminal | <session-id>]
+        \\  zerocast status
+        \\  zerocast attach <session-id>
+        \\  zerocast daemon
         \\
-        \\  zerocast share screen                       Full screen, random room
-        \\  zerocast share screen 1920x1080+0+0         Sub-region
-        \\  zerocast share screen --room my-room         Specific room ID
-        \\  zerocast share screen --record               Share + record to IVF
-        \\  zerocast share terminal                      Spawn $SHELL in PTY
-        \\  zerocast share terminal htop                 Spawn specific command
-        \\  zerocast share terminal --record             Share + record (.cast)
-        \\
-        \\  zerocast unshare                             Unshare everything
-        \\  zerocast unshare <session-id>                Unshare specific session
-        \\  zerocast unshare screen                      Unshare all screen shares
-        \\  zerocast unshare terminal                    Unshare all terminal shares
-        \\
-        \\  zerocast attach <session-id>                 Attach terminal to PTY session
-        \\
-        \\Options:
-        \\  --room <id>         Stable room ID (alphanumeric, dash, underscore)
-        \\  --fps <1-144>       Capture frame rate (default 30)
-        \\  --geometry WxH+X+Y  Capture sub-region
-        \\  --record            Record to ~/.local/share/zerocast/recordings/
+        \\Examples:
+        \\  zerocast share screen                        Share full screen
+        \\  zerocast share screen 1920x1080+0+0          Share a sub-region
+        \\  zerocast share screen --room my-room          Use a stable room ID
+        \\  zerocast share screen --fps 60 --record       60fps + record to IVF
+        \\  zerocast share terminal                       Share interactive shell
+        \\  zerocast share terminal htop --record          Share htop + record .cast
+        \\  zerocast unshare                              Stop all shares
         \\
     , .{build_options.version});
 }
