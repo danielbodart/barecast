@@ -4,10 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // --- Build options ---
+    // --- Build options (single shared module to avoid duplicate module errors) ---
     const version_str = b.option([]const u8, "version", "Version string") orelse "0.0.0";
     const options = b.addOptions();
     options.addOption([]const u8, "version", version_str);
+    const build_options_mod = options.createModule();
 
     // --- Shared modules ---
     const protocol_mod = b.createModule(.{
@@ -174,9 +175,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "control", .module = control_mod },
             .{ .name = "screen_share", .module = screen_share_mod },
             .{ .name = "terminal_share", .module = terminal_share_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
-    daemon_mod.addOptions("build_options", options);
 
     // --- CLI module (subcommand parser, socket client) ---
     const cli_mod = b.createModule(.{
@@ -186,9 +187,9 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "control", .module = control_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
-    cli_mod.addOptions("build_options", options);
 
     // --- zerocast (main binary, unprivileged) ---
     const exe = b.addExecutable(.{
@@ -203,7 +204,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    exe.root_module.addOptions("build_options", options);
     exe.linkLibC();
 
     // Static link libdatachannel and its dependencies
@@ -296,10 +296,10 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "control", .module = control_mod },
                 .{ .name = "screen_share", .module = screen_share_mod },
                 .{ .name = "terminal_share", .module = terminal_share_mod },
+                .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });
-    daemon_tests.root_module.addOptions("build_options", options);
     daemon_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
     daemon_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
     daemon_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
@@ -331,10 +331,10 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "control", .module = control_mod },
+                .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });
-    cli_tests.root_module.addOptions("build_options", options);
     const run_cli_tests = b.addRunArtifact(cli_tests);
     test_step.dependOn(&run_cli_tests.step);
 

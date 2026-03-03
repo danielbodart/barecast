@@ -156,8 +156,7 @@ fn sendCommand(msg: []const u8, opts: SendOptions) void {
     };
     defer posix.close(sock);
 
-    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch |err| {
-        _ = err;
+    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch {
         std.debug.print("Cannot connect to daemon at {s}\n", .{sock_path});
         std.debug.print("Is the daemon running? Start with: zerocast daemon\n", .{});
         std.process.exit(1);
@@ -197,8 +196,9 @@ fn sendCommand(msg: []const u8, opts: SendOptions) void {
         // Print session ID to stdout (pipeable), room URL to stderr
         if (control.jsonExtract(resp, "session_id")) |sid| {
             // stdout: just the session ID
-            const stdout = std.io.getStdOut().writer();
-            stdout.print("{s}\n", .{sid}) catch {};
+            var buf: [256]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s}\n", .{sid}) catch sid;
+            _ = posix.write(posix.STDOUT_FILENO, line) catch {};
 
             // stderr: room URL for humans
             if (control.jsonExtract(resp, "room")) |room| {

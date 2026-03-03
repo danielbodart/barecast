@@ -113,7 +113,7 @@ pub fn run() void {
     }
 
     // Stop all sessions on shutdown
-    stopAllSessions();
+    _ = stopAllSessions();
     log.info("daemon shutting down", .{});
 }
 
