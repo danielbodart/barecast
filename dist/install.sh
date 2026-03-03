@@ -291,26 +291,41 @@ cmd_install() {
 
         check_permissions "$SCRIPT_DIR/bin/zerocast-kms"
 
+        # Dev mode: symlink into ~/.local/bin pointing at source tree
+        mkdir -p "$HOME/.local/bin"
+        ln -sf "$SCRIPT_DIR/bin/zerocast" "$HOME/.local/bin/zerocast"
+        ln -sf "$SCRIPT_DIR/bin/zerocast-kms" "$HOME/.local/bin/zerocast-kms"
+        echo "Symlinks: ~/.local/bin/zerocast → $SCRIPT_DIR/bin/"
+
         install_service "$project_dir" "$SCRIPT_DIR/bin/zerocast" false
     else
         echo "=== Zerocast Installer ==="
         echo ""
 
+        # Always update files + symlinks (this is the upgrade)
         install_files
         check_permissions "$INSTALL_DIR/current/bin/zerocast-kms"
 
-        # Auto-updates
-        local enable_updates=true
-        echo ""
-        if ! confirm "Enable automatic updates?"; then
-            enable_updates=false
-        fi
+        if $is_upgrade; then
+            # Upgrade: preserve existing service config, just update binaries
+            local has_updates=false
+            [ -f "$HOME/.config/systemd/user/zerocast-update.timer" ] && has_updates=true
 
-        install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $enable_updates
+            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $has_updates
+        else
+            # Fresh install: ask about auto-updates
+            local enable_updates=true
+            echo ""
+            if ! confirm "Enable automatic updates?"; then
+                enable_updates=false
+            fi
 
-        if $enable_updates; then
-            install_update_timer
-            install_rollback_service
+            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $enable_updates
+
+            if $enable_updates; then
+                install_update_timer
+                install_rollback_service
+            fi
         fi
     fi
 
