@@ -291,7 +291,9 @@ fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_
         return;
     };
 
-    share.* = ScreenShare.init(config) catch {
+    // Init in-place — all internal pointers (encoder → session, session →
+    // viewer_registry) are captured against the heap address, not a stack copy.
+    share.initInPlace(config) catch {
         allocator.destroy(share);
         result.err_msg = "screen share init failed";
         result.done.set();
@@ -303,7 +305,7 @@ fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_
     sessions[slot_idx].payload = .{ .screen = share };
     sessions_mutex.unlock();
 
-    // Register callbacks (session is now at stable heap address)
+    // Register signaling callbacks
     share.start();
 
     // Signal success to the daemon thread

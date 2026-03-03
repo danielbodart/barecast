@@ -23,7 +23,12 @@ pub const ScreenShareConfig = struct {
 };
 
 /// Self-contained screen share session. Wraps the NvFbc → Encoder → BroadcastSession pipeline.
-/// Created by the daemon on `share screen`, runs tick() in a dedicated thread.
+/// Created by the daemon on `share screen`, runs in a dedicated thread.
+///
+/// Uses init-in-place pattern (same as Peer.initInPlace in session.zig) to avoid
+/// copying the struct after init. Internal pointers (encoder → session, session →
+/// viewer_registry) point at fields within `self`, so `self` must be at its final
+/// memory location before init is called.
 pub const ScreenShare = struct {
     session_id: [16]u8,
     room_id_buf: [16]u8,
@@ -43,10 +48,14 @@ pub const ScreenShare = struct {
     start_time: std.time.Timer,
     config: ScreenShareConfig,
 
-    /// Initialize a screen share session. Grabs first frame, sets up encoder + session.
-    /// Returns error if any GPU/NvFBC init step fails.
-    pub fn init(config: ScreenShareConfig) !ScreenShare {
+    /// Initialize a screen share session in-place. `self` must already be at
+    /// its final memory location (heap-allocated by the caller).
+    /// After init, call start() to register signaling callbacks.
+    pub fn initInPlace(self: *ScreenShare, config: ScreenShareConfig) !void {
         const allocator = std.heap.c_allocator;
+
+        self.should_stop = std.atomic.Value(bool).init(false);
+        self.config = config;
 
         var fbc = try NvFbc.init(config.geometry, config.fps);
         errdefer fbc.deinit();
@@ -67,10 +76,6 @@ pub const ScreenShare = struct {
         errdefer if (overlay) |*o| o.deinit();
 
         // Room ID
-        var self: ScreenShare = undefined;
-        self.should_stop = std.atomic.Value(bool).init(false);
-        self.config = config;
-
         if (config.room_id) |id| {
             self.room_id = id;
         } else {
@@ -78,13 +83,11 @@ pub const ScreenShare = struct {
             self.room_id = &self.room_id_buf;
         }
 
-        // Session ID (same as room ID for simplicity)
+        // Session ID
         self.session_id = generateRoomId() catch return error.SessionIdGenFailed;
 
         // Build URLs
         const base_url = config.base_url;
-
-        // WebSocket URL
         const ws_scheme: []const u8 = if (std.mem.startsWith(u8, base_url, "https://")) "wss://" else "ws://";
         const host_start: usize = if (std.mem.startsWith(u8, base_url, "https://"))
             @as(usize, 8)
@@ -97,7 +100,6 @@ pub const ScreenShare = struct {
             ws_scheme, base_url[host_start..],
         }) catch return error.UrlTooLong;
 
-        // Share URL
         self.share_url = std.fmt.bufPrint(&self.share_url_buf, "{s}/room/{s}", .{
             base_url, self.room_id,
         }) catch "https://zerocast.bodar.com/room/???";
@@ -126,6 +128,7 @@ pub const ScreenShare = struct {
             fbc.deinit();
             return error.SessionInitFailed;
         };
+        // These point at fields within self — safe because self is already at its final location
         self.session.viewer_registry = &self.viewer_registry;
         if (self.vinput) |*vi| {
             self.session.input_handler = vinputHandler(vi);
@@ -141,13 +144,11 @@ pub const ScreenShare = struct {
                     break :blk null;
                 };
 
-            // Create recordings dir if needed
             std.fs.cwd().makePath(recordings_dir) catch |err| {
                 log.warn("failed to create recordings dir: {}", .{err});
                 break :blk null;
             };
 
-            // Generate timestamped filename
             var path_buf: [512]u8 = undefined;
             const now = std.time.timestamp();
             const path = std.fmt.bufPrint(&path_buf, "{s}/screen-{d}.ivf", .{
@@ -165,7 +166,7 @@ pub const ScreenShare = struct {
             break :blk ivf;
         } else null;
 
-        // Encoder — sink is the broadcast session (recording handled separately in tick)
+        // Encoder — sink points at self.session which is already at its final address
         self.encoder = Encoder.init(&fbc, first_frame, .{ .session = &self.session }, config.fps) catch |err| {
             log.err("encoder init failed: {}", .{err});
             self.session.deinit();
@@ -178,17 +179,10 @@ pub const ScreenShare = struct {
         self.fbc = fbc;
         self.overlay = overlay;
         self.start_time = std.time.Timer.start() catch return error.TimerUnavailable;
-
-        return self;
     }
 
-    /// Register callbacks and start signaling. Must be called after init,
-    /// once ScreenShare is at its final memory location.
-    /// Fixes up internal pointers that were invalidated by the struct move.
+    /// Register signaling callbacks. Must be called after initInPlace.
     pub fn start(self: *ScreenShare) void {
-        // The encoder's session sink pointer was set during init() when the struct
-        // was on the stack. Now that we're at our final heap address, fix it up.
-        self.encoder.sink = .{ .session = &self.session };
         self.session.start();
     }
 
@@ -211,7 +205,6 @@ pub const ScreenShare = struct {
         var overlay_was_active = false;
 
         while (!self.should_stop.load(.acquire)) {
-            // Periodic signaling keepalive
             if (ping_timer.read() >= ping_interval_ns) {
                 ping_timer.reset();
                 if (!self.session.sendPing()) {
@@ -219,7 +212,6 @@ pub const ScreenShare = struct {
                 }
             }
 
-            // 20 Hz overlay redraw
             if (overlay_timer.read() >= overlay_interval_ns) {
                 overlay_timer.reset();
                 if (self.overlay) |*o| {

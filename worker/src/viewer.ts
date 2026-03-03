@@ -497,11 +497,13 @@ if (!roomId) {
         };
 
         pc.oniceconnectionstatechange = () => {
-            if (
-                pc &&
-                (pc.iceConnectionState === "disconnected" ||
-                    pc.iceConnectionState === "failed")
-            ) {
+            if (!pc) return;
+            if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+                statusEl.classList.add("hidden");
+                toggle.classList.add("visible");
+                info.classList.add("visible");
+                startStatsPolling();
+            } else if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
                 setStatus("Connection lost");
             }
         };

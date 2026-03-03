@@ -53,13 +53,20 @@ Two Zig binaries + one Cloudflare Worker:
 
 ### Key source files
 
-- **`src/main.zig`** — Entry point. CLI modes: WebRTC streaming (default) or `--record` for IVF.
-- **`src/webrtc.zig`** — libdatachannel Zig bindings. Peer connection, AV1 track, signaling WebSocket.
+- **`src/main.zig`** — Entry point. Dispatches to daemon or CLI.
+- **`src/daemon.zig`** — Daemon mode. Unix socket listener, session slot management, thread lifecycle.
+- **`src/cli.zig`** — CLI client. Subcommand parser, socket client, help text.
+- **`src/control.zig`** — Wire protocol for daemon ↔ CLI (JSON over Unix socket).
+- **`src/screen_share.zig`** — Self-contained screen share session (NvFbc → Encoder → BroadcastSession).
+- **`src/terminal_share.zig`** — Terminal share session (PTY + asciinema v2 recording).
+- **`src/session.zig`** — Multi-viewer WebRTC broadcast (libdatachannel peer management, signaling).
 - **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (IVF or WebRTC).
 - **`src/kms.zig`** — Entry point for the privileged KMS helper.
 - **`src/protocol.zig`** — Wire protocol structs for IPC between zerocast and zerocast-kms.
 - **`src/prop_tests.zig`** — Property-based tests (minish).
-- **`worker/src/index.ts`** — Cloudflare Worker + full WebRTC browser viewer.
+- **`worker/src/index.ts`** — Cloudflare Worker + routing.
+- **`worker/src/viewer.ts`** — WebRTC browser viewer (screen share).
+- **`worker/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).
 - **`worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.
 
 ## Testing
@@ -74,6 +81,8 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 ## Conventions
 
 - Zig 0.15 API: `b.createModule(...)` for executables
+- **Always use `./run.ts <target>`** — never run `zig build`, `bun build`, `wrangler deploy`, etc. directly. `run.ts` is the single entry point for all build, test, lint, and deploy operations. If a command you need isn't there, add it to `run.ts`.
+- **Never deploy from a dev machine** — all deployments (worker, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
 - CI only calls `run.ts` targets — no build logic in workflow YAML
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
 - libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)
