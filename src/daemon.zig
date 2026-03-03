@@ -213,6 +213,13 @@ fn handleShare(req: control.ShareRequest, buf: []u8) []const u8 {
     return handleShareScreen(req, buf);
 }
 
+/// Thread-safe init result passed from capture thread back to daemon.
+const ScreenInitResult = struct {
+    share: ?*ScreenShare = null,
+    err_msg: ?[]const u8 = null,
+    done: std.Thread.ResetEvent = .{},
+};
+
 fn handleShareScreen(req: control.ShareRequest, buf: []u8) []const u8 {
     const allocator = std.heap.c_allocator;
 
@@ -222,7 +229,6 @@ fn handleShareScreen(req: control.ShareRequest, buf: []u8) []const u8 {
             return control.writeErrorResponse(buf, "internal error") orelse "",
         else => return control.writeErrorResponse(buf, "internal error") orelse "",
     };
-    // Note: base_url leaks — acceptable for long-lived daemon process
 
     var config = ScreenShareConfig{
         .fps = req.fps,
@@ -239,47 +245,73 @@ fn handleShareScreen(req: control.ShareRequest, buf: []u8) []const u8 {
             return control.writeErrorResponse(buf, "invalid geometry format (expected WxH+X+Y)") orelse "";
     }
 
-    // Allocate ScreenShare on the heap (needs stable address for callbacks)
-    const share = allocator.create(ScreenShare) catch
-        return control.writeErrorResponse(buf, "out of memory") orelse "";
-
-    share.* = ScreenShare.init(config) catch |err| {
-        log.err("screen share init failed: {}", .{err});
-        allocator.destroy(share);
-        return control.writeErrorResponse(buf, "screen share init failed") orelse "";
-    };
-
-    // Find empty slot
+    // Find empty slot before spawning thread
     const slot_idx = findEmptySlot() orelse {
-        share.deinit();
-        allocator.destroy(share);
         return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
     };
 
-    sessions_mutex.lock();
-    sessions[slot_idx].payload = .{ .screen = share };
-    sessions_mutex.unlock();
+    // Allocate init result on heap (shared between threads)
+    const result = allocator.create(ScreenInitResult) catch
+        return control.writeErrorResponse(buf, "out of memory") orelse "";
+    defer allocator.destroy(result);
+    result.* = .{};
 
-    // Register callbacks after placement
-    share.start();
-
-    // Spawn capture thread
-    const thread = std.Thread.spawn(.{}, runScreenThread, .{share}) catch |err| {
+    // Spawn thread that does ALL GPU work: init + start + runLoop
+    // GL/CUDA contexts must be created and used on the same thread.
+    const thread = std.Thread.spawn(.{}, screenThreadEntry, .{ result, config, slot_idx }) catch |err| {
         log.err("thread spawn failed: {}", .{err});
-        sessions_mutex.lock();
-        sessions[slot_idx] = .{};
-        sessions_mutex.unlock();
-        share.deinit();
-        allocator.destroy(share);
         return control.writeErrorResponse(buf, "failed to start capture thread") orelse "";
     };
 
+    // Wait for init to complete on the capture thread
+    result.done.wait();
+
+    if (result.err_msg) |err_msg| {
+        thread.join();
+        return control.writeErrorResponse(buf, err_msg) orelse "";
+    }
+
+    const share = result.share.?;
+
+    // Store thread handle
     sessions_mutex.lock();
     sessions[slot_idx].thread = thread;
     sessions_mutex.unlock();
 
     return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
         control.writeErrorResponse(buf, "internal error") orelse "";
+}
+
+fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_idx: usize) void {
+    const allocator = std.heap.c_allocator;
+
+    const share = allocator.create(ScreenShare) catch {
+        result.err_msg = "out of memory";
+        result.done.set();
+        return;
+    };
+
+    share.* = ScreenShare.init(config) catch {
+        allocator.destroy(share);
+        result.err_msg = "screen share init failed";
+        result.done.set();
+        return;
+    };
+
+    // Register session slot
+    sessions_mutex.lock();
+    sessions[slot_idx].payload = .{ .screen = share };
+    sessions_mutex.unlock();
+
+    // Register callbacks (session is now at stable heap address)
+    share.start();
+
+    // Signal success to the daemon thread
+    result.share = share;
+    result.done.set();
+
+    // Run the capture loop (blocks until should_stop)
+    share.runLoop();
 }
 
 fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
@@ -335,10 +367,6 @@ fn findEmptySlot() ?usize {
         if (slot.payload == null) return i;
     }
     return null;
-}
-
-fn runScreenThread(share: *ScreenShare) void {
-    share.runLoop();
 }
 
 fn runTerminalThread(share: *TerminalShare) void {
