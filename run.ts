@@ -123,20 +123,32 @@ export async function lint() {
 
 export async function setup() {
     await build();
-    console.log("Installing zerocast...");
-    await $`sudo install -m 755 dist/bin/zerocast /usr/local/bin/zerocast`;
-    await $`sudo install -m 755 dist/bin/zerocast-kms /usr/local/bin/zerocast-kms`;
-    await $`sudo setcap cap_sys_admin+ep /usr/local/bin/zerocast-kms`;
+    const distBin = `${SCRIPT_DIR}/dist/bin`;
 
-    // Ensure user is in video group
+    // Symlink into ~/.local/bin (dev mode — production install.sh overwrites these)
+    console.log("Symlinking into ~/.local/bin (dev mode)...");
+    await $`mkdir -p ~/.local/bin`;
+    await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
+    await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
+
+    // CAP_SYS_ADMIN on the actual binary (not the symlink)
+    console.log("Setting CAP_SYS_ADMIN on zerocast-kms...");
+    await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
+
+    // Ensure user is in video + input groups
     const { stdout } = await $`id -nG`.quiet();
-    if (!stdout.toString().includes("video")) {
+    const groups = stdout.toString();
+    if (!groups.includes("video")) {
         console.log("Adding user to video group...");
         await $`sudo usermod -aG video $USER`;
-        console.log("NOTE: Log out and back in for video group to take effect.");
+    }
+    if (!groups.includes("input")) {
+        console.log("Adding user to input group (for /dev/uinput)...");
+        await $`sudo usermod -aG input $USER`;
     }
 
-    console.log("Setup complete.");
+    console.log("Setup complete. Binary: ~/.local/bin/zerocast → " + distBin);
+    console.log("To switch to production: run dist/install.sh from a release tarball.");
 }
 
 /** Default target: build + lint + unit tests. */
