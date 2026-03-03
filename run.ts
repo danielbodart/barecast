@@ -167,11 +167,27 @@ export async function dist() {
         process.exit(1);
     }
 
+    // Copy dist scripts into tarball staging area
+    for (const script of ["install.sh", "zerocast-update.sh", "zerocast-apply-update.sh", "zerocast-rollback.sh"]) {
+        if (existsSync(`dist/${script}`)) continue;
+        await $`cp dist-src/${script} dist/${script}`.nothrow();
+    }
+
     const ver = await version();
     await Bun.write("dist/VERSION", ver);
-    await $`tar -czf zerocast-linux-x86_64.tar.gz -C dist bin/ VERSION`;
+    await $`tar -czf zerocast-linux-x86_64.tar.gz -C dist bin/ VERSION install.sh zerocast-update.sh zerocast-apply-update.sh zerocast-rollback.sh`;
     await $`sha256sum zerocast-linux-x86_64.tar.gz > zerocast-linux-x86_64.tar.gz.sha256`;
     console.log(`Tarball: zerocast-linux-x86_64.tar.gz (v${ver})`);
+}
+
+export async function install() {
+    await build();
+    // Copy dist scripts alongside binaries
+    for (const script of ["install.sh", "zerocast-update.sh", "zerocast-apply-update.sh", "zerocast-rollback.sh"]) {
+        await $`cp dist/${script} dist/${script}`.nothrow();
+    }
+    console.log("Running installer...");
+    await $`bash dist/install.sh`;
 }
 
 export async function ci() {
@@ -251,6 +267,7 @@ async function workerBuild(minify = false) {
     console.log("Building viewer TypeScript...");
     const flags = minify ? ["--minify"] : [];
     await $`bun build worker/src/viewer.ts --outdir worker/public --target=browser ${flags}`;
+    await $`bun build worker/src/terminal-viewer.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/install.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/sw.ts --outdir worker/public --target=browser ${flags}`;
 }
@@ -277,7 +294,7 @@ async function printVersion() {
 }
 
 const commands: Record<string, Function> = {
-    dev, build, clean, setup, test, lint, dist, ci, integration, version: printVersion,
+    dev, build, clean, setup, test, lint, dist, ci, integration, install, version: printVersion,
     "rebuild-libs": rebuildLibs,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,

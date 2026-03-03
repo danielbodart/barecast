@@ -131,6 +131,65 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // --- Control protocol module (daemon ↔ CLI wire format) ---
+    const control_mod = b.createModule(.{
+        .root_source_file = b.path("src/control.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // --- Screen share module (capture pipeline as reusable struct) ---
+    const screen_share_mod = b.createModule(.{
+        .root_source_file = b.path("src/screen_share.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "nvfbc", .module = nvfbc_mod },
+            .{ .name = "encoder", .module = encoder_mod },
+            .{ .name = "ivf", .module = ivf_mod },
+            .{ .name = "session", .module = session_mod },
+            .{ .name = "overlay", .module = overlay_mod },
+            .{ .name = "viewer_state", .module = viewer_state_mod },
+            .{ .name = "uinput", .module = uinput_mod },
+        },
+    });
+
+    // --- Terminal share module (PTY management + asciinema recording) ---
+    const terminal_share_mod = b.createModule(.{
+        .root_source_file = b.path("src/terminal_share.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // --- Daemon module (socket listener, session manager) ---
+    const daemon_mod = b.createModule(.{
+        .root_source_file = b.path("src/daemon.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "control", .module = control_mod },
+            .{ .name = "screen_share", .module = screen_share_mod },
+            .{ .name = "terminal_share", .module = terminal_share_mod },
+        },
+    });
+    daemon_mod.addOptions("build_options", options);
+
+    // --- CLI module (subcommand parser, socket client) ---
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "control", .module = control_mod },
+        },
+    });
+    cli_mod.addOptions("build_options", options);
+
     // --- zerocast (main binary, unprivileged) ---
     const exe = b.addExecutable(.{
         .name = "zerocast",
@@ -139,26 +198,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "nvfbc", .module = nvfbc_mod },
-                .{ .name = "encoder", .module = encoder_mod },
-                .{ .name = "ivf", .module = ivf_mod },
-                .{ .name = "protocol", .module = protocol_mod },
-                .{ .name = "ipc", .module = ipc_mod },
-                .{ .name = "kms_client", .module = b.createModule(.{
-                    .root_source_file = b.path("src/kms_client.zig"),
-                    .target = target,
-                    .optimize = optimize,
-                    .imports = &.{
-                        .{ .name = "protocol", .module = protocol_mod },
-                        .{ .name = "ipc", .module = ipc_mod },
-                    },
-                }) },
-                .{ .name = "session", .module = session_mod },
-                .{ .name = "overlay", .module = overlay_mod },
-                .{ .name = "input_protocol", .module = input_protocol_mod },
-                .{ .name = "keymap", .module = keymap_mod },
-                .{ .name = "viewer_state", .module = viewer_state_mod },
-                .{ .name = "uinput", .module = uinput_mod },
+                .{ .name = "daemon", .module = daemon_mod },
+                .{ .name = "cli", .module = cli_mod },
             },
         }),
     });
@@ -214,22 +255,88 @@ pub fn build(b: *std.Build) void {
     // --- Test step ---
     const test_step = b.step("test", "Run unit tests");
 
-    // Main module tests — only needs nvfbc for the Box type used by parseGeometry.
-    // Other imports (encoder, session, overlay) are lazily resolved and not
-    // referenced by any test block.
-    const main_tests = b.addTest(.{
+    // Screen share tests (geometry parsing, room ID generation/validation)
+    const screen_share_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/screen_share.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            // Only nvfbc needed for the Box type
             .imports = &.{
                 .{ .name = "nvfbc", .module = nvfbc_mod },
             },
         }),
     });
-    main_tests.root_module.addOptions("build_options", options);
-    const run_main_tests = b.addRunArtifact(main_tests);
-    test_step.dependOn(&run_main_tests.step);
+    const run_screen_share_tests = b.addRunArtifact(screen_share_tests);
+    test_step.dependOn(&run_screen_share_tests.step);
+
+    // Control protocol tests (JSON roundtrip, socket path)
+    const control_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/control.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_control_tests = b.addRunArtifact(control_tests);
+    test_step.dependOn(&run_control_tests.step);
+
+    // Daemon tests (socket bind/accept, dispatch)
+    // The daemon imports screen_share which transitively depends on session
+    // (libdatachannel), so we need the include path + static libs.
+    const daemon_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/daemon.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "control", .module = control_mod },
+                .{ .name = "screen_share", .module = screen_share_mod },
+                .{ .name = "terminal_share", .module = terminal_share_mod },
+            },
+        }),
+    });
+    daemon_tests.root_module.addOptions("build_options", options);
+    daemon_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
+    daemon_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
+    daemon_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
+    daemon_tests.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
+    daemon_tests.linkSystemLibrary("ssl");
+    daemon_tests.linkSystemLibrary("crypto");
+    daemon_tests.linkLibCpp();
+    const run_daemon_tests = b.addRunArtifact(daemon_tests);
+    test_step.dependOn(&run_daemon_tests.step);
+
+    // Terminal share tests (PTY helpers, asciinema format)
+    const terminal_share_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/terminal_share.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_terminal_share_tests = b.addRunArtifact(terminal_share_tests);
+    test_step.dependOn(&run_terminal_share_tests.step);
+
+    // CLI tests (argument parsing, geometry detection)
+    const cli_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "control", .module = control_mod },
+            },
+        }),
+    });
+    cli_tests.root_module.addOptions("build_options", options);
+    const run_cli_tests = b.addRunArtifact(cli_tests);
+    test_step.dependOn(&run_cli_tests.step);
 
     // Protocol tests
     const protocol_tests = b.addTest(.{

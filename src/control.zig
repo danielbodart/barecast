@@ -1,0 +1,433 @@
+const std = @import("std");
+
+const log = std.log.scoped(.control);
+
+// ── Request types ────────────────────────────────────────────────────────
+
+pub const ShareType = enum {
+    screen,
+    terminal,
+};
+
+pub const Request = union(enum) {
+    share: ShareRequest,
+    unshare: UnshareRequest,
+    status,
+    shutdown,
+};
+
+pub const ShareRequest = struct {
+    type: ShareType = .screen,
+    geometry: ?[]const u8 = null, // "WxH+X+Y"
+    room: ?[]const u8 = null,
+    fps: u32 = 30,
+    record: bool = false,
+    command: ?[]const u8 = null, // terminal mode only
+};
+
+pub const UnshareRequest = struct {
+    session_id: ?[]const u8 = null,
+    type: ?ShareType = null,
+};
+
+// ── Response types ───────────────────────────────────────────────────────
+
+pub const Response = union(enum) {
+    ok: OkResponse,
+    status: StatusResponse,
+    err: []const u8,
+};
+
+pub const SessionInfo = struct {
+    id: []const u8,
+    type: ShareType,
+    room: []const u8,
+    viewers: u32,
+    recording: bool,
+    uptime_s: u64,
+};
+
+pub const OkResponse = struct {
+    session_id: []const u8,
+    room: []const u8,
+};
+
+pub const StatusResponse = struct {
+    sessions: []const SessionInfo,
+};
+
+// ── JSON serialization (stack-allocated, no heap) ────────────────────────
+
+/// Parse a newline-delimited JSON request from raw bytes.
+/// Returns the parsed request or null if malformed.
+pub fn parseRequest(msg: []const u8) ?Request {
+    const cmd = jsonExtract(msg, "cmd") orelse return null;
+
+    if (std.mem.eql(u8, cmd, "share")) {
+        var req = ShareRequest{};
+
+        if (jsonExtract(msg, "type")) |t| {
+            if (std.mem.eql(u8, t, "terminal")) {
+                req.type = .terminal;
+            } else {
+                req.type = .screen;
+            }
+        }
+
+        req.geometry = jsonExtract(msg, "geometry");
+        req.room = jsonExtract(msg, "room");
+        req.command = jsonExtract(msg, "command");
+
+        if (jsonExtractInt(msg, "fps")) |f| {
+            if (f >= 1 and f <= 144) req.fps = @intCast(f);
+        }
+
+        req.record = jsonExtractBool(msg, "record");
+
+        return .{ .share = req };
+    } else if (std.mem.eql(u8, cmd, "unshare")) {
+        var req = UnshareRequest{};
+        req.session_id = jsonExtract(msg, "session_id");
+
+        if (jsonExtract(msg, "type")) |t| {
+            if (std.mem.eql(u8, t, "screen")) {
+                req.type = .screen;
+            } else if (std.mem.eql(u8, t, "terminal")) {
+                req.type = .terminal;
+            }
+        }
+
+        return .{ .unshare = req };
+    } else if (std.mem.eql(u8, cmd, "status")) {
+        return .status;
+    } else if (std.mem.eql(u8, cmd, "shutdown")) {
+        return .shutdown;
+    }
+
+    return null;
+}
+
+/// Write a JSON success response: {"ok":true,"session_id":"...","room":"..."}
+pub fn writeOkResponse(buf: []u8, session_id: []const u8, room_url: []const u8) ?[]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    w.writeAll("{\"ok\":true,\"session_id\":\"") catch return null;
+    writeJsonEscaped(w, session_id) catch return null;
+    w.writeAll("\",\"room\":\"") catch return null;
+    writeJsonEscaped(w, room_url) catch return null;
+    w.writeAll("\"}\n") catch return null;
+    return fbs.getWritten();
+}
+
+/// Write a JSON error response: {"ok":false,"error":"..."}
+pub fn writeErrorResponse(buf: []u8, err_msg: []const u8) ?[]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    w.writeAll("{\"ok\":false,\"error\":\"") catch return null;
+    writeJsonEscaped(w, err_msg) catch return null;
+    w.writeAll("\"}\n") catch return null;
+    return fbs.getWritten();
+}
+
+/// Write a JSON status response with session array.
+pub fn writeStatusResponse(buf: []u8, sessions: []const SessionInfo) ?[]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    w.writeAll("{\"ok\":true,\"sessions\":[") catch return null;
+    for (sessions, 0..) |s, i| {
+        if (i > 0) w.writeByte(',') catch return null;
+        w.writeAll("{\"id\":\"") catch return null;
+        writeJsonEscaped(w, s.id) catch return null;
+        w.writeAll("\",\"type\":\"") catch return null;
+        w.writeAll(@tagName(s.type)) catch return null;
+        w.writeAll("\",\"room\":\"") catch return null;
+        writeJsonEscaped(w, s.room) catch return null;
+        w.writeAll("\",\"viewers\":") catch return null;
+        std.fmt.format(w, "{d}", .{s.viewers}) catch return null;
+        w.writeAll(",\"recording\":") catch return null;
+        w.writeAll(if (s.recording) "true" else "false") catch return null;
+        w.writeAll(",\"uptime_s\":") catch return null;
+        std.fmt.format(w, "{d}", .{s.uptime_s}) catch return null;
+        w.writeByte('}') catch return null;
+    }
+    w.writeAll("]}\n") catch return null;
+    return fbs.getWritten();
+}
+
+/// Write a simple {"ok":true} response (for unshare, shutdown).
+pub fn writeSimpleOk(buf: []u8) ?[]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    w.writeAll("{\"ok\":true}\n") catch return null;
+    return fbs.getWritten();
+}
+
+// ── Socket path ──────────────────────────────────────────────────────────
+
+pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
+    // XDG_RUNTIME_DIR is /run/user/$UID on systemd systems
+    const runtime_dir = std.process.getEnvVarOwned(std.heap.c_allocator, "XDG_RUNTIME_DIR") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => {
+            // Fallback: /tmp/zerocast-$UID.sock
+            const uid = std.os.linux.getuid();
+            const path = std.fmt.bufPrint(buf, "/tmp/zerocast-{d}.sock", .{uid}) catch return null;
+            return path;
+        },
+        else => return null,
+    };
+    defer std.heap.c_allocator.free(runtime_dir);
+
+    const path = std.fmt.bufPrint(buf, "{s}/zerocast.sock", .{runtime_dir}) catch return null;
+    return path;
+}
+
+// ── JSON helpers (same style as session.zig) ─────────────────────────────
+
+/// Extract a JSON string value for a given key.
+pub fn jsonExtract(json: []const u8, key: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + key.len + 4 < json.len) : (i += 1) {
+        if (json[i] == '"' and
+            i + 1 + key.len + 3 <= json.len and
+            std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
+            json[i + 1 + key.len] == '"' and
+            json[i + 1 + key.len + 1] == ':' and
+            json[i + 1 + key.len + 2] == '"')
+        {
+            const val_start = i + 1 + key.len + 3;
+            var j = val_start;
+            while (j < json.len) : (j += 1) {
+                if (json[j] == '\\') {
+                    j += 1;
+                    continue;
+                }
+                if (json[j] == '"') {
+                    return json[val_start..j];
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/// Extract a JSON integer value for a given key.
+fn jsonExtractInt(json: []const u8, key: []const u8) ?i64 {
+    // Look for "key":NUMBER pattern
+    var i: usize = 0;
+    while (i + key.len + 3 < json.len) : (i += 1) {
+        if (json[i] == '"' and
+            i + 1 + key.len + 2 <= json.len and
+            std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
+            json[i + 1 + key.len] == '"' and
+            json[i + 1 + key.len + 1] == ':')
+        {
+            const val_start = i + 1 + key.len + 2;
+            var j = val_start;
+            while (j < json.len and (json[j] >= '0' and json[j] <= '9')) : (j += 1) {}
+            if (j > val_start) {
+                return std.fmt.parseInt(i64, json[val_start..j], 10) catch null;
+            }
+        }
+    }
+    return null;
+}
+
+/// Extract a JSON boolean value for a given key.
+fn jsonExtractBool(json: []const u8, key: []const u8) bool {
+    // Look for "key":true pattern
+    var i: usize = 0;
+    while (i + key.len + 3 < json.len) : (i += 1) {
+        if (json[i] == '"' and
+            i + 1 + key.len + 2 <= json.len and
+            std.mem.eql(u8, json[i + 1 .. i + 1 + key.len], key) and
+            json[i + 1 + key.len] == '"' and
+            json[i + 1 + key.len + 1] == ':')
+        {
+            const val_start = i + 1 + key.len + 2;
+            if (val_start + 4 <= json.len and std.mem.eql(u8, json[val_start .. val_start + 4], "true")) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
+    for (s) |ch| {
+        switch (ch) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => try writer.writeByte(ch),
+        }
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+test "parseRequest share screen" {
+    const msg =
+        \\{"cmd":"share","type":"screen","geometry":"1920x1080+0+0","room":"my-room","fps":30,"record":true}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .share => |s| {
+            try std.testing.expectEqual(ShareType.screen, s.type);
+            try std.testing.expectEqualSlices(u8, "1920x1080+0+0", s.geometry.?);
+            try std.testing.expectEqualSlices(u8, "my-room", s.room.?);
+            try std.testing.expectEqual(@as(u32, 30), s.fps);
+            try std.testing.expect(s.record);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest share terminal" {
+    const msg =
+        \\{"cmd":"share","type":"terminal","command":"htop","record":false}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .share => |s| {
+            try std.testing.expectEqual(ShareType.terminal, s.type);
+            try std.testing.expectEqualSlices(u8, "htop", s.command.?);
+            try std.testing.expect(!s.record);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest unshare all" {
+    const msg =
+        \\{"cmd":"unshare"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .unshare => |u| {
+            try std.testing.expect(u.session_id == null);
+            try std.testing.expect(u.type == null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest unshare by id" {
+    const msg =
+        \\{"cmd":"unshare","session_id":"a3f9c12d"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .unshare => |u| {
+            try std.testing.expectEqualSlices(u8, "a3f9c12d", u.session_id.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest unshare by type" {
+    const msg =
+        \\{"cmd":"unshare","type":"screen"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .unshare => |u| {
+            try std.testing.expectEqual(ShareType.screen, u.type.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest status" {
+    const msg =
+        \\{"cmd":"status"}
+    ;
+    const req = parseRequest(msg).?;
+    try std.testing.expect(req == .status);
+}
+
+test "parseRequest shutdown" {
+    const msg =
+        \\{"cmd":"shutdown"}
+    ;
+    const req = parseRequest(msg).?;
+    try std.testing.expect(req == .shutdown);
+}
+
+test "parseRequest malformed" {
+    try std.testing.expect(parseRequest("not json") == null);
+    try std.testing.expect(parseRequest("{}") == null);
+    try std.testing.expect(parseRequest("{\"cmd\":\"bogus\"}") == null);
+}
+
+test "writeOkResponse roundtrip" {
+    var buf: [512]u8 = undefined;
+    const resp = writeOkResponse(&buf, "a3f9c12d", "https://zerocast.bodar.com/room/a3f9c12d").?;
+    try std.testing.expect(jsonExtract(resp, "session_id") != null);
+    try std.testing.expectEqualSlices(u8, "a3f9c12d", jsonExtract(resp, "session_id").?);
+}
+
+test "writeErrorResponse roundtrip" {
+    var buf: [512]u8 = undefined;
+    const resp = writeErrorResponse(&buf, "no session with that ID").?;
+    try std.testing.expect(jsonExtract(resp, "error") != null);
+    try std.testing.expectEqualSlices(u8, "no session with that ID", jsonExtract(resp, "error").?);
+}
+
+test "writeStatusResponse empty" {
+    var buf: [512]u8 = undefined;
+    const resp = writeStatusResponse(&buf, &.{}).?;
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"sessions\":[]") != null);
+}
+
+test "writeStatusResponse with session" {
+    var buf: [1024]u8 = undefined;
+    const sessions = [_]SessionInfo{.{
+        .id = "abc123",
+        .type = .screen,
+        .room = "https://example.com/room/abc123",
+        .viewers = 2,
+        .recording = true,
+        .uptime_s = 3600,
+    }};
+    const resp = writeStatusResponse(&buf, &sessions).?;
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"abc123\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"screen\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"viewers\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"recording\":true") != null);
+}
+
+test "writeSimpleOk" {
+    var buf: [64]u8 = undefined;
+    const resp = writeSimpleOk(&buf).?;
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"ok\":true") != null);
+}
+
+test "jsonExtract matches session.zig behavior" {
+    const json = "{\"type\":\"answer\",\"sdp\":\"v=0\\r\\n\"}";
+    try std.testing.expectEqualSlices(u8, "answer", jsonExtract(json, "type").?);
+    try std.testing.expectEqualSlices(u8, "v=0\\r\\n", jsonExtract(json, "sdp").?);
+    try std.testing.expect(jsonExtract(json, "missing") == null);
+}
+
+test "jsonExtractInt" {
+    const json = "{\"cmd\":\"share\",\"fps\":60,\"record\":true}";
+    try std.testing.expectEqual(@as(i64, 60), jsonExtractInt(json, "fps").?);
+    try std.testing.expect(jsonExtractInt(json, "missing") == null);
+}
+
+test "jsonExtractBool" {
+    const json = "{\"cmd\":\"share\",\"record\":true,\"other\":false}";
+    try std.testing.expect(jsonExtractBool(json, "record"));
+    try std.testing.expect(!jsonExtractBool(json, "other"));
+    try std.testing.expect(!jsonExtractBool(json, "missing"));
+}
+
+test "getSocketPath returns valid path" {
+    var buf: [256]u8 = undefined;
+    const path = getSocketPath(&buf);
+    try std.testing.expect(path != null);
+    try std.testing.expect(path.?.len > 0);
+    try std.testing.expect(std.mem.endsWith(u8, path.?, ".sock"));
+}
