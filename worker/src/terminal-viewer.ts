@@ -1,10 +1,11 @@
 /**
  * Terminal viewer — connects via WebRTC data channel to a terminal share.
- * Uses xterm.js for rendering, sends keyboard input back via the same channel.
+ * xterm.js is loaded from CDN in terminal.html.
+ * This script initializes the terminal and handles WebRTC signaling.
  */
 
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+declare const Terminal: any;
+declare const FitAddon: any;
 
 const roomId = window.location.pathname.split("/")[2];
 const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -13,11 +14,10 @@ const wsUrl = `${wsScheme}//${window.location.host}/room/${roomId}/ws?role=viewe
 let pc: RTCPeerConnection | null = null;
 let dc: RTCDataChannel | null = null;
 let ws: WebSocket | null = null;
-let term: Terminal | null = null;
-let fitAddon: FitAddon | null = null;
+let term: any = null;
+let fitAddon: any = null;
 
 function init() {
-    // Create terminal
     term = new Terminal({
         cursorBlink: true,
         fontSize: 14,
@@ -29,7 +29,7 @@ function init() {
         },
     });
 
-    fitAddon = new FitAddon();
+    fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
 
     const container = document.getElementById("terminal");
@@ -38,13 +38,11 @@ function init() {
         fitAddon.fit();
     }
 
-    // Handle window resize
     window.addEventListener("resize", () => {
         if (fitAddon) fitAddon.fit();
         sendResize();
     });
 
-    // Handle keyboard input — send to data channel
     term.onData((data: string) => {
         if (dc && dc.readyState === "open") {
             dc.send(data);
@@ -61,16 +59,13 @@ function connectSignaling() {
         console.log("Signaling connected");
     };
 
-    ws.onmessage = (event) => {
+    ws.onmessage = (event: MessageEvent) => {
         const msg = JSON.parse(event.data);
 
         if (msg.type === "offer") {
             handleOffer(msg);
         } else if (msg.type === "ice" && msg.from) {
             handleIce(msg);
-        } else if (msg.type === "turn-credentials") {
-            // Store TURN credentials for next PC creation
-            console.log("TURN credentials received");
         }
     };
 
@@ -87,7 +82,7 @@ async function handleOffer(msg: { sdp: string; from: string }) {
 
     pc = new RTCPeerConnection(config);
 
-    pc.onicecandidate = (event) => {
+    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: "ice",
@@ -98,7 +93,7 @@ async function handleOffer(msg: { sdp: string; from: string }) {
         }
     };
 
-    pc.ondatachannel = (event) => {
+    pc.ondatachannel = (event: RTCDataChannelEvent) => {
         if (event.channel.label === "terminal") {
             dc = event.channel;
             dc.binaryType = "arraybuffer";
@@ -109,7 +104,7 @@ async function handleOffer(msg: { sdp: string; from: string }) {
                 sendResize();
             };
 
-            dc.onmessage = (e) => {
+            dc.onmessage = (e: MessageEvent) => {
                 if (term) {
                     if (typeof e.data === "string") {
                         term.write(e.data);
@@ -154,14 +149,11 @@ function handleIce(msg: { candidate: string; mid: string }) {
 
 function sendResize() {
     if (dc && dc.readyState === "open" && term) {
-        // Send resize as JSON on the data channel
-        // Format: \x1b[R<cols>;<rows> (escape sequence prefix to distinguish from input)
         const msg = `\x1b[R${term.cols};${term.rows}`;
         dc.send(msg);
     }
 }
 
-// Auto-init
 if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
 } else {
