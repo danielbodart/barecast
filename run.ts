@@ -17,8 +17,24 @@ async function which(cmd: string): Promise<boolean> {
 
 async function ensureSubmodule() {
     if (!existsSync("libdatachannel/CMakeLists.txt")) {
-        console.log("Initializing submodules...");
-        await $`git submodule update --init --recursive`;
+        const mainWorktree = (await $`git worktree list`.quiet()).text().split("\n")[0]?.split(/\s+/)[0];
+        const mainSubmodule = mainWorktree ? `${mainWorktree}/libdatachannel` : null;
+        const isWorktree = mainSubmodule && mainWorktree !== SCRIPT_DIR;
+        if (isWorktree && existsSync(`${mainSubmodule}/CMakeLists.txt`)) {
+            // In a worktree, use `git worktree add` on each submodule instead of cloning.
+            // This shares the object store with the main repo's submodules (~250MB saved).
+            console.log("Creating submodule worktrees from main repo...");
+            const submodules = (await $`git -C ${mainSubmodule} submodule status`.quiet())
+                .text().trim().split("\n").map(line => line.trim().split(/\s+/));
+            const commit = (await $`git -C ${mainSubmodule} rev-parse HEAD`.quiet()).text().trim();
+            await $`git -C ${mainSubmodule} worktree add --detach ${SCRIPT_DIR}/libdatachannel ${commit}`;
+            for (const [depCommit, depPath] of submodules) {
+                await $`git -C ${mainSubmodule}/${depPath} worktree add --detach ${SCRIPT_DIR}/libdatachannel/${depPath} ${depCommit}`;
+            }
+        } else {
+            console.log("Initializing submodules...");
+            await $`git submodule update --init --recursive`;
+        }
     }
 }
 
