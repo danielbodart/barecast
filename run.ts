@@ -131,10 +131,6 @@ export async function setup() {
     await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
     await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
 
-    // CAP_SYS_ADMIN on the actual binary (not the symlink)
-    console.log("Setting CAP_SYS_ADMIN on zerocast-kms...");
-    await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
-
     // Ensure user is in video + input groups
     const { stdout } = await $`id -nG`.quiet();
     const groups = stdout.toString();

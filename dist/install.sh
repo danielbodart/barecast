@@ -47,27 +47,18 @@ is_dev_mode() {
 # ─── Permissions ──────────────────────────────────────────────────────────────
 
 check_permissions() {
-    # CAP_SYS_ADMIN for zerocast-kms (DRM/KMS access)
-    local kms_binary="$1"
-    if [ -f "$kms_binary" ]; then
-        echo ""
-        echo "=== Capabilities Setup ==="
-        echo "zerocast-kms needs CAP_SYS_ADMIN for DRM/KMS screen capture."
-        if confirm "Set capability on zerocast-kms? (requires sudo)"; then
-            sudo setcap cap_sys_admin+ep "$kms_binary"
-            echo "CAP_SYS_ADMIN set."
-        fi
-    fi
-
     # Check input group membership (for /dev/uinput remote input)
     if ! id -nG | grep -qw input; then
         echo ""
         echo "=== Input Group Setup ==="
         echo "The 'input' group is needed for remote keyboard/mouse via /dev/uinput."
         if confirm "Add current user to 'input' group? (requires sudo)"; then
-            sudo usermod -aG input "$USER"
-            NEEDS_REBOOT=true
-            echo "Added to 'input' group."
+            if sudo usermod -aG input "$USER"; then
+                NEEDS_REBOOT=true
+                echo "Added to 'input' group."
+            else
+                echo "WARNING: Failed. Run manually: sudo usermod -aG input $USER"
+            fi
         fi
     fi
 
@@ -77,10 +68,14 @@ check_permissions() {
         echo ""
         echo "Setting up /dev/uinput access..."
         if confirm "Install udev rule for /dev/uinput? (requires sudo)"; then
-            echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee "$uinput_rule" >/dev/null
-            sudo udevadm control --reload-rules || true
-            sudo udevadm trigger /dev/uinput || true
-            echo "udev rule installed."
+            if echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee "$uinput_rule" >/dev/null; then
+                sudo udevadm control --reload-rules || true
+                sudo udevadm trigger /dev/uinput || true
+                echo "udev rule installed."
+            else
+                echo "WARNING: Failed. Run manually:"
+                echo "  echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' | sudo tee $uinput_rule"
+            fi
         fi
     fi
 
@@ -88,9 +83,12 @@ check_permissions() {
     if ! id -nG | grep -qw video; then
         echo ""
         if confirm "Add current user to 'video' group? (for GPU access, requires sudo)"; then
-            sudo usermod -aG video "$USER"
-            NEEDS_REBOOT=true
-            echo "Added to 'video' group."
+            if sudo usermod -aG video "$USER"; then
+                NEEDS_REBOOT=true
+                echo "Added to 'video' group."
+            else
+                echo "WARNING: Failed. Run manually: sudo usermod -aG video $USER"
+            fi
         fi
     fi
 }
@@ -289,7 +287,7 @@ cmd_install() {
         local project_dir
         project_dir="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-        check_permissions "$SCRIPT_DIR/bin/zerocast-kms"
+        check_permissions
 
         # Dev mode: symlink into ~/.local/bin pointing at source tree
         mkdir -p "$HOME/.local/bin"
@@ -304,7 +302,7 @@ cmd_install() {
 
         # Always update files + symlinks (this is the upgrade)
         install_files
-        check_permissions "$INSTALL_DIR/current/bin/zerocast-kms"
+        check_permissions
 
         if $is_upgrade; then
             # Upgrade: preserve existing service config, just update binaries

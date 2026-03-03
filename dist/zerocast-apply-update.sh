@@ -27,12 +27,6 @@ main() {
         date +%s > "$INSTALL_DIR/.update-applied-at"
     fi
 
-    # Set CAP_SYS_ADMIN on new zerocast-kms if present
-    local new_kms="$release_dir/bin/zerocast-kms"
-    if [ -f "$new_kms" ]; then
-        sudo setcap cap_sys_admin+ep "$new_kms" 2>/dev/null || true
-    fi
-
     # Atomic symlink swap: ln creates new symlink, mv atomically replaces via rename(2)
     ln -sfn "releases/$pending" "$INSTALL_DIR/current.tmp"
     mv -T "$INSTALL_DIR/current.tmp" "$INSTALL_DIR/current"
