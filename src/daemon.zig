@@ -312,6 +312,10 @@ fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_
 
     // Run the capture loop (blocks until should_stop)
     share.runLoop();
+
+    // Clean up GPU resources on the same thread they were created
+    // (GL/CUDA contexts are thread-local)
+    share.deinit();
 }
 
 fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
@@ -419,10 +423,9 @@ fn signalStop(payload: SharePayload) void {
 fn deinitAndFree(payload: SharePayload) void {
     const allocator = std.heap.c_allocator;
     switch (payload) {
-        .screen => |s| {
-            s.deinit();
-            allocator.destroy(s);
-        },
+        // Screen shares deinit on their capture thread (GL contexts are thread-local).
+        // We only free the heap allocation here after thread.join().
+        .screen => |s| allocator.destroy(s),
         .terminal => |t| {
             t.deinit();
             allocator.destroy(t);

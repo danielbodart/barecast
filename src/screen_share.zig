@@ -184,7 +184,11 @@ pub const ScreenShare = struct {
 
     /// Register callbacks and start signaling. Must be called after init,
     /// once ScreenShare is at its final memory location.
+    /// Fixes up internal pointers that were invalidated by the struct move.
     pub fn start(self: *ScreenShare) void {
+        // The encoder's session sink pointer was set during init() when the struct
+        // was on the stack. Now that we're at our final heap address, fix it up.
+        self.encoder.sink = .{ .session = &self.session };
         self.session.start();
     }
 
