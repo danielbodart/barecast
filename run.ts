@@ -31,6 +31,7 @@ async function ensureSubmodule() {
             for (const [depCommit, depPath] of submodules) {
                 await $`git -C ${mainSubmodule}/${depPath} worktree add --detach ${SCRIPT_DIR}/libdatachannel/${depPath} ${depCommit}`;
             }
+
         } else {
             console.log("Initializing submodules...");
             await $`git submodule update --init --recursive`;
@@ -80,6 +81,17 @@ async function ensureDeps() {
     }
 }
 
+/** In a worktree, copy pre-built cmake libs from the main repo to avoid a full rebuild. */
+async function ensureCmakeLibs() {
+    if (existsSync(".zig-cache/cmake/libdatachannel.a")) return;
+    const mainWorktree = (await $`git worktree list`.quiet()).text().split("\n")[0]?.split(/\s+/)[0];
+    if (!mainWorktree || mainWorktree === SCRIPT_DIR) return;
+    const mainCmake = `${mainWorktree}/.zig-cache/cmake`;
+    if (!existsSync(`${mainCmake}/libdatachannel.a`)) return;
+    console.log("Copying pre-built static libs from main repo...");
+    await $`cp -r ${mainCmake} .zig-cache/cmake`;
+}
+
 // ─── Version ────────────────────────────────────────────────────────────────
 
 async function version(): Promise<string> {
@@ -97,6 +109,7 @@ async function version(): Promise<string> {
 export async function build() {
     await ensureDeps();
     await ensureSubmodule();
+    await ensureCmakeLibs();
     const ver = await version();
     console.log(`Building v${ver}...`);
     await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe`;
