@@ -6,6 +6,7 @@
 interface ShareInfo {
     shareId: string;
     kind: string;
+    title: string;
     popout: Window | null;
 }
 
@@ -97,7 +98,7 @@ if (!roomId) {
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     }
 
-    function reconcileShares(incoming: { share_id: string; share_type: string }[]) {
+    function reconcileShares(incoming: { share_id: string; share_type: string; title?: string }[]) {
         const incomingIds = new Set(incoming.map((s) => s.share_id));
 
         // Remove shares that are no longer active
@@ -107,19 +108,33 @@ if (!roomId) {
             }
         }
 
-        // Add new shares
+        // Add or update shares
         for (const s of incoming) {
+            const title = s.title ?? "";
             if (!shares.has(s.share_id)) {
-                addShare(s.share_id, s.share_type);
+                addShare(s.share_id, s.share_type, title);
+            } else {
+                updateShareTitle(s.share_id, title);
             }
         }
 
         updateEmptyState();
     }
 
-    function addShare(shareId: string, kind: string) {
-        shares.set(shareId, { shareId, kind, popout: null });
-        renderCard(shareId, kind);
+    function addShare(shareId: string, kind: string, title: string) {
+        shares.set(shareId, { shareId, kind, title, popout: null });
+        renderCard(shareId, kind, title);
+    }
+
+    function updateShareTitle(shareId: string, title: string) {
+        const info = shares.get(shareId);
+        if (!info || info.title === title) return;
+        info.title = title;
+        const el = document.querySelector(`#card-${shareId} .share-card-title`);
+        if (el) {
+            (el as HTMLElement).textContent = title;
+            (el as HTMLElement).style.display = title ? "block" : "none";
+        }
     }
 
     function removeShare(shareId: string) {
@@ -128,7 +143,7 @@ if (!roomId) {
         card?.remove();
     }
 
-    function renderCard(shareId: string, kind: string) {
+    function renderCard(shareId: string, kind: string, title: string) {
         const card = document.createElement("div");
         card.className = "share-card";
         card.id = `card-${shareId}`;
@@ -141,12 +156,18 @@ if (!roomId) {
         label.className = "share-card-label";
         label.textContent = kind === "terminal" ? "Terminal" : "Screen";
 
+        const titleEl = document.createElement("div");
+        titleEl.className = "share-card-title";
+        titleEl.textContent = title;
+        titleEl.style.display = title ? "block" : "none";
+
         const badge = document.createElement("div");
         badge.className = "share-card-badge";
         badge.textContent = "viewing";
 
         card.appendChild(kindEl);
         card.appendChild(label);
+        card.appendChild(titleEl);
         card.appendChild(badge);
 
         card.addEventListener("click", () => openShare(shareId));

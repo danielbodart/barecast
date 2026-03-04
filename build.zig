@@ -43,6 +43,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // --- OSC parser module (terminal title extraction from PTY stream) ---
+    const osc_parser_mod = b.createModule(.{
+        .root_source_file = b.path("src/osc_parser.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // --- Keymap module (KeyboardEvent.code → Linux keycode) ---
     const keymap_mod = b.createModule(.{
         .root_source_file = b.path("src/keymap.zig"),
@@ -165,6 +172,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "session", .module = session_mod },
+            .{ .name = "osc_parser", .module = osc_parser_mod },
         },
     });
 
@@ -322,6 +330,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "session", .module = session_mod },
+                .{ .name = "osc_parser", .module = osc_parser_mod },
             },
         }),
     });
@@ -335,6 +344,17 @@ pub fn build(b: *std.Build) void {
     terminal_share_tests.linkLibCpp();
     const run_terminal_share_tests = b.addRunArtifact(terminal_share_tests);
     test_step.dependOn(&run_terminal_share_tests.step);
+
+    // OSC parser tests (terminal title extraction)
+    const osc_parser_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/osc_parser.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_osc_parser_tests = b.addRunArtifact(osc_parser_tests);
+    test_step.dependOn(&run_osc_parser_tests.step);
 
     // CLI tests (argument parsing, geometry detection)
     const cli_tests = b.addTest(.{

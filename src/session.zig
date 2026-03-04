@@ -473,6 +473,15 @@ pub const BroadcastSession = struct {
     /// Send data over the data channel to all connected peers (terminal mode).
     /// Uses text framing (negative size in libdatachannel C API) since PTY
     /// output is UTF-8/ASCII text.
+    /// Send a title update over the signaling WebSocket.
+    pub fn sendTitleUpdate(self: *BroadcastSession, title: []const u8) void {
+        if (!self.ws_connected.load(.acquire)) return;
+        var buf: [512]u8 = undefined;
+        const msg = jsonTitleUpdate(&buf, title) catch return;
+        buf[msg.len] = 0;
+        _ = c.rtcSendMessage(self.ws, &buf, -1);
+    }
+
     /// Send data over the data channel to all connected peers (terminal mode).
     /// Uses binary framing — the browser handles both text and binary in onmessage.
     pub fn sendData(self: *BroadcastSession, data: []const u8) void {
@@ -777,6 +786,16 @@ pub const BroadcastSession = struct {
 };
 
 // ── JSON helpers (fixed-format, stack buffers, no allocations) ────────────
+
+/// Build {"type":"set-title","title":"<title>"}
+fn jsonTitleUpdate(buf: []u8, title: []const u8) ![]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    try w.writeAll("{\"type\":\"set-title\",\"title\":\"");
+    try writeJsonEscaped(w, title);
+    try w.writeAll("\"}");
+    return fbs.getWritten();
+}
 
 /// Build {"type":"<type>","to":"<peer_id>","sdp":"<sdp>"}
 fn jsonRoutedSdp(buf: []u8, msg_type: []const u8, peer_id: []const u8, sdp: []const u8) ![]const u8 {

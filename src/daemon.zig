@@ -195,6 +195,7 @@ fn handleStatus(buf: []u8) []const u8 {
                         .viewers = share.viewerCount(),
                         .recording = share.recording != null,
                         .uptime_s = share.uptimeSeconds(),
+                        .title = share.currentTitle(),
                     };
                 },
             }

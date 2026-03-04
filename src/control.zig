@@ -45,6 +45,7 @@ pub const SessionInfo = struct {
     viewers: u32,
     recording: bool,
     uptime_s: u64,
+    title: []const u8 = "",
 };
 
 pub const OkResponse = struct {
@@ -148,6 +149,11 @@ pub fn writeStatusResponse(buf: []u8, sessions: []const SessionInfo) ?[]const u8
         w.writeAll(if (s.recording) "true" else "false") catch return null;
         w.writeAll(",\"uptime_s\":") catch return null;
         std.fmt.format(w, "{d}", .{s.uptime_s}) catch return null;
+        if (s.title.len > 0) {
+            w.writeAll(",\"title\":\"") catch return null;
+            writeJsonEscaped(w, s.title) catch return null;
+            w.writeByte('"') catch return null;
+        }
         w.writeByte('}') catch return null;
     }
     w.writeAll("]}\n") catch return null;

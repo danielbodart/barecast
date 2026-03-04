@@ -59,10 +59,8 @@ export class SignalingRoom extends DurableObject<Env> {
             }
         }
 
-        this.ctx.acceptWebSocket(server, [
-            `sharer:${shareId}:${peerId}`,
-            `sharetype:${shareType}`,
-        ]);
+        this.ctx.acceptWebSocket(server, [`sharer:${shareId}:${peerId}`]);
+        server.serializeAttachment({ shareType, title: "" });
 
         // TURN credentials
         const creds = await this.generateTurnCredentials();
@@ -160,8 +158,20 @@ export class SignalingRoom extends DurableObject<Env> {
         if (!parsed) return;
 
         if (parsed.role === "sharer") {
-            // Sharer → specific viewer: route by "to" field
             const msg = JSON.parse(message) as Record<string, unknown>;
+
+            // Title update — store in attachment and broadcast to all viewers
+            if (msg.type === "set-title") {
+                const title = typeof msg.title === "string"
+                    ? (msg.title as string).slice(0, 200)
+                    : "";
+                const existing = (ws.deserializeAttachment() as { shareType: string; title: string } | null) ?? { shareType: "screen", title: "" };
+                ws.serializeAttachment({ ...existing, title });
+                this.broadcastSharesList();
+                return;
+            }
+
+            // Sharer → specific viewer: route by "to" field
             const targetViewerPeerId = msg.to as string;
             if (!targetViewerPeerId) return;
 
@@ -276,17 +286,20 @@ export class SignalingRoom extends DurableObject<Env> {
         return null;
     }
 
-    private buildSharesList(): { share_id: string; share_type: string }[] {
-        const shares: { share_id: string; share_type: string }[] = [];
+    private buildSharesList(): { share_id: string; share_type: string; title: string }[] {
+        const shares: { share_id: string; share_type: string; title: string }[] = [];
         for (const ws of this.ctx.getWebSockets()) {
             if (ws.readyState !== WebSocket.OPEN) continue;
             const tags = this.ctx.getTags(ws);
             if (!tags[0]?.startsWith("sharer:")) continue;
             const parsed = this.parseTag(ws);
             if (!parsed || parsed.role !== "sharer") continue;
-            const typeTag = tags.find((t) => t.startsWith("sharetype:"));
-            const shareType = typeTag ? typeTag.slice(10) : "screen";
-            shares.push({ share_id: parsed.shareId, share_type: shareType });
+            const attachment = ws.deserializeAttachment() as { shareType: string; title: string } | null;
+            shares.push({
+                share_id: parsed.shareId,
+                share_type: attachment?.shareType ?? "screen",
+                title: attachment?.title ?? "",
+            });
         }
         return shares;
     }

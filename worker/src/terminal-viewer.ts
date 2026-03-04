@@ -58,6 +58,11 @@ function init() {
         sendResize();
     });
 
+    // Update browser tab title when program sets terminal title (OSC 0/2)
+    term.onTitleChange((title: string) => {
+        document.title = title || "zerocast terminal";
+    });
+
     term.onData((data: string) => {
         if (dc && dc.readyState === "open") {
             dc.send(data);

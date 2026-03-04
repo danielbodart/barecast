@@ -12,6 +12,7 @@ const c = @cImport({
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionMode = @import("session").SessionMode;
 const TerminalDataCallback = @import("session").TerminalDataCallback;
+const OscParser = @import("osc_parser").OscParser;
 
 const log = std.log.scoped(.terminal_share);
 
@@ -40,6 +41,9 @@ pub const TerminalShare = struct {
     share_url: []const u8,
     room_id_buf: [16]u8,
     room_id_len: usize,
+    osc: OscParser,
+    current_title: [200]u8,
+    current_title_len: std.atomic.Value(u16),
 
     /// Initialize in-place: fork a PTY, spawn shell/command, create BroadcastSession.
     /// MUST be called on a heap-allocated TerminalShare (pointers captured into session).
@@ -91,6 +95,9 @@ pub const TerminalShare = struct {
         self.recording = null;
         self.share_url_buf = undefined;
         self.share_url = "";
+        self.osc = OscParser{};
+        self.current_title = std.mem.zeroes([200]u8);
+        self.current_title_len = std.atomic.Value(u16).init(0);
 
         // Generate session ID
         std.crypto.random.bytes(&self.session_id);
@@ -203,6 +210,18 @@ pub const TerminalShare = struct {
 
                 const data = buf[0..n];
 
+                // Parse for terminal title changes (OSC 0/2)
+                if (self.osc.feed(data)) |new_title| {
+                    const old_len = self.current_title_len.load(.acquire);
+                    const old = self.current_title[0..old_len];
+                    if (!std.mem.eql(u8, old, new_title)) {
+                        @memcpy(self.current_title[0..new_title.len], new_title);
+                        self.current_title_len.store(@intCast(new_title.len), .release);
+                        self.session.sendTitleUpdate(new_title);
+                        log.info("title: {s}", .{new_title});
+                    }
+                }
+
                 // Send to viewers via WebRTC data channel
                 self.session.sendData(data);
 
@@ -240,6 +259,12 @@ pub const TerminalShare = struct {
         if (self.recording) |*rec| {
             rec.writeResize(cols, rows) catch {};
         }
+    }
+
+    /// Get the current terminal title (thread-safe read).
+    pub fn currentTitle(self: *TerminalShare) []const u8 {
+        const len = self.current_title_len.load(.acquire);
+        return self.current_title[0..len];
     }
 
     /// Get number of connected viewers.
