@@ -11,6 +11,18 @@ const log = std.log.scoped(.session);
 pub const MAX_PEERS: usize = 8;
 pub const PEER_ID_LEN: usize = 16;
 
+pub const SessionMode = enum {
+    screen, // AV1 track + unreliable "input" data channel
+    terminal, // No track + reliable "terminal" data channel
+};
+
+/// Callback for terminal data channel messages (viewer input).
+pub const TerminalDataCallback = struct {
+    ptr: *anyopaque,
+    onData: *const fn (*anyopaque, []const u8) void,
+    onResize: *const fn (*anyopaque, u16, u16) void,
+};
+
 // ── Peer ─────────────────────────────────────────────────────────────────
 
 pub const PeerState = enum(u8) {
@@ -54,7 +66,7 @@ pub const Peer = struct {
         };
     }
 
-    /// Register callbacks, add AV1 track + data channel, and generate offer.
+    /// Register callbacks, add track/data channel, and generate offer.
     /// MUST be called after initInPlace, once Peer is at its final memory location.
     pub fn start(self: *Peer) void {
         c.rtcSetUserPointer(self.pc, @ptrCast(self));
@@ -62,6 +74,17 @@ pub const Peer = struct {
         _ = c.rtcSetLocalCandidateCallback(self.pc, localCandidateCallback);
         _ = c.rtcSetStateChangeCallback(self.pc, stateChangeCallback);
 
+        if (self.session.mode == .screen) {
+            self.startScreen();
+        } else {
+            self.startTerminal();
+        }
+
+        // Generate offer explicitly — auto-negotiation is disabled
+        _ = c.rtcSetLocalDescription(self.pc, "offer");
+    }
+
+    fn startScreen(self: *Peer) void {
         // Add sendonly AV1 track
         var track_init = std.mem.zeroes(c.rtcTrackInit);
         track_init.direction = c.RTC_DIRECTION_SENDONLY;
@@ -111,11 +134,22 @@ pub const Peer = struct {
         } else {
             log.warn("data channel creation failed: {d}", .{dc});
         }
+    }
 
-        // Generate offer explicitly — auto-negotiation is disabled, so
-        // rtcAddTrackEx/rtcCreateDataChannelEx didn't trigger one.
-        // This produces the final SDP with both the AV1 track and input data channel.
-        _ = c.rtcSetLocalDescription(self.pc, "offer");
+    fn startTerminal(self: *Peer) void {
+        // Reliable, ordered data channel for terminal I/O
+        var dc_init = std.mem.zeroes(c.rtcDataChannelInit);
+        // Default: reliable + ordered (all zeros)
+
+        const dc = c.rtcCreateDataChannelEx(self.pc, "terminal", &dc_init);
+        if (dc >= 0) {
+            self.dc = dc;
+            c.rtcSetUserPointer(dc, @ptrCast(self));
+            _ = c.rtcSetOpenCallback(dc, termDcOpenCallback);
+            _ = c.rtcSetMessageCallback(dc, termDcMessageCallback);
+        } else {
+            log.warn("terminal data channel creation failed: {d}", .{dc});
+        }
     }
 
     /// Close PC + track + DC handles. Does NOT call rtcCleanup().
@@ -242,6 +276,52 @@ pub const Peer = struct {
         }
     }
 
+    /// Terminal data channel opened — mark peer as connected.
+    /// For data-channel-only connections (no media tracks), the DC open
+    /// event is the reliable signal that the peer connection is usable.
+    fn termDcOpenCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self = ptrToPeer(ptr) orelse return;
+        log.info("terminal channel open for {s}", .{self.peer_id});
+        self.state.store(.connected, .release);
+    }
+
+    /// Terminal data channel message — forward viewer input to PTY.
+    fn termDcMessageCallback(_: c_int, raw_msg: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.c) void {
+        const self = ptrToPeer(ptr) orelse return;
+        const session = self.session;
+
+        const cb = session.terminal_callback orelse return;
+
+        if (size < 0) {
+            // Text message (negative size in libdatachannel C API)
+            const len: usize = @intCast(-(size + 1));
+            const data: []const u8 = @as([*]const u8, @ptrCast(raw_msg))[0..len];
+
+            // Check for resize escape: \x1b[R{cols};{rows}
+            if (data.len > 3 and data[0] == 0x1b and data[1] == '[' and data[2] == 'R') {
+                if (parseResize(data[3..])) |r| {
+                    cb.onResize(cb.ptr, r.cols, r.rows);
+                    return;
+                }
+            }
+
+            cb.onData(cb.ptr, data);
+        } else if (size > 0) {
+            // Binary message
+            const len: usize = @intCast(size);
+            const data: []const u8 = @as([*]const u8, @ptrCast(raw_msg))[0..len];
+            cb.onData(cb.ptr, data);
+        }
+    }
+
+    fn parseResize(data: []const u8) ?struct { cols: u16, rows: u16 } {
+        // Parse "{cols};{rows}"
+        const sep = std.mem.indexOfScalar(u8, data, ';') orelse return null;
+        const cols = std.fmt.parseInt(u16, data[0..sep], 10) catch return null;
+        const rows = std.fmt.parseInt(u16, data[sep + 1 ..], 10) catch return null;
+        return .{ .cols = cols, .rows = rows };
+    }
+
     fn localDescriptionCallback(_: c_int, sdp: [*c]const u8, desc_type: [*c]const u8, ptr: ?*anyopaque) callconv(.c) void {
         const self = ptrToPeer(ptr) orelse return;
         const sdp_slice = std.mem.span(sdp);
@@ -307,22 +387,24 @@ pub const BroadcastSession = struct {
     ice_servers: [2][*c]const u8,
     turn_uri: [256]u8,
     ws_connected: std.atomic.Value(bool),
-    ws_url_z: [513]u8,
+    ws_url_z: [600]u8,
     ws_url_len: usize,
+    mode: SessionMode,
     viewer_registry: ?*ViewerRegistry,
     input_handler: ?InputHandler,
+    terminal_callback: ?TerminalDataCallback,
 
     /// Create signaling WebSocket and initialize empty peer array.
-    pub fn init(signaling_url: []const u8, room_id: []const u8) !BroadcastSession {
+    pub fn init(signaling_url: []const u8, room_id: []const u8, share_id: []const u8, share_type: []const u8, mode: SessionMode) !BroadcastSession {
         c.rtcInitLogger(c.RTC_LOG_WARNING, null);
 
-        // Build WS URL
-        var url_buf: [512]u8 = undefined;
-        const ws_url = std.fmt.bufPrint(&url_buf, "{s}/room/{s}/ws?role=sharer", .{
-            signaling_url, room_id,
+        // Build WS URL with share_id and share_type for multi-sharer routing
+        var url_buf: [599]u8 = undefined;
+        const ws_url = std.fmt.bufPrint(&url_buf, "{s}/room/{s}/ws?role=sharer&share_id={s}&share_type={s}", .{
+            signaling_url, room_id, share_id, share_type,
         }) catch return error.UrlTooLong;
 
-        var url_z: [513]u8 = undefined;
+        var url_z: [600]u8 = undefined;
         @memcpy(url_z[0..ws_url.len], ws_url);
         url_z[ws_url.len] = 0;
 
@@ -341,8 +423,10 @@ pub const BroadcastSession = struct {
         session.ws_connected = std.atomic.Value(bool).init(false);
         session.ws_url_z = url_z;
         session.ws_url_len = ws_url.len;
+        session.mode = mode;
         session.viewer_registry = null;
         session.input_handler = null;
+        session.terminal_callback = null;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {
@@ -382,6 +466,21 @@ pub const BroadcastSession = struct {
         for (&self.peers) |*peer| {
             if (peer.state.load(.acquire) == .connected) {
                 peer.sendFrame(data, rtp_ts, capture_ntp);
+            }
+        }
+    }
+
+    /// Send data over the data channel to all connected peers (terminal mode).
+    /// Uses text framing (negative size in libdatachannel C API) since PTY
+    /// output is UTF-8/ASCII text.
+    /// Send data over the data channel to all connected peers (terminal mode).
+    /// Uses binary framing — the browser handles both text and binary in onmessage.
+    pub fn sendData(self: *BroadcastSession, data: []const u8) void {
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers) |*peer| {
+            if (peer.state.load(.acquire) == .connected and peer.dc >= 0) {
+                _ = c.rtcSendMessage(peer.dc, @ptrCast(data.ptr), @intCast(data.len));
             }
         }
     }

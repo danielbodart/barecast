@@ -305,6 +305,7 @@ async function workerBuild(minify = false) {
     const flags = minify ? ["--minify"] : [];
     await $`bun build worker/src/viewer.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/terminal-viewer.ts --outdir worker/public --target=browser ${flags}`;
+    await $`bun build worker/src/hub.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/install.ts --outdir worker/public --target=browser ${flags}`;
     await $`bun build worker/src/sw.ts --outdir worker/public --target=browser ${flags}`;
 }

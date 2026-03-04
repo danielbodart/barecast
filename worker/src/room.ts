@@ -4,17 +4,16 @@ import { DurableObject } from "cloudflare:workers";
 /**
  * SignalingRoom — one Durable Object per room.
  *
- * Per-peer routing: each WebSocket is tagged with "role:peerId" (e.g.,
- * "sharer:abc123" or "viewer:def456"). Sharer→viewer messages include a "to"
- * field for routing. Viewer→sharer messages get a "from" field stamped by the DO.
+ * Supports multiple sharers per room. Each WebSocket is tagged:
+ *   sharer:{shareId}:{peerId}  + secondary tag "sharetype:{type}"
+ *   viewer:{peerId}:{shareId}  (subscribed to a specific share)
+ *   viewer:{peerId}:lobby      (hub page, receives shares-list only)
  *
  * Uses the WebSocket Hibernation API — the DO sleeps when signaling is idle.
  */
 export class SignalingRoom extends DurableObject<Env> {
     constructor(ctx: DurableObjectState, env: Env) {
         super(ctx, env);
-        // Auto-respond to "ping" with "pong" without waking the DO from hibernation.
-        // Keeps the sharer's WebSocket alive through Cloudflare's edge proxy.
         this.ctx.setWebSocketAutoResponse(
             new WebSocketRequestResponsePair("ping", "pong")
         );
@@ -35,17 +34,37 @@ export class SignalingRoom extends DurableObject<Env> {
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
 
-        // Close any existing socket with the same tag (fast reconnect dedup)
-        const tag = `${role}:${peerId}`;
+        if (role === "sharer") {
+            await this.acceptSharer(server, peerId, url);
+        } else {
+            await this.acceptViewer(server, peerId, url);
+        }
+
+        return new Response(null, { status: 101, webSocket: client });
+    }
+
+    private async acceptSharer(
+        server: WebSocket,
+        peerId: string,
+        url: URL
+    ): Promise<void> {
+        const shareId = url.searchParams.get("share_id") || peerId;
+        const shareType = url.searchParams.get("share_type") || "screen";
+
+        // Dedup: close existing socket with same shareId (reconnect)
         for (const existing of this.ctx.getWebSockets()) {
-            if (this.getTag(existing) === tag) {
+            const parsed = this.parseTag(existing);
+            if (parsed?.role === "sharer" && parsed.shareId === shareId) {
                 existing.close(1001, "reconnected");
             }
         }
 
-        this.ctx.acceptWebSocket(server, [tag]);
+        this.ctx.acceptWebSocket(server, [
+            `sharer:${shareId}:${peerId}`,
+            `sharetype:${shareType}`,
+        ]);
 
-        // Send TURN credentials before any signaling messages
+        // TURN credentials
         const creds = await this.generateTurnCredentials();
         if (creds) {
             server.send(
@@ -57,28 +76,78 @@ export class SignalingRoom extends DurableObject<Env> {
             );
         }
 
-        if (role === "viewer") {
-            // Notify the sharer about the new viewer
-            this.safeSendToSharer(
-                JSON.stringify({ type: "viewer-joined", peer_id: peerId })
-            );
-        } else if (role === "sharer") {
-            // Notify the new sharer about all existing viewers
-            for (const ws of this.ctx.getWebSockets()) {
-                const t = this.getTag(ws);
-                if (t && t.startsWith("viewer:") && ws !== server) {
-                    const viewerPeerId = t.slice(7);
-                    server.send(
-                        JSON.stringify({
-                            type: "viewer-joined",
-                            peer_id: viewerPeerId,
-                        })
-                    );
-                }
+        // Notify already-subscribed viewers (reconnect scenario)
+        for (const ws of this.ctx.getWebSockets()) {
+            const parsed = this.parseTag(ws);
+            if (
+                parsed?.role === "viewer" &&
+                parsed.shareId === shareId &&
+                ws !== server &&
+                ws.readyState === WebSocket.OPEN
+            ) {
+                server.send(
+                    JSON.stringify({
+                        type: "viewer-joined",
+                        peer_id: parsed.peerId,
+                    })
+                );
             }
         }
 
-        return new Response(null, { status: 101, webSocket: client });
+        // Broadcast updated shares-list to all viewers
+        this.broadcastSharesList();
+    }
+
+    private async acceptViewer(
+        server: WebSocket,
+        peerId: string,
+        url: URL
+    ): Promise<void> {
+        const shareId = url.searchParams.get("share_id") || "lobby";
+
+        // Dedup: close existing socket with same peerId
+        for (const existing of this.ctx.getWebSockets()) {
+            const parsed = this.parseTag(existing);
+            if (
+                parsed?.role === "viewer" &&
+                parsed.peerId === peerId
+            ) {
+                existing.close(1001, "reconnected");
+            }
+        }
+
+        this.ctx.acceptWebSocket(server, [
+            `viewer:${peerId}:${shareId}`,
+        ]);
+
+        // TURN credentials (useful for subscribed viewers)
+        const creds = await this.generateTurnCredentials();
+        if (creds) {
+            server.send(
+                JSON.stringify({
+                    type: "turn-credentials",
+                    username: creds.username,
+                    credential: creds.credential,
+                })
+            );
+        }
+
+        // Send current shares list
+        const shares = this.buildSharesList();
+        server.send(JSON.stringify({ type: "shares-list", shares }));
+
+        // If subscribed to a specific share, notify that sharer
+        if (shareId !== "lobby") {
+            const sharerSock = this.getSharerSocket(shareId);
+            if (sharerSock && sharerSock.readyState === WebSocket.OPEN) {
+                sharerSock.send(
+                    JSON.stringify({
+                        type: "viewer-joined",
+                        peer_id: peerId,
+                    })
+                );
+            }
+        }
     }
 
     async webSocketMessage(
@@ -87,26 +156,24 @@ export class SignalingRoom extends DurableObject<Env> {
     ): Promise<void> {
         if (typeof message !== "string") return;
 
-        const tag = this.getTag(ws);
-        if (!tag) return;
+        const parsed = this.parseTag(ws);
+        if (!parsed) return;
 
-        const role = tag.split(":")[0];
-        const senderId = tag.split(":")[1];
-
-        if (role === "sharer") {
+        if (parsed.role === "sharer") {
             // Sharer → specific viewer: route by "to" field
             const msg = JSON.parse(message) as Record<string, unknown>;
-            const targetId = msg.to as string;
-            if (!targetId) return;
+            const targetViewerPeerId = msg.to as string;
+            if (!targetViewerPeerId) return;
 
-            // Strip "to" before forwarding
             delete msg.to;
             const payload = JSON.stringify(msg);
 
+            // Find the viewer by peerId (any subscription)
             for (const sock of this.ctx.getWebSockets()) {
-                const t = this.getTag(sock);
+                const tp = this.parseTag(sock);
                 if (
-                    t === `viewer:${targetId}` &&
+                    tp?.role === "viewer" &&
+                    tp.peerId === targetViewerPeerId &&
                     sock.readyState === WebSocket.OPEN
                 ) {
                     sock.send(payload);
@@ -114,51 +181,132 @@ export class SignalingRoom extends DurableObject<Env> {
                 }
             }
         } else {
-            // Viewer → sharer: stamp "from" with sender's peer ID
+            // Viewer → sharer: stamp "from", route to the subscribed share
+            if (parsed.shareId === "lobby") return; // lobby viewers don't send signaling
+
             const msg = JSON.parse(message) as Record<string, unknown>;
-            msg.from = senderId;
-            this.safeSendToSharer(JSON.stringify(msg));
-        }
-    }
+            msg.from = parsed.peerId;
 
-    async webSocketClose(ws: WebSocket): Promise<void> {
-        const tag = this.getTag(ws);
-        if (!tag) return;
-
-        const role = tag.split(":")[0];
-        const peerId = tag.split(":")[1];
-
-        if (role === "viewer") {
-            // Notify sharer that this viewer left
-            this.safeSendToSharer(
-                JSON.stringify({ type: "viewer-left", peer_id: peerId })
-            );
-        } else if (role === "sharer") {
-            // Notify all viewers that sharer left
-            for (const sock of this.ctx.getWebSockets()) {
-                const t = this.getTag(sock);
-                if (
-                    t &&
-                    t.startsWith("viewer:") &&
-                    sock.readyState === WebSocket.OPEN
-                ) {
-                    sock.send(JSON.stringify({ type: "sharer-left" }));
-                }
+            const sharerSock = this.getSharerSocket(parsed.shareId);
+            if (sharerSock && sharerSock.readyState === WebSocket.OPEN) {
+                sharerSock.send(JSON.stringify(msg));
             }
         }
     }
 
+    async webSocketClose(ws: WebSocket): Promise<void> {
+        const parsed = this.parseTag(ws);
+        if (!parsed) return;
+
+        if (parsed.role === "viewer") {
+            if (parsed.shareId === "lobby") return;
+            // Notify the specific sharer that this viewer left
+            const sharerSock = this.getSharerSocket(parsed.shareId);
+            if (sharerSock && sharerSock.readyState === WebSocket.OPEN) {
+                sharerSock.send(
+                    JSON.stringify({
+                        type: "viewer-left",
+                        peer_id: parsed.peerId,
+                    })
+                );
+            }
+        } else if (parsed.role === "sharer") {
+            const shareId = parsed.shareId;
+
+            // Notify subscribed viewers that this share ended
+            for (const sock of this.ctx.getWebSockets()) {
+                const tp = this.parseTag(sock);
+                if (
+                    tp?.role === "viewer" &&
+                    tp.shareId === shareId &&
+                    sock !== ws &&
+                    sock.readyState === WebSocket.OPEN
+                ) {
+                    sock.send(
+                        JSON.stringify({
+                            type: "sharer-left",
+                            share_id: shareId,
+                        })
+                    );
+                }
+            }
+
+            // Broadcast updated shares-list to all viewers
+            this.broadcastSharesList(ws);
+        }
+    }
+
     async webSocketError(ws: WebSocket): Promise<void> {
-        // Same cleanup as webSocketClose — notify the other side
         await this.webSocketClose(ws);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────
+    // ── Tag parsing ──────────────────────────────────────────────────
 
-    private getTag(ws: WebSocket): string | undefined {
+    private parseTag(
+        ws: WebSocket
+    ): { role: "sharer"; shareId: string; peerId: string } |
+       { role: "viewer"; peerId: string; shareId: string } |
+       null {
         const tags = this.ctx.getTags(ws);
-        return tags[0];
+        if (!tags[0]) return null;
+        const parts = tags[0].split(":");
+        if (parts.length < 3) return null;
+
+        if (parts[0] === "sharer") {
+            return { role: "sharer", shareId: parts[1], peerId: parts[2] };
+        } else if (parts[0] === "viewer") {
+            return { role: "viewer", peerId: parts[1], shareId: parts[2] };
+        }
+        return null;
     }
+
+    // ── Routing helpers ──────────────────────────────────────────────
+
+    private getSharerSocket(shareId: string): WebSocket | null {
+        for (const ws of this.ctx.getWebSockets()) {
+            const parsed = this.parseTag(ws);
+            if (
+                parsed?.role === "sharer" &&
+                parsed.shareId === shareId &&
+                ws.readyState === WebSocket.OPEN
+            ) {
+                return ws;
+            }
+        }
+        return null;
+    }
+
+    private buildSharesList(): { share_id: string; share_type: string }[] {
+        const shares: { share_id: string; share_type: string }[] = [];
+        for (const ws of this.ctx.getWebSockets()) {
+            if (ws.readyState !== WebSocket.OPEN) continue;
+            const tags = this.ctx.getTags(ws);
+            if (!tags[0]?.startsWith("sharer:")) continue;
+            const parsed = this.parseTag(ws);
+            if (!parsed || parsed.role !== "sharer") continue;
+            const typeTag = tags.find((t) => t.startsWith("sharetype:"));
+            const shareType = typeTag ? typeTag.slice(10) : "screen";
+            shares.push({ share_id: parsed.shareId, share_type: shareType });
+        }
+        return shares;
+    }
+
+    private broadcastSharesList(exclude?: WebSocket): void {
+        const shares = this.buildSharesList();
+        const msg = JSON.stringify({ type: "shares-list", shares });
+        for (const sock of this.ctx.getWebSockets()) {
+            const parsed = this.parseTag(sock);
+            if (
+                parsed?.role === "viewer" &&
+                sock !== exclude &&
+                sock.readyState === WebSocket.OPEN
+            ) {
+                sock.send(msg);
+            }
+        }
+    }
+
+    // ── TURN credentials ─────────────────────────────────────────────
 
     private async generateTurnCredentials(): Promise<{
         username: string;
@@ -167,7 +315,11 @@ export class SignalingRoom extends DurableObject<Env> {
         const keyId = this.env.TURN_KEY_ID;
         const apiToken = this.env.TURN_KEY_API_TOKEN;
         if (!keyId || !apiToken) {
-            console.log("TURN: missing creds", `keyId.len=${keyId?.length}`, `apiToken.len=${apiToken?.length}`);
+            console.log(
+                "TURN: missing creds",
+                `keyId.len=${keyId?.length}`,
+                `apiToken.len=${apiToken?.length}`
+            );
             return null;
         }
 
@@ -199,20 +351,6 @@ export class SignalingRoom extends DurableObject<Env> {
         } catch (e) {
             console.log(`TURN: error: ${e}`);
             return null;
-        }
-    }
-
-    private safeSendToSharer(message: string): void {
-        for (const sock of this.ctx.getWebSockets()) {
-            const tag = this.getTag(sock);
-            if (
-                tag &&
-                tag.startsWith("sharer:") &&
-                sock.readyState === WebSocket.OPEN
-            ) {
-                sock.send(message);
-                return;
-            }
         }
     }
 }

@@ -191,8 +191,8 @@ fn handleStatus(buf: []u8) []const u8 {
                     infos[count] = .{
                         .id = &share.session_id,
                         .type = .terminal,
-                        .room = "",
-                        .viewers = 0,
+                        .room = share.share_url,
+                        .viewers = share.viewerCount(),
                         .recording = share.recording != null,
                         .uptime_s = share.uptimeSeconds(),
                     };
@@ -323,29 +323,43 @@ fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_
 fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
     const allocator = std.heap.c_allocator;
 
-    const config = TerminalShareConfig{
+    // Resolve base URL
+    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
+            return control.writeErrorResponse(buf, "internal error") orelse "",
+        else => return control.writeErrorResponse(buf, "internal error") orelse "",
+    };
+
+    var config = TerminalShareConfig{
         .command = req.command,
         .record = req.record,
+        .base_url = base_url,
+    };
+
+    if (req.room) |room| {
+        config.room_id = room;
+    }
+
+    // Find empty slot before spawning
+    const slot_idx = findEmptySlot() orelse {
+        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
     };
 
     const share = allocator.create(TerminalShare) catch
         return control.writeErrorResponse(buf, "out of memory") orelse "";
 
-    share.* = TerminalShare.init(config) catch |err| {
+    share.initInPlace(config) catch |err| {
         log.err("terminal share init failed: {}", .{err});
         allocator.destroy(share);
         return control.writeErrorResponse(buf, "terminal share init failed") orelse "";
     };
 
-    const slot_idx = findEmptySlot() orelse {
-        share.deinit();
-        allocator.destroy(share);
-        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
-    };
-
     sessions_mutex.lock();
     sessions[slot_idx].payload = .{ .terminal = share };
     sessions_mutex.unlock();
+
+    // Register signaling callbacks
+    share.start();
 
     // Spawn read loop thread
     const thread = std.Thread.spawn(.{}, runTerminalThread, .{share}) catch |err| {
@@ -362,7 +376,7 @@ fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
     sessions[slot_idx].thread = thread;
     sessions_mutex.unlock();
 
-    return control.writeOkResponse(buf, &share.session_id, "terminal") orelse
+    return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
         control.writeErrorResponse(buf, "internal error") orelse "";
 }
 

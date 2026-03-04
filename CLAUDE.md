@@ -81,7 +81,10 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 ## Conventions
 
 - Zig 0.15 API: `b.createModule(...)` for executables
-- **Always use `./run.ts <target>`** — never run `zig build`, `bun build`, `wrangler deploy`, etc. directly. `run.ts` is the single entry point for all build, test, lint, and deploy operations. If a command you need isn't there, add it to `run.ts`.
+- **Always use `./run.ts <target>`** — never run `zig build`, `bun build`, `bun install`, `wrangler deploy`, etc. directly. `run.ts` is the single entry point for all build, test, lint, and deploy operations. It handles deps, submodules, versioning, and cmake libs automatically. If a command you need isn't there, add it to `run.ts`.
+- **Binaries go to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast` and `dist/bin/zerocast-kms`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
+- **To run the daemon locally**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon` (after `./run.ts build`)
+- **To share screen**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share screen [WxH+X+Y] --room <id>`
 - **Never deploy from a dev machine** — all deployments (worker, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
 - CI only calls `run.ts` targets — no build logic in workflow YAML
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)

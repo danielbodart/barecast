@@ -8,14 +8,29 @@ declare const Terminal: any;
 declare const FitAddon: any;
 
 const roomId = window.location.pathname.split("/")[2];
+const shareId = new URLSearchParams(window.location.search).get("share") || undefined;
 const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${wsScheme}//${window.location.host}/room/${roomId}/ws?role=viewer`;
+const peerId = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map((b: number) => b.toString(16).padStart(2, "0"))
+    .join("");
+const shareParam = shareId ? `&share_id=${shareId}` : "";
+const wsUrl = `${wsScheme}//${window.location.host}/room/${roomId}/ws?role=viewer&peer_id=${peerId}${shareParam}`;
+
+// BroadcastChannel for hub page sync
+const bc = new BroadcastChannel(`zerocast-room-${roomId}`);
+if (shareId) bc.postMessage({ type: "share-opened", shareId });
+window.addEventListener("beforeunload", () => {
+    if (shareId) bc.postMessage({ type: "share-closed", shareId });
+});
 
 let pc: RTCPeerConnection | null = null;
 let dc: RTCDataChannel | null = null;
 let ws: WebSocket | null = null;
 let term: any = null;
 let fitAddon: any = null;
+let iceServers: RTCIceServer[] = [
+    { urls: "stun:stun.cloudflare.com:3478" },
+];
 
 function init() {
     term = new Terminal({
@@ -62,31 +77,48 @@ function connectSignaling() {
     ws.onmessage = (event: MessageEvent) => {
         const msg = JSON.parse(event.data);
 
-        if (msg.type === "offer") {
+        if (msg.type === "turn-credentials") {
+            iceServers = [
+                { urls: "stun:stun.cloudflare.com:3478" },
+                {
+                    urls: [
+                        "turn:turn.cloudflare.com:3478?transport=udp",
+                        "turn:turn.cloudflare.com:3478?transport=tcp",
+                        "turns:turn.cloudflare.com:5349?transport=tcp",
+                        "turns:turn.cloudflare.com:443?transport=tcp",
+                    ],
+                    username: msg.username,
+                    credential: msg.credential,
+                },
+            ];
+        } else if (msg.type === "offer") {
             handleOffer(msg);
-        } else if (msg.type === "ice" && msg.from) {
+        } else if (msg.type === "ice") {
             handleIce(msg);
+        } else if (msg.type === "sharer-left") {
+            if (pc) { pc.close(); pc = null; }
+            if (dc) { dc = null; }
+            if (term) term.write("\r\n\x1b[31mSharer disconnected.\x1b[0m\r\n");
+        } else if (msg.type === "shares-list") {
+            // Ignored by terminal viewer pop-out
         }
     };
 
     ws.onclose = () => {
-        console.log("Signaling closed, reconnecting in 3s...");
-        setTimeout(connectSignaling, 3000);
+        console.log("Signaling closed, reconnecting...");
+        if (pc) { pc.close(); pc = null; }
+        dc = null;
+        setTimeout(connectSignaling, 1000);
     };
 }
 
-async function handleOffer(msg: { sdp: string; from: string }) {
-    const config: RTCConfiguration = {
-        iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
-    };
-
-    pc = new RTCPeerConnection(config);
+async function handleOffer(msg: { sdp: string; from?: string }) {
+    pc = new RTCPeerConnection({ iceServers });
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
         if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: "ice",
-                to: msg.from,
                 candidate: event.candidate.candidate,
                 mid: event.candidate.sdpMid || "0",
             }));
@@ -132,7 +164,6 @@ async function handleOffer(msg: { sdp: string; from: string }) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: "answer",
-            to: msg.from,
             sdp: answer.sdp,
         }));
     }

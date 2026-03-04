@@ -1,8 +1,9 @@
 export { SignalingRoom } from "./room.ts";
 
-const roomPattern = new URLPattern({ pathname: "/room/:id" });
+const viewPattern = new URLPattern({ pathname: "/room/:id/view" });
 const terminalPattern = new URLPattern({ pathname: "/room/:id/terminal" });
 const wsPattern = new URLPattern({ pathname: "/room/:id/ws" });
+const roomPattern = new URLPattern({ pathname: "/room/:id" });
 
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
@@ -22,9 +23,14 @@ export default {
             return env.ASSETS.fetch(new Request(new URL("/terminal", url), request));
         }
 
-        // Room viewer — serve room.html for /room/:id
-        if (roomPattern.exec(url)) {
+        // Screen viewer pop-out — serve room.html for /room/:id/view
+        if (viewPattern.exec(url)) {
             return env.ASSETS.fetch(new Request(new URL("/room", url), request));
+        }
+
+        // Room hub — serve hub.html for /room/:id
+        if (roomPattern.exec(url)) {
+            return env.ASSETS.fetch(new Request(new URL("/hub", url), request));
         }
 
         return env.ASSETS.fetch(request);

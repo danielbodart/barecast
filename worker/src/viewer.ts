@@ -8,10 +8,15 @@ const statsPanel = document.getElementById("stats-panel")!;
 const modeBtn = document.getElementById("mode-btn") as HTMLButtonElement | null;
 const colorDot = document.getElementById("color-dot") as HTMLElement | null;
 
-// Extract room ID from pathname: /room/:id
-const pattern = new URLPattern({ pathname: "/room/:id" });
-const pathMatch = pattern.exec(window.location.href);
-const roomId = pathMatch?.pathname.groups.id ?? null;
+// Extract room ID from pathname: /room/:id or /room/:id/view
+const viewPattern = new URLPattern({ pathname: "/room/:id/view" });
+const roomPattern = new URLPattern({ pathname: "/room/:id" });
+const viewMatch = viewPattern.exec(window.location.href);
+const roomMatch = roomPattern.exec(window.location.href);
+const roomId = viewMatch?.pathname.groups.id ?? roomMatch?.pathname.groups.id ?? null;
+
+// Extract share_id from query param
+const shareId = new URLSearchParams(window.location.search).get("share") || undefined;
 
 if (!roomId) {
     window.location.href = "/";
@@ -21,7 +26,15 @@ if (!roomId) {
         .join("");
 
     const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsBase = `${wsProto}//${location.host}/room/${roomId}/ws?role=viewer&peer_id=${peerId}`;
+    const shareParam = shareId ? `&share_id=${shareId}` : "";
+    const wsBase = `${wsProto}//${location.host}/room/${roomId}/ws?role=viewer&peer_id=${peerId}${shareParam}`;
+
+    // BroadcastChannel for hub page sync
+    const bc = new BroadcastChannel(`zerocast-room-${roomId}`);
+    if (shareId) bc.postMessage({ type: "share-opened", shareId });
+    window.addEventListener("beforeunload", () => {
+        if (shareId) bc.postMessage({ type: "share-closed", shareId });
+    });
 
     let pc: RTCPeerConnection | null = null;
     let ws: WebSocket | null = null;
@@ -420,6 +433,8 @@ if (!roomId) {
                     pc.close();
                     pc = null;
                 }
+            } else if (msg.type === "shares-list") {
+                // Ignored by viewer pop-out — hub handles this
             }
         };
     }

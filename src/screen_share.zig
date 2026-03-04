@@ -121,7 +121,7 @@ pub const ScreenShare = struct {
         };
 
         // Broadcast session
-        self.session = BroadcastSession.init(signaling_url, self.room_id) catch |err| {
+        self.session = BroadcastSession.init(signaling_url, self.room_id, &self.session_id, "screen", .screen) catch |err| {
             log.err("session init failed: {}", .{err});
             if (self.vinput) |*vi| vi.deinit();
             if (overlay) |*o| o.deinit();

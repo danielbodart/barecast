@@ -157,12 +157,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // --- Terminal share module (PTY management + asciinema recording) ---
+    // --- Terminal share module (PTY management + WebRTC data channel) ---
     const terminal_share_mod = b.createModule(.{
         .root_source_file = b.path("src/terminal_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "session", .module = session_mod },
+        },
     });
 
     // --- Daemon module (socket listener, session manager) ---
@@ -317,8 +320,19 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "session", .module = session_mod },
+            },
         }),
     });
+    terminal_share_tests.addObjectFile(b.path(".zig-cache/cmake/libdatachannel.a"));
+    terminal_share_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libjuice/libjuice.a"));
+    terminal_share_tests.addObjectFile(b.path(".zig-cache/cmake/deps/libsrtp/libsrtp2.a"));
+    terminal_share_tests.addObjectFile(b.path(".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a"));
+    terminal_share_tests.addIncludePath(b.path("libdatachannel/include"));
+    terminal_share_tests.linkSystemLibrary("ssl");
+    terminal_share_tests.linkSystemLibrary("crypto");
+    terminal_share_tests.linkLibCpp();
     const run_terminal_share_tests = b.addRunArtifact(terminal_share_tests);
     test_step.dependOn(&run_terminal_share_tests.step);
 

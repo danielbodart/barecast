@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>zerocast</title>
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/viewer.css">
+    <style>
+        body.hub {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        #empty-state {
+            color: #555;
+            font-size: 16px;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        }
+
+        #share-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+            padding: 24px;
+            width: 100%;
+            max-width: 960px;
+        }
+
+        #share-grid:empty + #empty-state { display: block; }
+        #share-grid:not(:empty) + #empty-state { display: none; }
+
+        .share-card {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 20px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            transition: border-color 0.15s;
+        }
+
+        .share-card:hover { border-color: #444; }
+        .share-card.viewing { border-color: #2563eb; }
+
+        .share-card-kind {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #555;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        }
+
+        .share-card-label {
+            font-size: 15px;
+            color: #ccc;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        }
+
+        .share-card-badge {
+            font-size: 11px;
+            color: #2563eb;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            display: none;
+        }
+
+        .share-card.viewing .share-card-badge { display: block; }
+
+        #room-name {
+            color: #333;
+            font-size: 12px;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            position: fixed;
+            bottom: 12px;
+        }
+    </style>
+</head>
+<body class="hub">
+    <div id="share-grid"></div>
+    <div id="empty-state">nobody sharing yet</div>
+    <div id="room-name"></div>
+    <script src="/hub.js"></script>
+</body>
+</html>
