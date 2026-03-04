@@ -63,6 +63,14 @@ function init() {
         document.title = title || "zerocast terminal";
     });
 
+    // Hide scrollbar when in alternate screen buffer (htop, vim, less, etc.)
+    term.buffer.onBufferChange((buf: { type: string }) => {
+        const viewport = document.querySelector(".xterm-viewport") as HTMLElement | null;
+        if (viewport) {
+            viewport.style.overflowY = buf.type === "alternate" ? "hidden" : "scroll";
+        }
+    });
+
     term.onData((data: string) => {
         if (dc && dc.readyState === "open") {
             dc.send(data);
