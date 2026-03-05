@@ -46,6 +46,8 @@ pub const ScreenShare = struct {
     recording: ?IvfWriter,
     should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
+    last_fps: u32,
+    last_bitrate: u64,
     config: ScreenShareConfig,
 
     /// Initialize a screen share session in-place. `self` must already be at
@@ -130,6 +132,7 @@ pub const ScreenShare = struct {
         };
         // These point at fields within self — safe because self is already at its final location
         self.session.viewer_registry = &self.viewer_registry;
+        self.session.meta_callback = screenMetaCallback;
         if (self.vinput) |*vi| {
             self.session.input_handler = vinputHandler(vi);
         }
@@ -176,6 +179,8 @@ pub const ScreenShare = struct {
             return error.EncoderInitFailed;
         };
 
+        self.last_fps = 0;
+        self.last_bitrate = 0;
         self.fbc = fbc;
         self.overlay = overlay;
         self.start_time = std.time.Timer.start() catch return error.TimerUnavailable;
@@ -204,6 +209,14 @@ pub const ScreenShare = struct {
         var overlay_timer = std.time.Timer.start() catch return;
         var overlay_was_active = false;
 
+        const meta_interval_ns: u64 = 5 * std.time.ns_per_s;
+        var meta_timer = std.time.Timer.start() catch return;
+        var prev_bytes: u64 = 0;
+        var prev_frames: u64 = 0;
+
+        // Send initial meta (resolution known, fps/bitrate = 0)
+        self.sendScreenMeta();
+
         while (!self.should_stop.load(.acquire)) {
             if (ping_timer.read() >= ping_interval_ns) {
                 ping_timer.reset();
@@ -221,6 +234,27 @@ pub const ScreenShare = struct {
                     }
                     overlay_was_active = active;
                 }
+            }
+
+            if (meta_timer.read() >= meta_interval_ns) {
+                const elapsed_ns = meta_timer.read();
+                meta_timer.reset();
+
+                const cur_bytes = self.session.bytes_sent.load(.monotonic);
+                const cur_frames = self.session.frames_sent.load(.monotonic);
+
+                const delta_bytes = cur_bytes - prev_bytes;
+                const delta_frames = cur_frames - prev_frames;
+                prev_bytes = cur_bytes;
+                prev_frames = cur_frames;
+
+                const elapsed_s = elapsed_ns / std.time.ns_per_s;
+                if (elapsed_s > 0) {
+                    self.last_fps = @intCast(delta_frames / elapsed_s);
+                    self.last_bitrate = (delta_bytes * 8) / elapsed_s;
+                }
+
+                self.sendScreenMeta();
             }
 
             const frame = self.fbc.grabFrame() catch |err| {
@@ -270,7 +304,23 @@ pub const ScreenShare = struct {
         }
         self.fbc.deinit();
     }
+
+    fn sendScreenMeta(self: *ScreenShare) void {
+        var buf: [256]u8 = undefined;
+        const meta = std.fmt.bufPrint(&buf, "{{\"type\":\"set-meta\",\"title\":\"Screen\",\"res\":\"{d}x{d}\",\"fps\":{d},\"bitrate\":{d}}}", .{
+            self.encoder.width,
+            self.encoder.height,
+            self.last_fps,
+            self.last_bitrate,
+        }) catch return;
+        self.session.sendMeta(meta);
+    }
 };
+
+fn screenMetaCallback(session: *BroadcastSession) void {
+    const self: *ScreenShare = @fieldParentPtr("session", session);
+    self.sendScreenMeta();
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
