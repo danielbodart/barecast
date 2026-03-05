@@ -60,7 +60,7 @@ export class SignalingRoom extends DurableObject<Env> {
         }
 
         this.ctx.acceptWebSocket(server, [`sharer:${shareId}:${peerId}`]);
-        server.serializeAttachment({ shareType, title: "" });
+        server.serializeAttachment({ shareType, title: "", meta: {} });
 
         // TURN credentials
         const creds = await this.generateTurnCredentials();
@@ -160,13 +160,16 @@ export class SignalingRoom extends DurableObject<Env> {
         if (parsed.role === "sharer") {
             const msg = JSON.parse(message) as Record<string, unknown>;
 
-            // Title update — store in attachment and broadcast to all viewers
-            if (msg.type === "set-title") {
+            if (msg.type === "set-meta") {
                 const title = typeof msg.title === "string"
                     ? (msg.title as string).slice(0, 200)
                     : "";
-                const existing = (ws.deserializeAttachment() as { shareType: string; title: string } | null) ?? { shareType: "screen", title: "" };
-                ws.serializeAttachment({ ...existing, title });
+                const meta: Record<string, unknown> = {};
+                for (const key of ["res", "fps", "bitrate", "cols", "rows", "bytes_per_sec"]) {
+                    if (key in msg) meta[key] = msg[key];
+                }
+                const existing = (ws.deserializeAttachment() as any) ?? { shareType: "screen", title: "", meta: {} };
+                ws.serializeAttachment({ ...existing, title, meta });
                 this.broadcastSharesList();
                 return;
             }
@@ -286,19 +289,35 @@ export class SignalingRoom extends DurableObject<Env> {
         return null;
     }
 
-    private buildSharesList(): { share_id: string; share_type: string; title: string }[] {
-        const shares: { share_id: string; share_type: string; title: string }[] = [];
+    private buildSharesList(): Record<string, unknown>[] {
+        const shares: Record<string, unknown>[] = [];
         for (const ws of this.ctx.getWebSockets()) {
             if (ws.readyState !== WebSocket.OPEN) continue;
             const tags = this.ctx.getTags(ws);
             if (!tags[0]?.startsWith("sharer:")) continue;
             const parsed = this.parseTag(ws);
             if (!parsed || parsed.role !== "sharer") continue;
-            const attachment = ws.deserializeAttachment() as { shareType: string; title: string } | null;
+            const attachment = ws.deserializeAttachment() as {
+                shareType: string;
+                title: string;
+                meta: Record<string, unknown>;
+            } | null;
+
+            // Count viewers subscribed to this share
+            let viewers = 0;
+            for (const sock of this.ctx.getWebSockets()) {
+                const tp = this.parseTag(sock);
+                if (tp?.role === "viewer" && tp.shareId === parsed.shareId && sock.readyState === WebSocket.OPEN) {
+                    viewers++;
+                }
+            }
+
             shares.push({
                 share_id: parsed.shareId,
                 share_type: attachment?.shareType ?? "screen",
                 title: attachment?.title ?? "",
+                viewers,
+                ...(attachment?.meta ?? {}),
             });
         }
         return shares;
