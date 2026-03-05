@@ -46,6 +46,7 @@ pub const TerminalShare = struct {
     osc: OscParser,
     current_title: [200]u8,
     current_title_len: std.atomic.Value(u16),
+    last_bytes_per_sec: u64,
 
     /// Initialize in-place: fork a PTY, spawn shell/command, create BroadcastSession.
     /// MUST be called on a heap-allocated TerminalShare (pointers captured into session).
@@ -100,6 +101,7 @@ pub const TerminalShare = struct {
         self.osc = OscParser{};
         self.current_title = std.mem.zeroes([200]u8);
         self.current_title_len = std.atomic.Value(u16).init(0);
+        self.last_bytes_per_sec = 0;
 
         // Generate session ID
         std.crypto.random.bytes(&self.session_id);
@@ -153,6 +155,8 @@ pub const TerminalShare = struct {
             .onResize = termOnResize,
         };
 
+        self.session.meta_callback = terminalMetaCallback;
+
         // Start recording if requested
         if (config.record) {
             self.recording = AsciinemaWriter.init(config, self.start_time) catch |err| blk: {
@@ -172,6 +176,25 @@ pub const TerminalShare = struct {
         self.resize(cols, rows);
     }
 
+    fn sendTerminalMeta(self: *TerminalShare) void {
+        const title_len = self.current_title_len.load(.acquire);
+        const title = self.current_title[0..title_len];
+
+        // Get current terminal size via ioctl
+        var ws: c.struct_winsize = undefined;
+        _ = c.ioctl(self.master_fd, c.TIOCGWINSZ, &ws);
+
+        var meta_buf: [512]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&meta_buf);
+        const w = fbs.writer();
+        w.writeAll("{\"type\":\"set-meta\",\"title\":\"") catch return;
+        writeJsonEscaped(w, title) catch return;
+        std.fmt.format(w, "\",\"cols\":{d},\"rows\":{d},\"bytes_per_sec\":{d}}}", .{
+            ws.ws_col, ws.ws_row, self.last_bytes_per_sec,
+        }) catch return;
+        self.session.sendMeta(fbs.getWritten());
+    }
+
     /// Register signaling WebSocket callbacks. MUST be called after initInPlace.
     pub fn start(self: *TerminalShare) void {
         self.session.start();
@@ -186,6 +209,13 @@ pub const TerminalShare = struct {
         const flags = posix.fcntl(self.master_fd, posix.F.GETFL, @as(usize, 0)) catch return;
         _ = posix.fcntl(self.master_fd, posix.F.SETFL, flags | O_NONBLOCK) catch return;
 
+        const meta_interval_ns: u64 = 5 * std.time.ns_per_s;
+        var meta_timer = std.time.Timer.start() catch return;
+        var prev_bytes: u64 = 0;
+
+        // Send initial meta
+        self.sendTerminalMeta();
+
         while (!self.should_stop.load(.acquire)) {
             // Poll with 100ms timeout
             var fds = [_]posix.pollfd{.{
@@ -196,6 +226,20 @@ pub const TerminalShare = struct {
 
             const ready = posix.poll(&fds, 100) catch break;
             if (ready == 0) continue;
+
+            if (meta_timer.read() >= meta_interval_ns) {
+                const elapsed_ns = meta_timer.read();
+                meta_timer.reset();
+
+                const cur_bytes = self.session.bytes_sent.load(.monotonic);
+                const delta_bytes = cur_bytes - prev_bytes;
+                prev_bytes = cur_bytes;
+
+                const elapsed_s = elapsed_ns / std.time.ns_per_s;
+                self.last_bytes_per_sec = if (elapsed_s > 0) delta_bytes / elapsed_s else 0;
+
+                self.sendTerminalMeta();
+            }
 
             // Check POLLIN before POLLHUP — on child exit, both may be set
             // and we want to read any remaining output first.
@@ -219,15 +263,7 @@ pub const TerminalShare = struct {
                     if (!std.mem.eql(u8, old, new_title)) {
                         @memcpy(self.current_title[0..new_title.len], new_title);
                         self.current_title_len.store(@intCast(new_title.len), .release);
-                        meta: {
-                            var meta_buf: [512]u8 = undefined;
-                            var fbs = std.io.fixedBufferStream(&meta_buf);
-                            const w = fbs.writer();
-                            w.writeAll("{\"type\":\"set-title\",\"title\":\"") catch break :meta;
-                            writeJsonEscaped(w, new_title) catch break :meta;
-                            w.writeAll("\"}") catch break :meta;
-                            self.session.sendMeta(fbs.getWritten());
-                        }
+                        self.sendTerminalMeta();
                         log.info("title: {s}", .{new_title});
                     }
                 }
@@ -316,6 +352,11 @@ pub const TerminalShare = struct {
         }
     }
 };
+
+fn terminalMetaCallback(session: *BroadcastSession) void {
+    const self: *TerminalShare = @fieldParentPtr("session", session);
+    self.sendTerminalMeta();
+}
 
 // ── Asciinema v2 recording ──────────────────────────────────────────────
 
