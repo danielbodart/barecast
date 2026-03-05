@@ -521,8 +521,6 @@ pub fn build(b: *std.Build) void {
         "-DNO_EXAMPLES=ON",
         "-DNO_TESTS=ON",
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DCMAKE_C_FLAGS=-march=x86-64-v3",
-        "-DCMAKE_CXX_FLAGS=-march=x86-64-v3",
     });
     cmake_configure.addArg(b.fmt("-DCMAKE_C_COMPILER={s}", .{zig_cc_path}));
     cmake_configure.addArg(b.fmt("-DCMAKE_CXX_COMPILER={s}", .{zig_cxx_path}));
