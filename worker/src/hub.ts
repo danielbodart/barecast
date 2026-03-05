@@ -7,6 +7,7 @@ interface ShareInfo {
     shareId: string;
     kind: string;
     title: string;
+    meta: Record<string, unknown>;
     popout: Window | null;
 }
 
@@ -23,7 +24,13 @@ if (!roomId) {
     const emptyState = document.getElementById("empty-state")!;
     const roomName = document.getElementById("room-name")!;
 
-    roomName.textContent = roomId;
+    const dollar = document.createElement("span");
+    dollar.className = "prompt-dollar";
+    dollar.textContent = "$";
+    const roomSpan = document.createElement("span");
+    roomSpan.className = "prompt-room";
+    roomSpan.textContent = roomId;
+    roomName.append(dollar, " zerocast room ", roomSpan);
 
     // BroadcastChannel for pop-out window sync
     const bc = new BroadcastChannel(`zerocast-room-${roomId}`);
@@ -84,7 +91,7 @@ if (!roomId) {
             const msg = JSON.parse(event.data);
 
             if (msg.type === "shares-list") {
-                reconcileShares(msg.shares as { share_id: string; share_type: string }[]);
+                reconcileShares(msg.shares as Record<string, unknown>[]);
             }
             // Ignore turn-credentials, offer, ice etc — hub doesn't do WebRTC
         };
@@ -98,43 +105,49 @@ if (!roomId) {
         reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     }
 
-    function reconcileShares(incoming: { share_id: string; share_type: string; title?: string }[]) {
-        const incomingIds = new Set(incoming.map((s) => s.share_id));
+    function reconcileShares(incoming: Record<string, unknown>[]) {
+        const incomingIds = new Set(incoming.map((s) => s.share_id as string));
 
-        // Remove shares that are no longer active
         for (const [shareId] of shares) {
             if (!incomingIds.has(shareId)) {
                 removeShare(shareId);
             }
         }
 
-        // Add or update shares
         for (const s of incoming) {
-            const title = s.title ?? "";
-            if (!shares.has(s.share_id)) {
-                addShare(s.share_id, s.share_type, title);
+            const shareId = s.share_id as string;
+            const kind = (s.share_type as string) ?? "screen";
+            const title = (s.title as string) ?? "";
+            const meta = { ...s };
+            delete meta.share_id;
+            delete meta.share_type;
+            delete meta.title;
+
+            if (!shares.has(shareId)) {
+                addShare(shareId, kind, title, meta);
             } else {
-                updateShareTitle(s.share_id, title);
+                updateShare(shareId, title, meta);
             }
         }
 
         updateEmptyState();
     }
 
-    function addShare(shareId: string, kind: string, title: string) {
-        shares.set(shareId, { shareId, kind, title, popout: null });
-        renderCard(shareId, kind, title);
+    function addShare(shareId: string, kind: string, title: string, meta: Record<string, unknown>) {
+        shares.set(shareId, { shareId, kind, title, meta, popout: null });
+        renderCard(shareId, kind, title, meta);
     }
 
-    function updateShareTitle(shareId: string, title: string) {
+    function updateShare(shareId: string, title: string, meta: Record<string, unknown>) {
         const info = shares.get(shareId);
-        if (!info || info.title === title) return;
+        if (!info) return;
         info.title = title;
-        const el = document.querySelector(`#card-${shareId} .share-card-title`);
-        if (el) {
-            (el as HTMLElement).textContent = title;
-            (el as HTMLElement).style.display = title ? "block" : "none";
-        }
+        info.meta = meta;
+
+        const titleEl = document.querySelector(`#card-${shareId} .titlebar-text`) as HTMLElement | null;
+        if (titleEl) titleEl.textContent = title || (info.kind === "terminal" ? "Terminal" : "Screen");
+
+        updateCardStats(shareId, info.kind, meta);
     }
 
     function removeShare(shareId: string) {
@@ -143,35 +156,106 @@ if (!roomId) {
         card?.remove();
     }
 
-    function renderCard(shareId: string, kind: string, title: string) {
+    function renderCard(shareId: string, kind: string, title: string, meta: Record<string, unknown>) {
         const card = document.createElement("div");
-        card.className = "share-card";
+        card.className = "card";
         card.id = `card-${shareId}`;
 
-        const kindEl = document.createElement("div");
-        kindEl.className = "share-card-kind";
-        kindEl.textContent = kind;
+        // Title bar
+        const titlebar = document.createElement("div");
+        titlebar.className = "card-titlebar";
 
-        const label = document.createElement("div");
-        label.className = "share-card-label";
-        label.textContent = kind === "terminal" ? "Terminal" : "Screen";
+        const icon = document.createElement("span");
+        icon.className = "titlebar-icon";
+        icon.textContent = kind === "terminal" ? ">_" : "\u25a1";
 
-        const titleEl = document.createElement("div");
-        titleEl.className = "share-card-title";
-        titleEl.textContent = title;
-        titleEl.style.display = title ? "block" : "none";
+        const liveDot = document.createElement("span");
+        liveDot.className = "live-dot";
 
-        const badge = document.createElement("div");
-        badge.className = "share-card-badge";
+        const titleText = document.createElement("span");
+        titleText.className = "titlebar-text";
+        titleText.textContent = title || (kind === "terminal" ? "Terminal" : "Screen");
+
+        const protocol = document.createElement("span");
+        protocol.className = "titlebar-protocol";
+        protocol.textContent = kind === "terminal" ? "PTY" : "AV1";
+
+        const badge = document.createElement("span");
+        badge.className = "titlebar-badge";
         badge.textContent = "viewing";
 
-        card.appendChild(kindEl);
-        card.appendChild(label);
-        card.appendChild(titleEl);
-        card.appendChild(badge);
+        titlebar.append(icon, liveDot, titleText, protocol, badge);
 
+        const body = document.createElement("div");
+        body.className = "card-body";
+        appendStats(body, kind, meta);
+
+        card.append(titlebar, body);
         card.addEventListener("click", () => openShare(shareId));
         grid.appendChild(card);
+    }
+
+    function updateCardStats(shareId: string, kind: string, meta: Record<string, unknown>) {
+        const body = document.querySelector(`#card-${shareId} .card-body`) as HTMLElement | null;
+        if (!body) return;
+        body.replaceChildren();
+        appendStats(body, kind, meta);
+    }
+
+    function appendStats(container: HTMLElement, kind: string, meta: Record<string, unknown>) {
+        const stats: [string, string][] = kind === "screen"
+            ? [
+                ["res", formatRes(meta)],
+                ["fps", String(meta.fps ?? "\u2014")],
+                ["rate", formatBitrate(meta.bitrate as number)],
+                ["eyes", String(meta.viewers ?? 0)],
+            ]
+            : [
+                ["size", formatTermSize(meta)],
+                ["rate", formatBytesPerSec(meta.bytes_per_sec as number)],
+                ["eyes", String(meta.viewers ?? 0)],
+            ];
+
+        for (const [key, value] of stats) {
+            const line = document.createElement("div");
+            line.className = "line";
+
+            const keyEl = document.createElement("span");
+            keyEl.className = "line-key";
+            keyEl.textContent = key;
+
+            const valEl = document.createElement("span");
+            valEl.className = "line-val";
+            valEl.textContent = value;
+
+            line.append(keyEl, valEl);
+            container.appendChild(line);
+        }
+    }
+
+    function formatRes(meta: Record<string, unknown>): string {
+        return (meta.res as string) ?? "\u2014";
+    }
+
+    function formatTermSize(meta: Record<string, unknown>): string {
+        const cols = meta.cols as number | undefined;
+        const rows = meta.rows as number | undefined;
+        if (cols && rows) return `${cols}\u00d7${rows}`;
+        return "\u2014";
+    }
+
+    function formatBitrate(bps: number | undefined): string {
+        if (!bps || bps === 0) return "\u2014";
+        if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} Mbps`;
+        if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} Kbps`;
+        return `${bps} bps`;
+    }
+
+    function formatBytesPerSec(bps: number | undefined): string {
+        if (!bps || bps === 0) return "\u2014";
+        if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`;
+        if (bps >= 1_000) return `${(bps / 1_000).toFixed(1)} KB/s`;
+        return `${bps} B/s`;
     }
 
     function openShare(shareId: string) {

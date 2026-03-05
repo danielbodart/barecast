@@ -10,94 +10,179 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/manifest.json">
-    <link rel="stylesheet" href="/viewer.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0a0a0a;
+            color: #aaa;
+            font-family: 'IBM Plex Mono', monospace;
+            min-height: 100vh;
+        }
+
         body.hub {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            padding: 48px 40px 80px;
         }
 
-        #empty-state {
+        .hub-prompt {
+            font-size: 13px;
             color: #555;
-            font-size: 16px;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            margin-bottom: 32px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #1a1a1a;
+            width: 100%;
+            max-width: 960px;
+        }
+
+        .prompt-dollar {
+            color: #888;
+        }
+
+        .prompt-room {
+            color: #3b82f6;
         }
 
         #share-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             gap: 16px;
-            padding: 24px;
             width: 100%;
             max-width: 960px;
+        }
+
+        #empty-state {
+            color: #555;
+            font-size: 14px;
+            display: none;
         }
 
         #share-grid:empty + #empty-state { display: block; }
         #share-grid:not(:empty) + #empty-state { display: none; }
 
-        .share-card {
-            background: #111;
-            border: 1px solid #222;
-            border-radius: 8px;
-            padding: 20px;
+        /* ── Terminal-style Card ── */
+        .card {
+            background: #0f0f0f;
+            border: 1px solid #1e1e1e;
+            border-radius: 6px;
+            overflow: hidden;
             cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .card:hover {
+            border-color: #333;
+            background: #111;
+        }
+
+        .card.viewing {
+            border-color: rgba(59, 130, 246, 0.4);
+        }
+
+        /* Title bar */
+        .card-titlebar {
             display: flex;
-            flex-direction: column;
-            gap: 6px;
-            transition: border-color 0.15s;
-        }
-
-        .share-card:hover { border-color: #444; }
-        .share-card.viewing { border-color: #2563eb; }
-
-        .share-card-kind {
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #141414;
+            border-bottom: 1px solid #1a1a1a;
             font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
             color: #555;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
         }
 
-        .share-card-label {
-            font-size: 15px;
-            color: #ccc;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        .titlebar-icon {
+            color: #444;
+            font-size: 11px;
+            font-weight: 500;
         }
 
-        .share-card-title {
-            font-size: 13px;
-            color: #999;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        .live-dot {
+            display: inline-block;
+            width: 5px;
+            height: 5px;
+            background: #22c55e;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        .titlebar-text {
+            flex: 1;
+            font-size: 11px;
+            color: #444;
+            letter-spacing: 0.02em;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        .share-card-badge {
-            font-size: 11px;
-            color: #2563eb;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-            display: none;
+        .titlebar-protocol {
+            font-size: 9px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #333;
         }
 
-        .share-card.viewing .share-card-badge { display: block; }
+        .titlebar-badge {
+            font-size: 9px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #3b82f6;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
 
-        #room-name {
-            color: #333;
+        .card.viewing .titlebar-badge {
+            opacity: 1;
+        }
+
+        /* Card body — terminal output style */
+        .card-body {
+            padding: 12px 14px 14px;
             font-size: 12px;
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-            position: fixed;
-            bottom: 12px;
+            line-height: 1.7;
+        }
+
+        .line {
+            display: flex;
+            gap: 8px;
+        }
+
+        .line-key {
+            color: #444;
+            min-width: 52px;
+            text-align: right;
+        }
+
+        .line-val {
+            color: #ccc;
+        }
+
+        .line-val.bright {
+            color: #fff;
+        }
+
+        .line-val.blue {
+            color: #3b82f6;
         }
     </style>
 </head>
 <body class="hub">
+    <div id="room-name" class="hub-prompt"></div>
     <div id="share-grid"></div>
     <div id="empty-state">nobody sharing yet</div>
-    <div id="room-name"></div>
     <script src="/hub.js"></script>
 </body>
 </html>
