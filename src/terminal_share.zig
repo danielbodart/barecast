@@ -9,9 +9,11 @@ const c = @cImport({
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
 });
-const BroadcastSession = @import("session").BroadcastSession;
-const SessionMode = @import("session").SessionMode;
-const TerminalDataCallback = @import("session").TerminalDataCallback;
+const session_mod = @import("session");
+const BroadcastSession = session_mod.BroadcastSession;
+const SessionMode = session_mod.SessionMode;
+const TerminalDataCallback = session_mod.TerminalDataCallback;
+const writeJsonEscaped = session_mod.writeJsonEscaped;
 const OscParser = @import("osc_parser").OscParser;
 
 const log = std.log.scoped(.terminal_share);
@@ -217,7 +219,15 @@ pub const TerminalShare = struct {
                     if (!std.mem.eql(u8, old, new_title)) {
                         @memcpy(self.current_title[0..new_title.len], new_title);
                         self.current_title_len.store(@intCast(new_title.len), .release);
-                        self.session.sendTitleUpdate(new_title);
+                        meta: {
+                            var meta_buf: [512]u8 = undefined;
+                            var fbs = std.io.fixedBufferStream(&meta_buf);
+                            const w = fbs.writer();
+                            w.writeAll("{\"type\":\"set-title\",\"title\":\"") catch break :meta;
+                            writeJsonEscaped(w, new_title) catch break :meta;
+                            w.writeAll("\"}") catch break :meta;
+                            self.session.sendMeta(fbs.getWritten());
+                        }
                         log.info("title: {s}", .{new_title});
                     }
                 }

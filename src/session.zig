@@ -393,6 +393,9 @@ pub const BroadcastSession = struct {
     viewer_registry: ?*ViewerRegistry,
     input_handler: ?InputHandler,
     terminal_callback: ?TerminalDataCallback,
+    bytes_sent: std.atomic.Value(u64),
+    frames_sent: std.atomic.Value(u64),
+    meta_callback: ?*const fn (*BroadcastSession) void,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8, share_id: []const u8, share_type: []const u8, mode: SessionMode) !BroadcastSession {
@@ -427,6 +430,9 @@ pub const BroadcastSession = struct {
         session.viewer_registry = null;
         session.input_handler = null;
         session.terminal_callback = null;
+        session.bytes_sent = std.atomic.Value(u64).init(0);
+        session.frames_sent = std.atomic.Value(u64).init(0);
+        session.meta_callback = null;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {
@@ -463,6 +469,8 @@ pub const BroadcastSession = struct {
         const rtp_ts: u32 = @truncate(pts_ms * 90);
         self.peers_mutex.lock();
         defer self.peers_mutex.unlock();
+        _ = self.bytes_sent.fetchAdd(@intCast(data.len), .monotonic);
+        _ = self.frames_sent.fetchAdd(1, .monotonic);
         for (&self.peers) |*peer| {
             if (peer.state.load(.acquire) == .connected) {
                 peer.sendFrame(data, rtp_ts, capture_ntp);
@@ -470,15 +478,13 @@ pub const BroadcastSession = struct {
         }
     }
 
-    /// Send data over the data channel to all connected peers (terminal mode).
-    /// Uses text framing (negative size in libdatachannel C API) since PTY
-    /// output is UTF-8/ASCII text.
-    /// Send a title update over the signaling WebSocket.
-    pub fn sendTitleUpdate(self: *BroadcastSession, title: []const u8) void {
+    /// Send a metadata update over the signaling WebSocket.
+    pub fn sendMeta(self: *BroadcastSession, meta: []const u8) void {
         if (!self.ws_connected.load(.acquire)) return;
         var buf: [512]u8 = undefined;
-        const msg = jsonTitleUpdate(&buf, title) catch return;
-        buf[msg.len] = 0;
+        if (meta.len >= buf.len) return;
+        @memcpy(buf[0..meta.len], meta);
+        buf[meta.len] = 0;
         _ = c.rtcSendMessage(self.ws, &buf, -1);
     }
 
@@ -487,6 +493,7 @@ pub const BroadcastSession = struct {
     pub fn sendData(self: *BroadcastSession, data: []const u8) void {
         self.peers_mutex.lock();
         defer self.peers_mutex.unlock();
+        _ = self.bytes_sent.fetchAdd(@intCast(data.len), .monotonic);
         for (&self.peers) |*peer| {
             if (peer.state.load(.acquire) == .connected and peer.dc >= 0) {
                 _ = c.rtcSendMessage(peer.dc, @ptrCast(data.ptr), @intCast(data.len));
@@ -741,11 +748,13 @@ pub const BroadcastSession = struct {
                 // start() registers callbacks then creates data channel,
                 // which triggers offer generation via localDescriptionCallback
                 p.start();
+                if (self.meta_callback) |cb| cb(self);
             }
         } else if (std.mem.eql(u8, msg_type, "viewer-left")) {
             const peer_id_str = jsonExtract(msg, "peer_id") orelse return;
             log.info("viewer left: {s}", .{peer_id_str});
             self.freePeerById(peer_id_str);
+            if (self.meta_callback) |cb| cb(self);
         } else if (std.mem.eql(u8, msg_type, "answer")) {
             const peer_id_str = jsonExtract(msg, "from") orelse return;
             const sdp_escaped = jsonExtract(msg, "sdp") orelse return;
@@ -786,16 +795,6 @@ pub const BroadcastSession = struct {
 };
 
 // ── JSON helpers (fixed-format, stack buffers, no allocations) ────────────
-
-/// Build {"type":"set-title","title":"<title>"}
-fn jsonTitleUpdate(buf: []u8, title: []const u8) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
-    try w.writeAll("{\"type\":\"set-title\",\"title\":\"");
-    try writeJsonEscaped(w, title);
-    try w.writeAll("\"}");
-    return fbs.getWritten();
-}
 
 /// Build {"type":"<type>","to":"<peer_id>","sdp":"<sdp>"}
 fn jsonRoutedSdp(buf: []u8, msg_type: []const u8, peer_id: []const u8, sdp: []const u8) ![]const u8 {
@@ -878,7 +877,7 @@ fn jsonUnescape(src: []const u8, dst: []u8) ?usize {
     return di;
 }
 
-fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
+pub fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
     for (s) |ch| {
         switch (ch) {
             '"' => try writer.writeAll("\\\""),
