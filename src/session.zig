@@ -21,6 +21,7 @@ pub const TerminalDataCallback = struct {
     ptr: *anyopaque,
     onData: *const fn (*anyopaque, []const u8) void,
     onResize: *const fn (*anyopaque, u16, u16) void,
+    onPeerConnected: ?*const fn (*anyopaque, c_int) void = null,
 };
 
 // ── Peer ─────────────────────────────────────────────────────────────────
@@ -279,10 +280,18 @@ pub const Peer = struct {
     /// Terminal data channel opened — mark peer as connected.
     /// For data-channel-only connections (no media tracks), the DC open
     /// event is the reliable signal that the peer connection is usable.
-    fn termDcOpenCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
+    fn termDcOpenCallback(dc: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = ptrToPeer(ptr) orelse return;
         log.info("terminal channel open for {s}", .{self.peer_id});
         self.state.store(.connected, .release);
+
+        // Send buffered replay data to the newly connected viewer
+        const session = self.session;
+        if (session.terminal_callback) |cb| {
+            if (cb.onPeerConnected) |onConn| {
+                onConn(cb.ptr, dc);
+            }
+        }
     }
 
     /// Terminal data channel message — forward viewer input to PTY.
@@ -875,6 +884,11 @@ fn jsonUnescape(src: []const u8, dst: []u8) ?usize {
         di += 1;
     }
     return di;
+}
+
+/// Send a binary message on a data channel (for use outside session.zig).
+pub fn sendDcMessage(dc: c_int, data: []const u8) void {
+    _ = c.rtcSendMessage(dc, @ptrCast(data.ptr), @intCast(data.len));
 }
 
 pub fn writeJsonEscaped(writer: anytype, s: []const u8) !void {

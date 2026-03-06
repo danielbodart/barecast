@@ -14,6 +14,7 @@ const BroadcastSession = session_mod.BroadcastSession;
 const SessionMode = session_mod.SessionMode;
 const TerminalDataCallback = session_mod.TerminalDataCallback;
 const writeJsonEscaped = session_mod.writeJsonEscaped;
+const sendDcMessage = session_mod.sendDcMessage;
 const OscParser = @import("osc_parser").OscParser;
 
 const log = std.log.scoped(.terminal_share);
@@ -47,6 +48,12 @@ pub const TerminalShare = struct {
     current_title: [200]u8,
     current_title_len: std.atomic.Value(u16),
     last_bytes_per_sec: u64,
+
+    // Ring buffer for replay on viewer connect (256KB)
+    replay_buf: [256 * 1024]u8,
+    replay_pos: usize, // next write position (wraps)
+    replay_len: usize, // total bytes stored (capped at buf size)
+    replay_mutex: std.Thread.Mutex,
 
     /// Initialize in-place: fork a PTY, spawn shell/command, create BroadcastSession.
     /// MUST be called on a heap-allocated TerminalShare (pointers captured into session).
@@ -102,6 +109,10 @@ pub const TerminalShare = struct {
         self.current_title = std.mem.zeroes([200]u8);
         self.current_title_len = std.atomic.Value(u16).init(0);
         self.last_bytes_per_sec = 0;
+        self.replay_buf = undefined;
+        self.replay_pos = 0;
+        self.replay_len = 0;
+        self.replay_mutex = .{};
 
         // Generate session ID
         std.crypto.random.bytes(&self.session_id);
@@ -148,11 +159,12 @@ pub const TerminalShare = struct {
             return error.SessionInitFailed;
         };
 
-        // Wire terminal data callback — viewer input → PTY
+        // Wire terminal data callback — viewer input → PTY, replay on connect
         self.session.terminal_callback = .{
             .ptr = @ptrCast(self),
             .onData = termOnData,
             .onResize = termOnResize,
+            .onPeerConnected = termOnPeerConnected,
         };
 
         self.session.meta_callback = terminalMetaCallback;
@@ -176,6 +188,11 @@ pub const TerminalShare = struct {
         self.resize(cols, rows);
     }
 
+    fn termOnPeerConnected(ptr: *anyopaque, dc: c_int) void {
+        const self: *TerminalShare = @alignCast(@ptrCast(ptr));
+        self.sendReplay(dc);
+    }
+
     fn sendTerminalMeta(self: *TerminalShare) void {
         const title_len = self.current_title_len.load(.acquire);
         const title = self.current_title[0..title_len];
@@ -193,6 +210,50 @@ pub const TerminalShare = struct {
             ws.ws_col, ws.ws_row, self.last_bytes_per_sec,
         }) catch return;
         self.session.sendMeta(fbs.getWritten());
+    }
+
+    /// Append data to the replay ring buffer.
+    fn appendReplay(self: *TerminalShare, data: []const u8) void {
+        self.replay_mutex.lock();
+        defer self.replay_mutex.unlock();
+
+        const cap = self.replay_buf.len;
+        if (data.len >= cap) {
+            // Data larger than buffer — just keep the tail
+            @memcpy(&self.replay_buf, data[data.len - cap ..]);
+            self.replay_pos = 0;
+            self.replay_len = cap;
+            return;
+        }
+
+        const first = @min(data.len, cap - self.replay_pos);
+        @memcpy(self.replay_buf[self.replay_pos..][0..first], data[0..first]);
+        if (first < data.len) {
+            @memcpy(self.replay_buf[0 .. data.len - first], data[first..]);
+        }
+        self.replay_pos = (self.replay_pos + data.len) % cap;
+        self.replay_len = @min(self.replay_len + data.len, cap);
+    }
+
+    /// Send buffered replay data to a specific peer's data channel.
+    fn sendReplay(self: *TerminalShare, dc: c_int) void {
+        self.replay_mutex.lock();
+        defer self.replay_mutex.unlock();
+
+        if (self.replay_len == 0) return;
+
+        const cap = self.replay_buf.len;
+        if (self.replay_len < cap) {
+            // No wrap — data is contiguous from 0..replay_len
+            sendDcMessage(dc, self.replay_buf[0..self.replay_len]);
+        } else {
+            // Wrapped — send oldest chunk first, then newest
+            const oldest = self.replay_pos; // oldest data starts here
+            sendDcMessage(dc, self.replay_buf[oldest..]);
+            if (oldest > 0) {
+                sendDcMessage(dc, self.replay_buf[0..oldest]);
+            }
+        }
     }
 
     /// Register signaling WebSocket callbacks. MUST be called after initInPlace.
@@ -268,7 +329,8 @@ pub const TerminalShare = struct {
                     }
                 }
 
-                // Send to viewers via WebRTC data channel
+                // Buffer for replay and send to viewers
+                self.appendReplay(data);
                 self.session.sendData(data);
 
                 // Record if enabled
