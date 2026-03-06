@@ -12,6 +12,8 @@ pub const ShareType = enum {
 pub const Request = union(enum) {
     share: ShareRequest,
     unshare: UnshareRequest,
+    join: JoinRequest,
+    leave,
     status,
     shutdown,
 };
@@ -19,10 +21,13 @@ pub const Request = union(enum) {
 pub const ShareRequest = struct {
     type: ShareType = .screen,
     geometry: ?[]const u8 = null, // "WxH+X+Y"
-    room: ?[]const u8 = null,
     fps: u32 = 30,
     record: bool = false,
     command: ?[]const u8 = null, // terminal mode only
+};
+
+pub const JoinRequest = struct {
+    room: ?[]const u8 = null, // null = auto-generate
 };
 
 pub const UnshareRequest = struct {
@@ -55,6 +60,7 @@ pub const OkResponse = struct {
 
 pub const StatusResponse = struct {
     sessions: []const SessionInfo,
+    room: ?[]const u8 = null,
 };
 
 // ── JSON serialization (stack-allocated, no heap) ────────────────────────
@@ -76,7 +82,6 @@ pub fn parseRequest(msg: []const u8) ?Request {
         }
 
         req.geometry = jsonExtract(msg, "geometry");
-        req.room = jsonExtract(msg, "room");
         req.command = jsonExtract(msg, "command");
 
         if (jsonExtractInt(msg, "fps")) |f| {
@@ -86,6 +91,10 @@ pub fn parseRequest(msg: []const u8) ?Request {
         req.record = jsonExtractBool(msg, "record");
 
         return .{ .share = req };
+    } else if (std.mem.eql(u8, cmd, "join")) {
+        return .{ .join = .{ .room = jsonExtract(msg, "room") } };
+    } else if (std.mem.eql(u8, cmd, "leave")) {
+        return .leave;
     } else if (std.mem.eql(u8, cmd, "unshare")) {
         var req = UnshareRequest{};
         req.session_id = jsonExtract(msg, "session_id");
@@ -120,6 +129,16 @@ pub fn writeOkResponse(buf: []u8, session_id: []const u8, room_url: []const u8) 
     return fbs.getWritten();
 }
 
+/// Write a JSON join response: {"ok":true,"room":"..."}
+pub fn writeJoinResponse(buf: []u8, room_url: []const u8) ?[]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    w.writeAll("{\"ok\":true,\"room\":\"") catch return null;
+    writeJsonEscaped(w, room_url) catch return null;
+    w.writeAll("\"}\n") catch return null;
+    return fbs.getWritten();
+}
+
 /// Write a JSON error response: {"ok":false,"error":"..."}
 pub fn writeErrorResponse(buf: []u8, err_msg: []const u8) ?[]const u8 {
     var fbs = std.io.fixedBufferStream(buf);
@@ -130,11 +149,17 @@ pub fn writeErrorResponse(buf: []u8, err_msg: []const u8) ?[]const u8 {
     return fbs.getWritten();
 }
 
-/// Write a JSON status response with session array.
-pub fn writeStatusResponse(buf: []u8, sessions: []const SessionInfo) ?[]const u8 {
+/// Write a JSON status response with session array and current room.
+pub fn writeStatusResponse(buf: []u8, sessions: []const SessionInfo, room: ?[]const u8) ?[]const u8 {
     var fbs = std.io.fixedBufferStream(buf);
     const w = fbs.writer();
-    w.writeAll("{\"ok\":true,\"sessions\":[") catch return null;
+    w.writeAll("{\"ok\":true") catch return null;
+    if (room) |r| {
+        w.writeAll(",\"room\":\"") catch return null;
+        writeJsonEscaped(w, r) catch return null;
+        w.writeByte('"') catch return null;
+    }
+    w.writeAll(",\"sessions\":[") catch return null;
     for (sessions, 0..) |s, i| {
         if (i > 0) w.writeByte(',') catch return null;
         w.writeAll("{\"id\":\"") catch return null;
@@ -275,19 +300,52 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
 
 test "parseRequest share screen" {
     const msg =
-        \\{"cmd":"share","type":"screen","geometry":"1920x1080+0+0","room":"my-room","fps":30,"record":true}
+        \\{"cmd":"share","type":"screen","geometry":"1920x1080+0+0","fps":30,"record":true}
     ;
     const req = parseRequest(msg).?;
     switch (req) {
         .share => |s| {
             try std.testing.expectEqual(ShareType.screen, s.type);
             try std.testing.expectEqualSlices(u8, "1920x1080+0+0", s.geometry.?);
-            try std.testing.expectEqualSlices(u8, "my-room", s.room.?);
             try std.testing.expectEqual(@as(u32, 30), s.fps);
             try std.testing.expect(s.record);
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "parseRequest join with room" {
+    const msg =
+        \\{"cmd":"join","room":"my-room"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .join => |j| {
+            try std.testing.expectEqualSlices(u8, "my-room", j.room.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest join without room" {
+    const msg =
+        \\{"cmd":"join"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .join => |j| {
+            try std.testing.expect(j.room == null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest leave" {
+    const msg =
+        \\{"cmd":"leave"}
+    ;
+    const req = parseRequest(msg).?;
+    try std.testing.expect(req == .leave);
 }
 
 test "parseRequest share terminal" {
@@ -383,7 +441,14 @@ test "writeErrorResponse roundtrip" {
 
 test "writeStatusResponse empty" {
     var buf: [512]u8 = undefined;
-    const resp = writeStatusResponse(&buf, &.{}).?;
+    const resp = writeStatusResponse(&buf, &.{}, null).?;
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"sessions\":[]") != null);
+}
+
+test "writeStatusResponse with room" {
+    var buf: [512]u8 = undefined;
+    const resp = writeStatusResponse(&buf, &.{}, "my-room").?;
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"room\":\"my-room\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"sessions\":[]") != null);
 }
 
@@ -397,7 +462,7 @@ test "writeStatusResponse with session" {
         .recording = true,
         .uptime_s = 3600,
     }};
-    const resp = writeStatusResponse(&buf, &sessions).?;
+    const resp = writeStatusResponse(&buf, &sessions, null).?;
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"abc123\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"screen\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"viewers\":2") != null);

@@ -33,6 +33,26 @@ const SessionSlot = struct {
 var sessions: [MAX_SESSIONS]SessionSlot = [_]SessionSlot{.{}} ** MAX_SESSIONS;
 var sessions_mutex: std.Thread.Mutex = .{};
 
+// ── Room state ──────────────────────────────────────────────────────────
+
+var current_room_buf: [64]u8 = undefined;
+var current_room_len: usize = 0;
+
+fn currentRoom() ?[]const u8 {
+    if (current_room_len == 0) return null;
+    return current_room_buf[0..current_room_len];
+}
+
+fn setRoom(room: []const u8) void {
+    const len = @min(room.len, current_room_buf.len);
+    @memcpy(current_room_buf[0..len], room[0..len]);
+    current_room_len = len;
+}
+
+fn clearRoom() void {
+    current_room_len = 0;
+}
+
 /// Run the daemon: bind socket, accept connections, dispatch commands.
 pub fn run() void {
     installSignalHandler();
@@ -160,6 +180,8 @@ fn dispatch(request: control.Request, buf: []u8) []const u8 {
         .status => return handleStatus(buf),
         .share => |s| return handleShare(s, buf),
         .unshare => |u| return handleUnshare(u, buf),
+        .join => |j| return handleJoin(j, buf),
+        .leave => return handleLeave(buf),
         .shutdown => {
             should_exit.store(true, .release);
             return control.writeSimpleOk(buf) orelse "";
@@ -203,7 +225,7 @@ fn handleStatus(buf: []u8) []const u8 {
         }
     }
 
-    return control.writeStatusResponse(buf, infos[0..count]) orelse
+    return control.writeStatusResponse(buf, infos[0..count], currentRoom()) orelse
         control.writeErrorResponse(buf, "internal error") orelse "";
 }
 
@@ -231,15 +253,21 @@ fn handleShareScreen(req: control.ShareRequest, buf: []u8) []const u8 {
         else => return control.writeErrorResponse(buf, "internal error") orelse "",
     };
 
+    // Auto-join a room if not in one
+    if (currentRoom() == null) {
+        var id_buf: [16]u8 = undefined;
+        generateRoomId(&id_buf) catch
+            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        setRoom(&id_buf);
+        log.info("auto-joined room: {s}", .{currentRoom().?});
+    }
+
     var config = ScreenShareConfig{
         .fps = req.fps,
         .record = req.record,
         .base_url = base_url,
+        .room_id = currentRoom(),
     };
-
-    if (req.room) |room| {
-        config.room_id = room;
-    }
 
     if (req.geometry) |geom| {
         config.geometry = parseGeometry(geom) orelse
@@ -331,15 +359,21 @@ fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
         else => return control.writeErrorResponse(buf, "internal error") orelse "",
     };
 
-    var config = TerminalShareConfig{
+    // Auto-join a room if not in one
+    if (currentRoom() == null) {
+        var id_buf: [16]u8 = undefined;
+        generateRoomId(&id_buf) catch
+            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        setRoom(&id_buf);
+        log.info("auto-joined room: {s}", .{currentRoom().?});
+    }
+
+    const config = TerminalShareConfig{
         .command = req.command,
         .record = req.record,
         .base_url = base_url,
+        .room_id = currentRoom(),
     };
-
-    if (req.room) |room| {
-        config.room_id = room;
-    }
 
     // Find empty slot before spawning
     const slot_idx = findEmptySlot() orelse {
@@ -379,6 +413,66 @@ fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
 
     return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
         control.writeErrorResponse(buf, "internal error") orelse "";
+}
+
+fn handleJoin(req: control.JoinRequest, buf: []u8) []const u8 {
+    // Stop existing shares if switching rooms
+    if (currentRoom() != null) {
+        const stopped = stopAllSessions();
+        if (stopped > 0) log.info("join: stopped {d} session(s) from previous room", .{stopped});
+    }
+
+    if (req.room) |room| {
+        if (room.len == 0 or room.len > current_room_buf.len)
+            return control.writeErrorResponse(buf, "invalid room name") orelse "";
+        setRoom(room);
+    } else {
+        var id_buf: [16]u8 = undefined;
+        generateRoomId(&id_buf) catch
+            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        setRoom(&id_buf);
+    }
+
+    log.info("joined room: {s}", .{currentRoom().?});
+
+    // Build room URL for response
+    const allocator = std.heap.c_allocator;
+    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
+            return control.writeErrorResponse(buf, "internal error") orelse "",
+        else => return control.writeErrorResponse(buf, "internal error") orelse "",
+    };
+    defer allocator.free(base_url);
+
+    var url_buf: [512]u8 = undefined;
+    const room_url = std.fmt.bufPrint(&url_buf, "{s}/room/{s}", .{
+        base_url, currentRoom().?,
+    }) catch return control.writeErrorResponse(buf, "internal error") orelse "";
+
+    return control.writeJoinResponse(buf, room_url) orelse
+        control.writeErrorResponse(buf, "internal error") orelse "";
+}
+
+fn handleLeave(buf: []u8) []const u8 {
+    if (currentRoom() == null) {
+        return control.writeErrorResponse(buf, "not in a room") orelse "";
+    }
+
+    const stopped = stopAllSessions();
+    log.info("leave: stopped {d} session(s)", .{stopped});
+    clearRoom();
+
+    return control.writeSimpleOk(buf) orelse "";
+}
+
+fn generateRoomId(out: *[16]u8) !void {
+    var random_bytes: [8]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+    const charset = "0123456789abcdef";
+    for (random_bytes, 0..) |b, i| {
+        out[i * 2] = charset[b >> 4];
+        out[i * 2 + 1] = charset[b & 0x0f];
+    }
 }
 
 fn findEmptySlot() ?usize {

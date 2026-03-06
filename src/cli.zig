@@ -20,6 +20,14 @@ pub fn dispatch() void {
         handleShare(&args);
     } else if (std.mem.eql(u8, subcmd, "unshare")) {
         handleUnshare(&args);
+    } else if (std.mem.eql(u8, subcmd, "join")) {
+        handleJoin(&args);
+    } else if (std.mem.eql(u8, subcmd, "leave")) {
+        sendCommand("{\"cmd\":\"leave\"}\n", .{});
+    } else if (std.mem.eql(u8, subcmd, "start")) {
+        execSystemctl("start");
+    } else if (std.mem.eql(u8, subcmd, "stop")) {
+        execSystemctl("stop");
     } else if (std.mem.eql(u8, subcmd, "attach")) {
         const session_id = args.next() orelse {
             std.debug.print("Usage: zerocast attach <session-id>\n", .{});
@@ -63,15 +71,7 @@ fn handleShare(args: *std.process.ArgIterator) void {
 
     // Parse remaining flags
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--room")) {
-            const room = args.next() orelse {
-                std.debug.print("--room requires a value\n", .{});
-                std.process.exit(1);
-            };
-            w.writeAll(",\"room\":\"") catch return;
-            w.writeAll(room) catch return;
-            w.writeByte('"') catch return;
-        } else if (std.mem.eql(u8, arg, "--fps")) {
+        if (std.mem.eql(u8, arg, "--fps")) {
             if (!is_screen) {
                 std.debug.print("--fps is only valid for screen shares\n", .{});
                 std.process.exit(1);
@@ -138,9 +138,41 @@ fn handleUnshare(args: *std.process.ArgIterator) void {
     sendCommand(fbs.getWritten(), .{});
 }
 
+fn handleJoin(args: *std.process.ArgIterator) void {
+    const room = args.next();
+
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+
+    w.writeAll("{\"cmd\":\"join\"") catch return;
+    if (room) |r| {
+        w.writeAll(",\"room\":\"") catch return;
+        w.writeAll(r) catch return;
+        w.writeByte('"') catch return;
+    }
+    w.writeAll("}\n") catch return;
+
+    sendCommand(fbs.getWritten(), .{ .extract_room = true });
+}
+
+fn execSystemctl(action: []const u8) void {
+    const argv = [_]?[*:0]const u8{
+        "systemctl",
+        "--user",
+        if (std.mem.eql(u8, action, "start")) "start" else "stop",
+        "zerocast",
+        null,
+    };
+    const err = std.posix.execvpeZ("systemctl", @ptrCast(&argv), std.c.environ);
+    std.debug.print("Failed to exec systemctl: {}\n", .{err});
+    std.process.exit(1);
+}
+
 const SendOptions = struct {
     print_raw: bool = false,
     extract_session_id: bool = false,
+    extract_room: bool = false,
 };
 
 fn sendCommand(msg: []const u8, opts: SendOptions) void {
@@ -213,6 +245,10 @@ fn sendCommand(msg: []const u8, opts: SendOptions) void {
         } else {
             std.debug.print("{s}\n", .{resp});
         }
+    } else if (opts.extract_room) {
+        if (control.jsonExtract(resp, "room")) |room| {
+            std.debug.print("{s}\n", .{room});
+        }
     } else if (opts.print_raw) {
         std.debug.print("{s}\n", .{resp});
     } else {
@@ -250,20 +286,23 @@ fn printUsage() void {
         \\zerocast v{s}
         \\
         \\Usage:
-        \\  zerocast share screen [WxH+X+Y] [--room <id>] [--fps <n>] [--record]
+        \\  zerocast join [room-name]                     Join a room (random if omitted)
+        \\  zerocast leave                                Leave room and stop all shares
+        \\  zerocast share screen [WxH+X+Y] [--fps <n>] [--record]
         \\  zerocast share terminal [command] [--record]
         \\  zerocast unshare [screen | terminal | <session-id>]
-        \\  zerocast status
-        \\  zerocast attach <session-id>
-        \\  zerocast daemon
+        \\  zerocast status                               Show current room and sessions
+        \\  zerocast start                                Start the daemon (systemd)
+        \\  zerocast stop                                 Stop the daemon (systemd)
+        \\  zerocast daemon                               Run daemon in foreground
         \\
         \\Examples:
-        \\  zerocast share screen                        Share full screen
-        \\  zerocast share screen 1920x1080+0+0          Share a sub-region
-        \\  zerocast share screen --room my-room          Use a stable room ID
+        \\  zerocast join my-room                         Join a stable room
+        \\  zerocast share screen                         Share full screen
+        \\  zerocast share screen 1920x1080+0+0           Share a sub-region
         \\  zerocast share screen --fps 60 --record       60fps + record to IVF
         \\  zerocast share terminal                       Share interactive shell
-        \\  zerocast share terminal htop --record          Share htop + record .cast
+        \\  zerocast share terminal htop --record         Share htop + record .cast
         \\  zerocast unshare                              Stop all shares
         \\
     , .{build_options.version});
