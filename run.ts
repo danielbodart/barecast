@@ -131,8 +131,8 @@ async function ensureZigCcWrappers() {
     const { stdout } = await $`which zig`.quiet();
     const zigPath = stdout.toString().trim();
     await $`mkdir -p ${dir}`;
-    await Bun.write(`${dir}/zig-cc`, `#!/bin/sh\nexec ${zigPath} cc -march=x86-64-v3 "$@"\n`);
-    await Bun.write(`${dir}/zig-c++`, `#!/bin/sh\nexec ${zigPath} c++ -march=x86-64-v3 "$@"\n`);
+    await Bun.write(`${dir}/zig-cc`, `#!/bin/sh\nexec ${zigPath} cc -march=x86_64_v3 "$@"\n`);
+    await Bun.write(`${dir}/zig-c++`, `#!/bin/sh\nexec ${zigPath} c++ -march=x86_64_v3 "$@"\n`);
     await $`chmod +x ${dir}/zig-cc ${dir}/zig-c++`;
 }
 
