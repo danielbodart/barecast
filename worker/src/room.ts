@@ -49,7 +49,7 @@ export class SignalingRoom extends DurableObject<Env> {
         url: URL
     ): Promise<void> {
         const shareId = url.searchParams.get("share_id") || peerId;
-        const shareType = url.searchParams.get("share_type") || "screen";
+        const shareType = url.searchParams.get("share_type") || "app";
 
         // Dedup: close existing socket with same shareId (reconnect)
         for (const existing of this.ctx.getWebSockets()) {
@@ -168,7 +168,7 @@ export class SignalingRoom extends DurableObject<Env> {
                 for (const key of ["res", "fps", "bitrate", "cols", "rows", "bytes_per_sec"]) {
                     if (key in msg) meta[key] = msg[key];
                 }
-                const existing = (ws.deserializeAttachment() as any) ?? { shareType: "screen", title: "", meta: {} };
+                const existing = (ws.deserializeAttachment() as any) ?? { shareType: "app", title: "", meta: {} };
                 ws.serializeAttachment({ ...existing, title, meta });
                 this.broadcastSharesList();
                 return;
@@ -314,7 +314,7 @@ export class SignalingRoom extends DurableObject<Env> {
 
             shares.push({
                 share_id: parsed.shareId,
-                share_type: attachment?.shareType ?? "screen",
+                share_type: attachment?.shareType ?? "app",
                 title: attachment?.title ?? "",
                 viewers,
                 ...(attachment?.meta ?? {}),

@@ -519,25 +519,13 @@ pub const NvFbc = struct {
             return error.NvFbcGrabFailed;
         }
 
-        // Determine if frame has new content:
-        // 1. Frame ID unchanged → compositor had no new frame
-        var is_new = frame_info.dwCurrentFrame != self.last_frame_id;
+        // Determine if frame has new content via frame ID counter.
+        // The diff map is unreliable with frame pacing (fixed-interval sampling
+        // vs damage-event-driven captures), so we rely solely on the compositor's
+        // frame counter. If the frame ID hasn't changed, no new content was
+        // composited since the last grab.
+        const is_new = frame_info.dwCurrentFrame != self.last_frame_id;
         self.last_frame_id = frame_info.dwCurrentFrame;
-
-        // 2. Diff map all-zero → pixels identical even if frame ID changed
-        if (is_new and self.diff_map_storage != null) {
-            if (self.diff_map_storage.?.*) |map| {
-                const bytes = map[0..self.diff_map_size];
-                var any_diff = false;
-                for (bytes) |b| {
-                    if (b != 0) {
-                        any_diff = true;
-                        break;
-                    }
-                }
-                if (!any_diff) is_new = false;
-            }
-        }
 
         return .{
             .texture_id = self.setup_params.dwTextures[grab_params.dwTextureIndex],

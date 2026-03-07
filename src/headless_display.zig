@@ -69,11 +69,26 @@ pub const HeadlessDisplay = struct {
     }
 
     /// Resize the display (called when viewer resizes).
+    /// After xrandr, picom must be restarted — xrandr invalidates picom's
+    /// compositing state, which breaks NvFBC's push model damage subscription.
     pub fn resize(self: *HeadlessDisplay, width: u32, height: u32) void {
         self.width = width;
         self.height = height;
         self.setResolution() catch |err| {
             log.warn("resize failed: {}", .{err});
+            return;
+        };
+        self.restartPicom();
+    }
+
+    fn restartPicom(self: *HeadlessDisplay) void {
+        if (self.picom_pid) |pid| {
+            posix.kill(pid, posix.SIG.TERM) catch {};
+            _ = posix.waitpid(pid, 0);
+            self.picom_pid = null;
+        }
+        self.spawnPicom() catch |err| {
+            log.warn("picom restart failed: {}", .{err});
         };
     }
 

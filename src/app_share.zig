@@ -170,7 +170,7 @@ pub const AppShare = struct {
         };
 
         // Broadcast session
-        self.session = BroadcastSession.init(signaling_url, self.room_id, &self.session_id, "app", .screen) catch |err| {
+        self.session = BroadcastSession.init(signaling_url, self.room_id, &self.session_id, "app", .video) catch |err| {
             log.err("session init failed: {}", .{err});
             return error.SessionInitFailed;
         };

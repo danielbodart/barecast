@@ -116,7 +116,7 @@ if (!roomId) {
 
         for (const s of incoming) {
             const shareId = s.share_id as string;
-            const kind = (s.share_type as string) ?? "screen";
+            const kind = (s.share_type as string) ?? "app";
             const title = (s.title as string) ?? "";
             const meta = { ...s };
             delete meta.share_id;
@@ -145,7 +145,7 @@ if (!roomId) {
         info.meta = meta;
 
         const titleEl = document.querySelector(`#card-${shareId} .titlebar-text`) as HTMLElement | null;
-        if (titleEl) titleEl.textContent = title || (info.kind === "terminal" ? "Terminal" : "Screen");
+        if (titleEl) titleEl.textContent = title || (info.kind === "terminal" ? "Terminal" : "App");
 
         updateCardStats(shareId, info.kind, meta);
     }
@@ -174,7 +174,7 @@ if (!roomId) {
 
         const titleText = document.createElement("span");
         titleText.className = "titlebar-text";
-        titleText.textContent = title || (kind === "terminal" ? "Terminal" : "Screen");
+        titleText.textContent = title || (kind === "terminal" ? "Terminal" : "App");
 
         const protocol = document.createElement("span");
         protocol.className = "titlebar-protocol";
@@ -203,7 +203,8 @@ if (!roomId) {
     }
 
     function appendStats(container: HTMLElement, kind: string, meta: Record<string, unknown>) {
-        const stats: [string, string][] = kind === "screen"
+        const isVideo = kind === "screen" || kind === "app";
+        const stats: [string, string][] = isVideo
             ? [
                 ["res", formatRes(meta)],
                 ["fps", String(meta.fps ?? "\u2014")],

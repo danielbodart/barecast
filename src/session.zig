@@ -12,7 +12,7 @@ pub const MAX_PEERS: usize = 8;
 pub const PEER_ID_LEN: usize = 16;
 
 pub const SessionMode = enum {
-    screen, // AV1 track + unreliable "input" data channel
+    video, // AV1 track + unreliable "input" data channel
     terminal, // No track + reliable "terminal" data channel
 };
 
@@ -75,7 +75,7 @@ pub const Peer = struct {
         _ = c.rtcSetLocalCandidateCallback(self.pc, localCandidateCallback);
         _ = c.rtcSetStateChangeCallback(self.pc, stateChangeCallback);
 
-        if (self.session.mode == .screen) {
+        if (self.session.mode == .video) {
             self.startScreen();
         } else {
             self.startTerminal();
