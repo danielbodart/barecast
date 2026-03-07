@@ -22,7 +22,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .zig-cache/cmake
-          key: libdatachannel-${{ steps.libdc.outputs.hash }}-${{ hashFiles('.mise.toml', 'build.zig') }}
+          key: libdatachannel-${{ steps.libdc.outputs.hash }}-${{ hashFiles('.mise.toml', 'build.zig', 'run.ts') }}
       - name: CI
         run: ./run.ts ci
         env:
