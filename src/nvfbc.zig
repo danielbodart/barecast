@@ -328,11 +328,23 @@ pub const NvFbc = struct {
     diff_map_storage: ?*?[*]u8 = null,
     diff_map_size: usize = 0,
 
+    pub const InitOptions = struct {
+        display_name: ?[*:0]const u8 = null,
+        /// Headless mode: use push model + direct capture + no cursor.
+        /// Optimized for headless displays with a compositor (picom).
+        headless: bool = false,
+    };
+
     pub fn init(capture_box: Box, fps: u32) !NvFbc {
-        return initDisplay(capture_box, fps, null);
+        return initWithOptions(capture_box, fps, .{});
     }
 
     pub fn initDisplay(capture_box: Box, fps: u32, display_name: ?[*:0]const u8) !NvFbc {
+        return initWithOptions(capture_box, fps, .{ .display_name = display_name, .headless = true });
+    }
+
+    pub fn initWithOptions(capture_box: Box, fps: u32, options: InitOptions) !NvFbc {
+        const display_name = options.display_name;
         var glx = GlxContext.init(display_name) catch {
             std.debug.print("NvFBC: failed to create GLX context\n", .{});
             return error.NvFbcInitFailed;
@@ -427,6 +439,16 @@ pub const NvFbc = struct {
             .captureBox = capture_box,
             .frameSize = frame_size,
         };
+
+        // Headless mode: push model + direct capture + no cursor.
+        // The NVIDIA X driver reacts to X11 damage events from the compositor
+        // (picom) rather than relying on scanout-based periodic checks.
+        if (options.headless) {
+            cap_params.bPushModel = .true_;
+            cap_params.bWithCursor = .false_;
+            cap_params.bAllowDirectCapture = .true_;
+            std.debug.print("NvFBC: headless mode (push model + direct capture)\n", .{});
+        }
         status = (fns.nvFBCCreateCaptureSession orelse return error.NvFbcInitFailed)(session, &cap_params);
         if (status != .success) {
             const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
