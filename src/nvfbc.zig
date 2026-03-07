@@ -228,8 +228,8 @@ pub const GlxContext = struct {
     pixmap: c.Pixmap = 0,
     glx_pixmap: c.GLXPixmap = 0,
 
-    pub fn init() error{GlxFailed}!GlxContext {
-        const display = c.XOpenDisplay(null) orelse return error.GlxFailed;
+    pub fn init(display_name: ?[*:0]const u8) error{GlxFailed}!GlxContext {
+        const display = c.XOpenDisplay(display_name) orelse return error.GlxFailed;
 
         const attrs = [_]c_int{
             c.GLX_RENDER_TYPE,                   c.GLX_RGBA_BIT,
@@ -329,7 +329,11 @@ pub const NvFbc = struct {
     diff_map_size: usize = 0,
 
     pub fn init(capture_box: Box, fps: u32) !NvFbc {
-        var glx = GlxContext.init() catch {
+        return initDisplay(capture_box, fps, null);
+    }
+
+    pub fn initDisplay(capture_box: Box, fps: u32, display_name: ?[*:0]const u8) !NvFbc {
+        var glx = GlxContext.init(display_name) catch {
             std.debug.print("NvFBC: failed to create GLX context\n", .{});
             return error.NvFbcInitFailed;
         };

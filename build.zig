@@ -251,6 +251,18 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(kms_exe);
 
+    const xorg_exe = b.addExecutable(.{
+        .name = "zerocast-xorg",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/xorg.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+
+    b.installArtifact(xorg_exe);
+
     // --- Run step ---
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

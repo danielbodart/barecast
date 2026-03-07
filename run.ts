@@ -159,18 +159,27 @@ export async function setup() {
     await $`mkdir -p ~/.local/bin`;
     await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
     await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
+    await $`ln -sf ${distBin}/zerocast-xorg ~/.local/bin/zerocast-xorg`;
 
-    // Ensure user is in video + input groups
+    // Ensure user is in required groups
     const { stdout } = await $`id -nG`.quiet();
     const groups = stdout.toString();
-    if (!groups.includes("video")) {
-        console.log("Adding user to video group...");
-        await $`sudo usermod -aG video $USER`;
+    for (const [group, reason] of [
+        ["video", "GPU access"],
+        ["input", "/dev/uinput access"],
+        ["tty", "VT access for headless Xorg"],
+    ] as const) {
+        if (!groups.includes(group)) {
+            console.log(`Adding user to ${group} group (${reason})...`);
+            await $`sudo usermod -aG ${group} $USER`;
+        }
     }
-    if (!groups.includes("input")) {
-        console.log("Adding user to input group (for /dev/uinput)...");
-        await $`sudo usermod -aG input $USER`;
-    }
+
+    // Set capabilities on privileged helpers
+    console.log("Setting capabilities on privileged helpers...");
+    await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
+    await $`sudo chown root:root ${distBin}/zerocast-xorg`;
+    await $`sudo chmod u+s ${distBin}/zerocast-xorg`;
 
     console.log("Setup complete. Binary: ~/.local/bin/zerocast → " + distBin);
     console.log("To switch to production: run dist/install.sh from a release tarball.");
