@@ -62,6 +62,10 @@ async function ensureDeps() {
     const { exitCode: glCheck } = await $`pkg-config --exists gl`.quiet().nothrow();
     if (glCheck !== 0) missing.push("libgl-dev");
 
+    // XTEST (needed by xtest_input for app sharing)
+    const { exitCode: xtstCheck } = await $`pkg-config --exists xtst`.quiet().nothrow();
+    if (xtstCheck !== 0) missing.push("libxtst-dev");
+
     // cmake (needed to build libdatachannel)
     if (!await which("cmake")) missing.push("cmake");
 
