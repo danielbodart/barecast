@@ -154,12 +154,11 @@ export async function setup() {
     await build();
     const distBin = `${SCRIPT_DIR}/dist/bin`;
 
-    // Symlink into ~/.local/bin (dev mode — production install.sh overwrites these)
-    console.log("Symlinking into ~/.local/bin (dev mode)...");
+    // Symlink unprivileged binaries into ~/.local/bin
+    console.log("Symlinking into ~/.local/bin...");
     await $`mkdir -p ~/.local/bin`;
     await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
     await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
-    await $`ln -sf ${distBin}/zerocast-xorg ~/.local/bin/zerocast-xorg`;
 
     // Ensure user is in required groups
     const { stdout } = await $`id -nG`.quiet();
@@ -175,14 +174,29 @@ export async function setup() {
         }
     }
 
-    // Set capabilities on privileged helpers
-    console.log("Setting capabilities on privileged helpers...");
+    // Set capabilities on zerocast-kms
+    console.log("Setting capabilities on zerocast-kms...");
     await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
-    await $`sudo chown root:root ${distBin}/zerocast-xorg`;
-    await $`sudo chmod u+s ${distBin}/zerocast-xorg`;
 
-    console.log("Setup complete. Binary: ~/.local/bin/zerocast → " + distBin);
-    console.log("To switch to production: run dist/install.sh from a release tarball.");
+    // Install setuid helper to /usr/local/bin (must be on a non-nosuid filesystem).
+    // Home directories on eCryptfs/overlayfs ignore setuid bits.
+    console.log("Installing zerocast-xorg to /usr/local/bin (setuid root)...");
+    await $`sudo cp ${distBin}/zerocast-xorg /usr/local/bin/zerocast-xorg`;
+    await $`sudo chown root:root /usr/local/bin/zerocast-xorg`;
+    await $`sudo chmod u+s /usr/local/bin/zerocast-xorg`;
+
+    // Allow passwordless sudo for auto-update of privileged helpers.
+    // The apply-update script runs as ExecStartPre (unprivileged) and
+    // needs to copy the xorg helper + set capabilities without prompting.
+    const user = (await $`whoami`.quiet()).text().trim();
+    const sudoersRule = `${user} ALL=(root) NOPASSWD: /usr/bin/cp * /usr/local/bin/zerocast-xorg, /usr/bin/chown root\\:root /usr/local/bin/zerocast-xorg, /usr/bin/chmod u+s /usr/local/bin/zerocast-xorg, /usr/sbin/setcap cap_sys_admin+ep *`;
+    console.log("Installing sudoers rule for passwordless helper updates...");
+    await $`echo ${sudoersRule} | sudo tee /etc/sudoers.d/zerocast > /dev/null`;
+    await $`sudo chmod 440 /etc/sudoers.d/zerocast`;
+
+    console.log("Setup complete.");
+    console.log("  zerocast, zerocast-kms → ~/.local/bin/ (symlinks)");
+    console.log("  zerocast-xorg → /usr/local/bin/ (setuid root)");
 }
 
 /** Default target: build + lint + unit tests. */
