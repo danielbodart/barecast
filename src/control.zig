@@ -5,7 +5,6 @@ const log = std.log.scoped(.control);
 // ── Request types ────────────────────────────────────────────────────────
 
 pub const ShareType = enum {
-    screen,
     terminal,
     app,
 };
@@ -20,8 +19,7 @@ pub const Request = union(enum) {
 };
 
 pub const ShareRequest = struct {
-    type: ShareType = .screen,
-    geometry: ?[]const u8 = null, // "WxH+X+Y"
+    type: ShareType = .app,
     fps: u32 = 30,
     record: bool = false,
     command: ?[]const u8 = null, // terminal mode only
@@ -79,12 +77,9 @@ pub fn parseRequest(msg: []const u8) ?Request {
                 req.type = .terminal;
             } else if (std.mem.eql(u8, t, "app")) {
                 req.type = .app;
-            } else {
-                req.type = .screen;
             }
         }
 
-        req.geometry = jsonExtract(msg, "geometry");
         req.command = jsonExtract(msg, "command");
 
         if (jsonExtractInt(msg, "fps")) |f| {
@@ -103,9 +98,7 @@ pub fn parseRequest(msg: []const u8) ?Request {
         req.session_id = jsonExtract(msg, "session_id");
 
         if (jsonExtract(msg, "type")) |t| {
-            if (std.mem.eql(u8, t, "screen")) {
-                req.type = .screen;
-            } else if (std.mem.eql(u8, t, "terminal")) {
+            if (std.mem.eql(u8, t, "terminal")) {
                 req.type = .terminal;
             } else if (std.mem.eql(u8, t, "app")) {
                 req.type = .app;
@@ -301,19 +294,32 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
     }
 }
 
+// ── Room ID generation ───────────────────────────────────────────────────
+
+pub fn generateRoomId() [16]u8 {
+    var bytes: [8]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    var hex: [16]u8 = undefined;
+    const charset = "0123456789abcdef";
+    for (bytes, 0..) |b, i| {
+        hex[i * 2] = charset[b >> 4];
+        hex[i * 2 + 1] = charset[b & 0x0f];
+    }
+    return hex;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
-test "parseRequest share screen" {
+test "parseRequest share app" {
     const msg =
-        \\{"cmd":"share","type":"screen","geometry":"1920x1080+0+0","fps":30,"record":true}
+        \\{"cmd":"share","type":"app","command":"glxgears","fps":30}
     ;
     const req = parseRequest(msg).?;
     switch (req) {
         .share => |s| {
-            try std.testing.expectEqual(ShareType.screen, s.type);
-            try std.testing.expectEqualSlices(u8, "1920x1080+0+0", s.geometry.?);
+            try std.testing.expectEqual(ShareType.app, s.type);
+            try std.testing.expectEqualSlices(u8, "glxgears", s.command.?);
             try std.testing.expectEqual(@as(u32, 30), s.fps);
-            try std.testing.expect(s.record);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -397,12 +403,12 @@ test "parseRequest unshare by id" {
 
 test "parseRequest unshare by type" {
     const msg =
-        \\{"cmd":"unshare","type":"screen"}
+        \\{"cmd":"unshare","type":"app"}
     ;
     const req = parseRequest(msg).?;
     switch (req) {
         .unshare => |u| {
-            try std.testing.expectEqual(ShareType.screen, u.type.?);
+            try std.testing.expectEqual(ShareType.app, u.type.?);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -461,7 +467,7 @@ test "writeStatusResponse with session" {
     var buf: [1024]u8 = undefined;
     const sessions = [_]SessionInfo{.{
         .id = "abc123",
-        .type = .screen,
+        .type = .app,
         .room = "https://example.com/room/abc123",
         .viewers = 2,
         .recording = true,
@@ -469,7 +475,7 @@ test "writeStatusResponse with session" {
     }};
     const resp = writeStatusResponse(&buf, &sessions, null).?;
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"abc123\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, resp, "\"screen\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"app\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"viewers\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "\"recording\":true") != null);
 }
@@ -498,6 +504,20 @@ test "jsonExtractBool" {
     try std.testing.expect(jsonExtractBool(json, "record"));
     try std.testing.expect(!jsonExtractBool(json, "other"));
     try std.testing.expect(!jsonExtractBool(json, "missing"));
+}
+
+test "generateRoomId produces 16 hex chars" {
+    const id = generateRoomId();
+    try std.testing.expectEqual(@as(usize, 16), id.len);
+    for (id) |ch| {
+        try std.testing.expect((ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f'));
+    }
+}
+
+test "generateRoomId produces unique values" {
+    const a = generateRoomId();
+    const b = generateRoomId();
+    try std.testing.expect(!std.mem.eql(u8, &a, &b));
 }
 
 test "getSocketPath returns valid path" {

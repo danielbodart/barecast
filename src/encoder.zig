@@ -62,6 +62,7 @@ pub const Encoder = struct {
     consecutive_skips: u64 = 0,
     idle_logged: bool = false,
     idle_keyframe_sent: bool = false,
+    force_next_keyframe: bool = false,
 
     pub fn init(
         fbc: *nvfbc.NvFbc,
@@ -149,8 +150,9 @@ pub const Encoder = struct {
 
         const t1 = std.time.Instant.now() catch null;
 
-        // Encode — force keyframe on PLI (already consumed above) or first frame
-        const force_key = pli_pending;
+        // Encode — force keyframe on PLI, first frame, or after pipeline reinit
+        const force_key = pli_pending or self.force_next_keyframe;
+        if (self.force_next_keyframe) self.force_next_keyframe = false;
         const maybe_encoded = try self.nvenc.encodeFrame(force_key);
 
         const t2 = std.time.Instant.now() catch null;
@@ -204,6 +206,21 @@ pub const Encoder = struct {
             );
             self.timings.reset();
         }
+    }
+
+    /// Reinitialize the encode pipeline for a new resolution.
+    /// Called after NvFBC.recreateSession() + first grabFrame() at the new size.
+    pub fn reinit(self: *Encoder, new_frame: nvfbc.FrameResult, fps: u32) !void {
+        try self.cuda_ctx.reinitBuffers(new_frame.texture_id, new_frame.width, new_frame.height);
+        try self.nvenc.reconfigure(&self.cuda_ctx, fps);
+        self.width = new_frame.width;
+        self.height = new_frame.height;
+        self.consecutive_skips = 0;
+        self.idle_logged = false;
+        self.idle_keyframe_sent = false;
+        self.force_next_keyframe = true;
+        self.timings.reset();
+        log.info("pipeline reinit: {}x{}", .{ new_frame.width, new_frame.height });
     }
 
     /// Finalize output. Only meaningful for IVF sink.

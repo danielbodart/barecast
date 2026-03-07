@@ -1,9 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
 const control = @import("control");
-const ScreenShare = @import("screen_share").ScreenShare;
-const ScreenShareConfig = @import("screen_share").ScreenShareConfig;
-const parseGeometry = @import("screen_share").parseGeometry;
 const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
 const TerminalShare = @import("terminal_share").TerminalShare;
@@ -23,7 +20,6 @@ var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 const MAX_SESSIONS = 8;
 
 const SharePayload = union(enum) {
-    screen: *ScreenShare,
     terminal: *TerminalShare,
     app: *AppShare,
 };
@@ -202,16 +198,6 @@ fn handleStatus(buf: []u8) []const u8 {
     for (&sessions) |*slot| {
         if (slot.payload) |payload| {
             switch (payload) {
-                .screen => |share| {
-                    infos[count] = .{
-                        .id = &share.session_id,
-                        .type = .screen,
-                        .room = share.share_url,
-                        .viewers = share.viewerCount(),
-                        .recording = share.recording != null,
-                        .uptime_s = share.uptimeSeconds(),
-                    };
-                },
                 .terminal => |share| {
                     infos[count] = .{
                         .id = &share.session_id,
@@ -249,120 +235,7 @@ fn handleShare(req: control.ShareRequest, buf: []u8) []const u8 {
     if (req.type == .app) {
         return handleShareApp(req, buf);
     }
-    return handleShareScreen(req, buf);
-}
-
-/// Thread-safe init result passed from capture thread back to daemon.
-const ScreenInitResult = struct {
-    share: ?*ScreenShare = null,
-    err_msg: ?[]const u8 = null,
-    done: std.Thread.ResetEvent = .{},
-};
-
-fn handleShareScreen(req: control.ShareRequest, buf: []u8) []const u8 {
-    const allocator = std.heap.c_allocator;
-
-    // Resolve base URL
-    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
-            return control.writeErrorResponse(buf, "internal error") orelse "",
-        else => return control.writeErrorResponse(buf, "internal error") orelse "",
-    };
-
-    // Auto-join a room if not in one
-    if (currentRoom() == null) {
-        var id_buf: [16]u8 = undefined;
-        generateRoomId(&id_buf) catch
-            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
-        setRoom(&id_buf);
-        log.info("auto-joined room: {s}", .{currentRoom().?});
-    }
-
-    var config = ScreenShareConfig{
-        .fps = req.fps,
-        .record = req.record,
-        .base_url = base_url,
-        .room_id = currentRoom(),
-    };
-
-    if (req.geometry) |geom| {
-        config.geometry = parseGeometry(geom) orelse
-            return control.writeErrorResponse(buf, "invalid geometry format (expected WxH+X+Y)") orelse "";
-    }
-
-    // Find empty slot before spawning thread
-    const slot_idx = findEmptySlot() orelse {
-        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
-    };
-
-    // Allocate init result on heap (shared between threads)
-    const result = allocator.create(ScreenInitResult) catch
-        return control.writeErrorResponse(buf, "out of memory") orelse "";
-    defer allocator.destroy(result);
-    result.* = .{};
-
-    // Spawn thread that does ALL GPU work: init + start + runLoop
-    // GL/CUDA contexts must be created and used on the same thread.
-    const thread = std.Thread.spawn(.{}, screenThreadEntry, .{ result, config, slot_idx }) catch |err| {
-        log.err("thread spawn failed: {}", .{err});
-        return control.writeErrorResponse(buf, "failed to start capture thread") orelse "";
-    };
-
-    // Wait for init to complete on the capture thread
-    result.done.wait();
-
-    if (result.err_msg) |err_msg| {
-        thread.join();
-        return control.writeErrorResponse(buf, err_msg) orelse "";
-    }
-
-    const share = result.share.?;
-
-    // Store thread handle
-    sessions_mutex.lock();
-    sessions[slot_idx].thread = thread;
-    sessions_mutex.unlock();
-
-    return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
-        control.writeErrorResponse(buf, "internal error") orelse "";
-}
-
-fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_idx: usize) void {
-    const allocator = std.heap.c_allocator;
-
-    const share = allocator.create(ScreenShare) catch {
-        result.err_msg = "out of memory";
-        result.done.set();
-        return;
-    };
-
-    // Init in-place — all internal pointers (encoder → session, session →
-    // viewer_registry) are captured against the heap address, not a stack copy.
-    share.initInPlace(config) catch {
-        allocator.destroy(share);
-        result.err_msg = "screen share init failed";
-        result.done.set();
-        return;
-    };
-
-    // Register session slot
-    sessions_mutex.lock();
-    sessions[slot_idx].payload = .{ .screen = share };
-    sessions_mutex.unlock();
-
-    // Register signaling callbacks
-    share.start();
-
-    // Signal success to the daemon thread
-    result.share = share;
-    result.done.set();
-
-    // Run the capture loop (blocks until should_stop)
-    share.runLoop();
-
-    // Clean up GPU resources on the same thread they were created
-    // (GL/CUDA contexts are thread-local)
-    share.deinit();
+    return control.writeErrorResponse(buf, "unknown share type") orelse "";
 }
 
 // ── App share ────────────────────────────────────────────────────────────
@@ -386,9 +259,7 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
     };
 
     if (currentRoom() == null) {
-        var id_buf: [16]u8 = undefined;
-        generateRoomId(&id_buf) catch
-            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        const id_buf = control.generateRoomId();
         setRoom(&id_buf);
         log.info("auto-joined room: {s}", .{currentRoom().?});
     }
@@ -460,6 +331,12 @@ fn appThreadEntry(result: *AppInitResult, config: AppShareConfig, slot_idx: usiz
 
     // Clean up on the same thread (GL/CUDA contexts are thread-local)
     share.deinit();
+
+    // Clear the session slot so it can be reused
+    sessions_mutex.lock();
+    sessions[slot_idx] = .{};
+    sessions_mutex.unlock();
+    allocator.destroy(share);
 }
 
 // ── Terminal share ───────────────────────────────────────────────────────
@@ -476,9 +353,7 @@ fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
 
     // Auto-join a room if not in one
     if (currentRoom() == null) {
-        var id_buf: [16]u8 = undefined;
-        generateRoomId(&id_buf) catch
-            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        const id_buf = control.generateRoomId();
         setRoom(&id_buf);
         log.info("auto-joined room: {s}", .{currentRoom().?});
     }
@@ -542,9 +417,7 @@ fn handleJoin(req: control.JoinRequest, buf: []u8) []const u8 {
             return control.writeErrorResponse(buf, "invalid room name") orelse "";
         setRoom(room);
     } else {
-        var id_buf: [16]u8 = undefined;
-        generateRoomId(&id_buf) catch
-            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        const id_buf = control.generateRoomId();
         setRoom(&id_buf);
     }
 
@@ -578,16 +451,6 @@ fn handleLeave(buf: []u8) []const u8 {
     clearRoom();
 
     return control.writeSimpleOk(buf) orelse "";
-}
-
-fn generateRoomId(out: *[16]u8) !void {
-    var random_bytes: [8]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
-    const charset = "0123456789abcdef";
-    for (random_bytes, 0..) |b, i| {
-        out[i * 2] = charset[b >> 4];
-        out[i * 2 + 1] = charset[b & 0x0f];
-    }
 }
 
 fn findEmptySlot() ?usize {
@@ -627,7 +490,6 @@ fn handleUnshare(req: control.UnshareRequest, buf: []u8) []const u8 {
 
 fn getSessionId(payload: SharePayload) *const [16]u8 {
     return switch (payload) {
-        .screen => |s| &s.session_id,
         .terminal => |t| &t.session_id,
         .app => |a| &a.session_id,
     };
@@ -635,7 +497,6 @@ fn getSessionId(payload: SharePayload) *const [16]u8 {
 
 fn getSessionType(payload: SharePayload) control.ShareType {
     return switch (payload) {
-        .screen => .screen,
         .terminal => .terminal,
         .app => .app,
     };
@@ -643,7 +504,6 @@ fn getSessionType(payload: SharePayload) control.ShareType {
 
 fn signalStop(payload: SharePayload) void {
     switch (payload) {
-        .screen => |s| s.should_stop.store(true, .release),
         .terminal => |t| t.should_stop.store(true, .release),
         .app => |a| a.should_stop.store(true, .release),
     }
@@ -652,9 +512,8 @@ fn signalStop(payload: SharePayload) void {
 fn deinitAndFree(payload: SharePayload) void {
     const allocator = std.heap.c_allocator;
     switch (payload) {
-        // Screen/app shares deinit on their capture thread (GL contexts are thread-local).
+        // App shares deinit on their capture thread (GL contexts are thread-local).
         // We only free the heap allocation here after thread.join().
-        .screen => |s| allocator.destroy(s),
         .app => |a| allocator.destroy(a),
         .terminal => |t| {
             t.deinit();

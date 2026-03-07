@@ -64,28 +64,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // --- uinput module (virtual keyboard + mouse) ---
-    const uinput_mod = b.createModule(.{
-        .root_source_file = b.path("src/uinput.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "keymap", .module = keymap_mod },
-        },
-    });
-
-    // --- Overlay module (X11 region indicator + Cairo drawing) ---
-    const overlay_mod = b.createModule(.{
-        .root_source_file = b.path("src/overlay.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    overlay_mod.linkSystemLibrary("x11", .{});
-    overlay_mod.linkSystemLibrary("cairo", .{});
-    overlay_mod.addImport("nvfbc", nvfbc_mod);
-
     // --- Encode pipeline modules ---
     const cuda_mod = b.createModule(.{
         .root_source_file = b.path("src/cuda.zig"),
@@ -144,23 +122,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // --- Screen share module (capture pipeline as reusable struct) ---
-    const screen_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/screen_share.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "nvfbc", .module = nvfbc_mod },
-            .{ .name = "encoder", .module = encoder_mod },
-            .{ .name = "ivf", .module = ivf_mod },
-            .{ .name = "session", .module = session_mod },
-            .{ .name = "overlay", .module = overlay_mod },
-            .{ .name = "viewer_state", .module = viewer_state_mod },
-            .{ .name = "uinput", .module = uinput_mod },
-        },
-    });
-
     // --- Headless display module (manages headless Xorg lifecycle) ---
     const headless_display_mod = b.createModule(.{
         .root_source_file = b.path("src/headless_display.zig"),
@@ -201,12 +162,12 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "nvfbc", .module = nvfbc_mod },
             .{ .name = "encoder", .module = encoder_mod },
+            .{ .name = "control", .module = control_mod },
             .{ .name = "session", .module = session_mod },
             .{ .name = "viewer_state", .module = viewer_state_mod },
             .{ .name = "xtest_input", .module = xtest_input_mod },
             .{ .name = "headless_display", .module = headless_display_mod },
             .{ .name = "window_manager", .module = window_manager_mod },
-            .{ .name = "screen_share", .module = screen_share_mod },
         },
     });
 
@@ -230,7 +191,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "control", .module = control_mod },
-            .{ .name = "screen_share", .module = screen_share_mod },
             .{ .name = "app_share", .module = app_share_mod },
             .{ .name = "terminal_share", .module = terminal_share_mod },
             .{ .name = "build_options", .module = build_options_mod },
@@ -325,22 +285,6 @@ pub fn build(b: *std.Build) void {
     // --- Test step ---
     const test_step = b.step("test", "Run unit tests");
 
-    // Screen share tests (geometry parsing, room ID generation/validation)
-    const screen_share_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/screen_share.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            // Only nvfbc needed for the Box type
-            .imports = &.{
-                .{ .name = "nvfbc", .module = nvfbc_mod },
-            },
-        }),
-    });
-    const run_screen_share_tests = b.addRunArtifact(screen_share_tests);
-    test_step.dependOn(&run_screen_share_tests.step);
-
     // Control protocol tests (JSON roundtrip, socket path)
     const control_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -354,7 +298,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_control_tests.step);
 
     // Daemon tests (socket bind/accept, dispatch)
-    // The daemon imports screen_share which transitively depends on session
+    // The daemon imports app_share which transitively depends on session
     // (libdatachannel), so we need the include path + static libs.
     const daemon_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -364,7 +308,6 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "control", .module = control_mod },
-                .{ .name = "screen_share", .module = screen_share_mod },
                 .{ .name = "app_share", .module = app_share_mod },
                 .{ .name = "terminal_share", .module = terminal_share_mod },
                 .{ .name = "build_options", .module = build_options_mod },

@@ -62,10 +62,6 @@ async function ensureDeps() {
     const { exitCode: glCheck } = await $`pkg-config --exists gl`.quiet().nothrow();
     if (glCheck !== 0) missing.push("libgl-dev");
 
-    // Cairo (needed by overlay module for drawing annotations)
-    const { exitCode: cairoCheck } = await $`pkg-config --exists cairo`.quiet().nothrow();
-    if (cairoCheck !== 0) missing.push("libcairo2-dev");
-
     // cmake (needed to build libdatachannel)
     if (!await which("cmake")) missing.push("cmake");
 

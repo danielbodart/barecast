@@ -509,6 +509,10 @@ pub const NvFbc = struct {
         };
 
         const status = (self.fns.nvFBCToGLGrabFrame orelse return error.NvFbcGrabFailed)(self.handle, &grab_params);
+        if (status == .err_must_recreate) {
+            std.debug.print("NvFBC: display changed, must recreate capture session\n", .{});
+            return error.NvFbcMustRecreate;
+        }
         if (status != .success) {
             const err_str = if (self.fns.nvFBCGetLastErrorStr) |f| f(self.handle) else null;
             std.debug.print("NvFBC: GrabFrame failed: {s}\n", .{err_str orelse "unknown"});
@@ -542,6 +546,80 @@ pub const NvFbc = struct {
             .is_new = is_new,
             .capture_timestamp_us = frame_info.ulTimestampUs,
         };
+    }
+
+    /// Recreate the capture session after a display resolution change.
+    /// Keeps the NvFBC handle and GLX context alive — only tears down and
+    /// rebuilds the capture session, GL textures, and diff map.
+    pub fn recreateSession(self: *NvFbc, fps: u32) !void {
+        // 1. Destroy old capture session
+        if (self.session_created) {
+            var dsp = DestroyCaptureSessionParams{};
+            _ = (self.fns.nvFBCDestroyCaptureSession orelse return error.NvFbcInitFailed)(self.handle, &dsp);
+            self.session_created = false;
+        }
+
+        // 2. Free old diff map storage
+        if (self.diff_map_storage) |s| {
+            std.heap.c_allocator.destroy(s);
+            self.diff_map_storage = null;
+            self.diff_map_size = 0;
+        }
+
+        // 3. Query new screen size
+        const getStatus = self.fns.nvFBCGetStatus orelse return error.NvFbcInitFailed;
+        var status_params = GetStatusParams{};
+        var status = getStatus(self.handle, &status_params);
+        if (status != .success) {
+            const err_str = if (self.fns.nvFBCGetLastErrorStr) |f| f(self.handle) else null;
+            std.debug.print("NvFBC: GetStatus failed during recreate: {s}\n", .{err_str orelse "unknown"});
+            return error.NvFbcInitFailed;
+        }
+        self.screen_size = status_params.screenSize;
+        std.debug.print("NvFBC: recreate — new screen size {}x{}\n", .{ self.screen_size.w, self.screen_size.h });
+
+        // 4. Create new capture session (headless mode: push model + direct capture)
+        var cap_params = CreateCaptureSessionParams{
+            .dwSamplingRateMs = (999 + fps) / fps,
+            .bPushModel = .true_,
+            .bWithCursor = .false_,
+            .bAllowDirectCapture = .true_,
+        };
+        status = (self.fns.nvFBCCreateCaptureSession orelse return error.NvFbcInitFailed)(self.handle, &cap_params);
+        if (status != .success) {
+            const err_str = if (self.fns.nvFBCGetLastErrorStr) |f| f(self.handle) else null;
+            std.debug.print("NvFBC: CreateCaptureSession failed during recreate: {s}\n", .{err_str orelse "unknown"});
+            return error.NvFbcInitFailed;
+        }
+        self.session_created = true;
+
+        // 5. GL setup with new diff map
+        const diff_map_storage = std.heap.c_allocator.create(?[*]u8) catch return error.NvFbcInitFailed;
+        diff_map_storage.* = null;
+        self.setup_params = ToGlSetupParams{
+            .bWithDiffMap = .true_,
+            .ppDiffMap = @ptrCast(diff_map_storage),
+            .dwDiffMapScalingFactor = 128,
+        };
+        status = (self.fns.nvFBCToGLSetUp orelse return error.NvFbcInitFailed)(self.handle, &self.setup_params);
+        if (status != .success) {
+            const err_str = if (self.fns.nvFBCGetLastErrorStr) |f| f(self.handle) else null;
+            std.debug.print("NvFBC: ToGLSetUp failed during recreate: {s}\n", .{err_str orelse "unknown"});
+            std.heap.c_allocator.destroy(diff_map_storage);
+            var dsp = DestroyCaptureSessionParams{};
+            _ = (self.fns.nvFBCDestroyCaptureSession orelse unreachable)(self.handle, &dsp);
+            self.session_created = false;
+            return error.NvFbcInitFailed;
+        }
+
+        self.diff_map_storage = diff_map_storage;
+        self.diff_map_size = @as(usize, self.setup_params.diffMapSize.w) * @as(usize, self.setup_params.diffMapSize.h);
+        self.last_frame_id = 0;
+
+        std.debug.print("NvFBC: recreated — textures=[{}, {}], diffmap={}x{} ({} bytes)\n", .{
+            self.setup_params.dwTextures[0], self.setup_params.dwTextures[1],
+            self.setup_params.diffMapSize.w, self.setup_params.diffMapSize.h, self.diff_map_size,
+        });
     }
 
     pub fn deinit(self: *NvFbc) void {

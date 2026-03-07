@@ -79,8 +79,11 @@ pub const Cuda = struct {
     // Function pointers
     cuGetErrorString: GetErrorStringFn,
     cuCtxDestroy_v2: CtxDestroyFn,
+    cuMemAllocPitch: MemAllocPitchFn,
     cuMemFree_v2: MemFreeFn,
     cuMemcpy2D_v2: Memcpy2DFn,
+    cuGraphicsGLRegisterImage: GraphicsGLRegisterImageFn,
+    cuGraphicsResourceSetMapFlags: GraphicsResourceSetMapFlagsFn,
     cuGraphicsMapResources: GraphicsMapResourcesFn,
     cuGraphicsUnmapResources: GraphicsUnmapResourcesFn,
     cuGraphicsUnregisterResource: GraphicsUnregisterResourceFn,
@@ -184,8 +187,11 @@ pub const Cuda = struct {
             .graphics_resource = graphics_resource,
             .cuGetErrorString = cuGetErrorString,
             .cuCtxDestroy_v2 = cuCtxDestroy,
+            .cuMemAllocPitch = cuMemAllocPitch,
             .cuMemFree_v2 = cuMemFree,
             .cuMemcpy2D_v2 = cuMemcpy2D,
+            .cuGraphicsGLRegisterImage = cuGraphicsGLRegisterImage,
+            .cuGraphicsResourceSetMapFlags = cuGraphicsResourceSetMapFlags,
             .cuGraphicsMapResources = cuGraphicsMapResources,
             .cuGraphicsUnmapResources = cuGraphicsUnmapResources,
             .cuGraphicsUnregisterResource = cuGraphicsUnregisterResource,
@@ -228,6 +234,57 @@ pub const Cuda = struct {
             logCudaError(self.cuGetErrorString, res, "cuMemcpy2D_v2");
             return error.CudaCopyFailed;
         }
+    }
+
+    /// Reinitialize resolution-dependent resources (device buffer + GL texture registration).
+    /// Keeps the CUDA context, lib handle, and function pointers alive.
+    pub fn reinitBuffers(self: *Cuda, texture_id: u32, width: u32, height: u32) !void {
+        // 1. Unregister old GL texture
+        if (self.graphics_resource) |res| {
+            _ = self.cuGraphicsUnregisterResource(res);
+            self.graphics_resource = null;
+        }
+
+        // 2. Free old device buffer
+        if (self.device_ptr != 0) {
+            _ = self.cuMemFree_v2(self.device_ptr);
+            self.device_ptr = 0;
+        }
+
+        // 3. Allocate new device buffer
+        var device_ptr: CUdeviceptr = 0;
+        var pitch: usize = 0;
+        var res = self.cuMemAllocPitch(&device_ptr, &pitch, @as(usize, width) * 4, height, 16);
+        if (res != CUDA_SUCCESS) {
+            logCudaError(self.cuGetErrorString, res, "cuMemAllocPitch_v2 (reinit)");
+            return error.CudaInitFailed;
+        }
+        self.device_ptr = device_ptr;
+        self.device_pitch = pitch;
+        self.device_size = pitch * height;
+        self.frame_width = width;
+        self.frame_height = height;
+
+        std.debug.print("CUDA: reinit {}x{} BGRA buffer, pitch={}\n", .{ width, height, pitch });
+
+        // 4. Register new GL texture
+        var graphics_resource: ?*anyopaque = null;
+        res = self.cuGraphicsGLRegisterImage(&graphics_resource, texture_id, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+        if (res != CUDA_SUCCESS) {
+            logCudaError(self.cuGetErrorString, res, "cuGraphicsGLRegisterImage (reinit)");
+            return error.CudaInitFailed;
+        }
+
+        // 5. Set read-only map flags
+        res = self.cuGraphicsResourceSetMapFlags(graphics_resource.?, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
+        if (res != CUDA_SUCCESS) {
+            logCudaError(self.cuGetErrorString, res, "cuGraphicsResourceSetMapFlags (reinit)");
+            _ = self.cuGraphicsUnregisterResource(graphics_resource.?);
+            self.graphics_resource = null;
+            return error.CudaInitFailed;
+        }
+
+        self.graphics_resource = graphics_resource;
     }
 
     pub fn deinit(self: *Cuda) void {

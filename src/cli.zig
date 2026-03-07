@@ -49,12 +49,12 @@ pub fn dispatch() void {
 
 fn handleShare(args: *std.process.ArgIterator) void {
     const share_type = args.next() orelse {
-        std.debug.print("Usage: zerocast share <screen|terminal> [options]\n", .{});
+        std.debug.print("Usage: zerocast share <terminal|app> [options]\n", .{});
         std.process.exit(1);
     };
 
-    if (!std.mem.eql(u8, share_type, "screen") and !std.mem.eql(u8, share_type, "terminal") and !std.mem.eql(u8, share_type, "app")) {
-        std.debug.print("Unknown share type: {s}\nExpected: screen, terminal, app\n", .{share_type});
+    if (!std.mem.eql(u8, share_type, "terminal") and !std.mem.eql(u8, share_type, "app")) {
+        std.debug.print("Unknown share type: {s}\nExpected: terminal, app\n", .{share_type});
         std.process.exit(1);
     }
 
@@ -67,43 +67,15 @@ fn handleShare(args: *std.process.ArgIterator) void {
     w.writeAll(share_type) catch return;
     w.writeByte('"') catch return;
 
-    const is_screen = std.mem.eql(u8, share_type, "screen");
-    const is_app = std.mem.eql(u8, share_type, "app");
-
     // Parse remaining flags
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--fps")) {
-            if (!is_screen) {
-                std.debug.print("--fps is only valid for screen shares\n", .{});
-                std.process.exit(1);
-            }
-            const fps = args.next() orelse {
-                std.debug.print("--fps requires a value\n", .{});
-                std.process.exit(1);
-            };
-            w.writeAll(",\"fps\":") catch return;
-            w.writeAll(fps) catch return;
-        } else if (std.mem.eql(u8, arg, "--record")) {
+        if (std.mem.eql(u8, arg, "--record")) {
             w.writeAll(",\"record\":true") catch return;
-        } else if (is_screen and (std.mem.eql(u8, arg, "--geometry") or isPossibleGeometry(arg))) {
-            const geom = if (std.mem.eql(u8, arg, "--geometry"))
-                (args.next() orelse {
-                    std.debug.print("--geometry requires a WxH+X+Y value\n", .{});
-                    std.process.exit(1);
-                })
-            else
-                arg;
-            w.writeAll(",\"geometry\":\"") catch return;
-            w.writeAll(geom) catch return;
-            w.writeByte('"') catch return;
-        } else if (!is_screen or is_app) {
+        } else {
             // Positional arg in terminal/app mode = command
             w.writeAll(",\"command\":\"") catch return;
             w.writeAll(arg) catch return;
             w.writeByte('"') catch return;
-        } else {
-            std.debug.print("Unknown option: {s}\n", .{arg});
-            std.process.exit(1);
         }
     }
 
@@ -123,7 +95,7 @@ fn handleUnshare(args: *std.process.ArgIterator) void {
     w.writeAll("{\"cmd\":\"unshare\"") catch return;
 
     if (target) |t| {
-        if (std.mem.eql(u8, t, "screen") or std.mem.eql(u8, t, "terminal") or std.mem.eql(u8, t, "app")) {
+        if (std.mem.eql(u8, t, "terminal") or std.mem.eql(u8, t, "app")) {
             w.writeAll(",\"type\":\"") catch return;
             w.writeAll(t) catch return;
             w.writeByte('"') catch return;
@@ -270,18 +242,6 @@ fn toSockaddr(path: []const u8) ?std.os.linux.sockaddr.un {
     return addr;
 }
 
-/// Quick heuristic: does this look like WxH+X+Y geometry?
-fn isPossibleGeometry(s: []const u8) bool {
-    if (s.len < 7) return false; // minimum: "1x1+0+0"
-    var has_x = false;
-    var has_plus: u8 = 0;
-    for (s) |ch| {
-        if (ch == 'x') has_x = true;
-        if (ch == '+') has_plus += 1;
-    }
-    return has_x and has_plus >= 2;
-}
-
 fn printUsage() void {
     std.debug.print(
         \\zerocast v{s}
@@ -289,10 +249,9 @@ fn printUsage() void {
         \\Usage:
         \\  zerocast join [room-name]                     Join a room (random if omitted)
         \\  zerocast leave                                Leave room and stop all shares
-        \\  zerocast share screen [WxH+X+Y] [--fps <n>] [--record]
         \\  zerocast share terminal [command] [--record]
         \\  zerocast share app <command>
-        \\  zerocast unshare [screen | terminal | app | <session-id>]
+        \\  zerocast unshare [terminal | app | <session-id>]
         \\  zerocast status                               Show current room and sessions
         \\  zerocast start                                Start the daemon (systemd)
         \\  zerocast stop                                 Stop the daemon (systemd)
@@ -300,12 +259,10 @@ fn printUsage() void {
         \\
         \\Examples:
         \\  zerocast join my-room                         Join a stable room
-        \\  zerocast share screen                         Share full screen
-        \\  zerocast share screen 1920x1080+0+0           Share a sub-region
-        \\  zerocast share screen --fps 60 --record       60fps + record to IVF
         \\  zerocast share terminal                       Share interactive shell
         \\  zerocast share terminal htop --record         Share htop + record .cast
         \\  zerocast share app code                       Share VS Code in headless display
+        \\  zerocast share app glxgears                   Share glxgears in headless display
         \\  zerocast unshare                              Stop all shares
         \\
     , .{build_options.version});
@@ -313,11 +270,3 @@ fn printUsage() void {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-test "isPossibleGeometry" {
-    try std.testing.expect(isPossibleGeometry("1920x1080+0+0"));
-    try std.testing.expect(isPossibleGeometry("800x600+100+200"));
-    try std.testing.expect(!isPossibleGeometry("screen"));
-    try std.testing.expect(!isPossibleGeometry("--room"));
-    try std.testing.expect(!isPossibleGeometry("htop"));
-    try std.testing.expect(!isPossibleGeometry("123"));
-}

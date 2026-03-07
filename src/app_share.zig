@@ -14,7 +14,7 @@ const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const XTestInput = @import("xtest_input").XTestInput;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
 const WindowManager = @import("window_manager").WindowManager;
-const generateRoomId = @import("screen_share").generateRoomId;
+const generateRoomId = @import("control").generateRoomId;
 
 const log = std.log.scoped(.app_share);
 
@@ -126,12 +126,12 @@ pub const AppShare = struct {
         if (config.room_id) |id| {
             self.room_id = id;
         } else {
-            self.room_id_buf = generateRoomId() catch return error.RoomIdGenFailed;
+            self.room_id_buf = generateRoomId();
             self.room_id = &self.room_id_buf;
         }
 
         // Session ID
-        self.session_id = generateRoomId() catch return error.SessionIdGenFailed;
+        self.session_id = generateRoomId();
 
         // Build URLs
         const base_url = config.base_url;
@@ -216,7 +216,7 @@ pub const AppShare = struct {
 
         self.sendAppMeta();
 
-        while (!self.should_stop.load(.acquire)) {
+        loop: while (!self.should_stop.load(.acquire)) {
             // Check if app is still running
             if (self.app_pid) |pid| {
                 const wr = posix.waitpid(pid, posix.W.NOHANG);
@@ -258,9 +258,28 @@ pub const AppShare = struct {
                 self.sendAppMeta();
             }
 
-            const frame = self.fbc.grabFrame() catch |err| {
-                log.err("capture error: {}", .{err});
-                break;
+            const frame = self.fbc.grabFrame() catch |err| switch (err) {
+                error.NvFbcMustRecreate => blk: {
+                    log.info("display resized, reinitializing capture pipeline", .{});
+                    self.fbc.recreateSession(self.config.fps) catch |e| {
+                        log.err("recreateSession failed: {}", .{e});
+                        break :loop;
+                    };
+                    const new_frame = self.fbc.grabFrame() catch |e| {
+                        log.err("post-recreate grab failed: {}", .{e});
+                        break :loop;
+                    };
+                    self.encoder.reinit(new_frame, self.config.fps) catch |e| {
+                        log.err("encoder reinit failed: {}", .{e});
+                        break :loop;
+                    };
+                    self.sendAppMeta();
+                    break :blk new_frame;
+                },
+                else => {
+                    log.err("capture error: {}", .{err});
+                    break;
+                },
             };
 
             self.encoder.processFrame(frame) catch |err| {
