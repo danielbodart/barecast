@@ -22,9 +22,8 @@ pub const HeadlessDisplay = struct {
     width: u32,
     height: u32,
 
-    const xorg_helper_paths = [_][]const u8{
+    const xorg_helper_paths = [_][*:0]const u8{
         "/usr/local/bin/zerocast-xorg",
-        // Fallback: look relative to the running binary
     };
 
     pub const InitError = error{
@@ -141,7 +140,7 @@ pub const HeadlessDisplay = struct {
 
         const config_z = self.configPathZ();
         const argv = [_:null]?[*:0]const u8{
-            helper_path.ptr,
+            helper_path,
             config_z,
         };
 
@@ -149,9 +148,8 @@ pub const HeadlessDisplay = struct {
 
         if (pid == 0) {
             // Child: exec the helper
-            // Redirect stdout to a pipe so parent can read display number
             posix.execveZ(
-                helper_path.ptr,
+                helper_path,
                 &argv,
                 @ptrCast(std.c.environ),
             ) catch {};
@@ -172,23 +170,30 @@ pub const HeadlessDisplay = struct {
 
     fn waitForHelperReady(self: *HeadlessDisplay, pid: posix.pid_t) !u8 {
         _ = self;
-        _ = pid;
-        // Poll for /tmp/.X11-unix/X<n> sockets
+
+        // The helper finds a free display and starts Xorg on it.
+        // Wait for ANY new socket in /tmp/.X11-unix/ (range :10-:99).
+        // Record which sockets exist before we started.
+        var existing = [_]bool{false} ** 100;
         for (10..100) |d| {
             var path_buf: [32]u8 = undefined;
             const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
             path_buf[path.len] = 0;
             if (std.c.access(@ptrCast(path.ptr), 0) == 0) {
-                // Verify this is a new socket (not pre-existing)
-                // For now, just return the first one we find in range 10-99
-                return @intCast(d);
+                existing[d] = true;
             }
         }
 
-        // Wait up to 15 seconds
+        // Poll for a NEW socket (up to 15 seconds)
         for (0..150) |_| {
             std.Thread.sleep(100 * std.time.ns_per_ms);
+
+            // Check if helper exited prematurely
+            const wr = posix.waitpid(pid, posix.W.NOHANG);
+            if (wr.pid != 0) return error.HelperFailed;
+
             for (10..100) |d| {
+                if (existing[d]) continue;
                 var path_buf: [32]u8 = undefined;
                 const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
                 path_buf[path.len] = 0;
@@ -255,11 +260,10 @@ pub const HeadlessDisplay = struct {
         return @ptrCast(self.config_path[0..self.config_path_len :0]);
     }
 
-    fn findHelper() ?[:0]const u8 {
+    fn findHelper() ?[*:0]const u8 {
         for (xorg_helper_paths) |path| {
-            const z: [:0]const u8 = @ptrCast(path[0..path.len :0]);
-            if (std.c.access(z.ptr, 1) == 0) { // 1 = X_OK
-                return z;
+            if (std.c.access(path, 1) == 0) { // 1 = X_OK
+                return path;
             }
         }
         return null;

@@ -77,6 +77,8 @@ pub fn parseRequest(msg: []const u8) ?Request {
         if (jsonExtract(msg, "type")) |t| {
             if (std.mem.eql(u8, t, "terminal")) {
                 req.type = .terminal;
+            } else if (std.mem.eql(u8, t, "app")) {
+                req.type = .app;
             } else {
                 req.type = .screen;
             }
@@ -105,6 +107,8 @@ pub fn parseRequest(msg: []const u8) ?Request {
                 req.type = .screen;
             } else if (std.mem.eql(u8, t, "terminal")) {
                 req.type = .terminal;
+            } else if (std.mem.eql(u8, t, "app")) {
+                req.type = .app;
             }
         }
 

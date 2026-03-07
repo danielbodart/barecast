@@ -86,10 +86,12 @@ pub const AppShare = struct {
         // Give the app a moment to create its window
         std.Thread.sleep(1 * std.time.ns_per_s);
 
-        // Init NvFBC on the headless display
+        // Set DISPLAY env var so NvFBC captures the headless display.
+        // NvFBC internally reads $DISPLAY even when we open GLX on a specific display.
         var display_z: [16]u8 = undefined;
         @memcpy(display_z[0..display_env.len], display_env);
         display_z[display_env.len] = 0;
+        _ = c.setenv("DISPLAY", @ptrCast(display_z[0..display_env.len :0]), 1);
 
         var fbc = NvFbc.initDisplay(.{}, config.fps, @ptrCast(display_z[0..display_env.len :0])) catch |err| {
             log.err("NvFBC init on headless display failed: {}", .{err});

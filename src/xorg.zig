@@ -152,12 +152,12 @@ fn findFreeDisplay() ?u8 {
 fn waitForDisplay(display: u8) bool {
     var path_buf: [32]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{display}) catch return false;
-    const path_z: [*:0]const u8 = @ptrCast(path.ptr);
+    path_buf[path.len] = 0;
 
-    // Poll for up to 10 seconds
-    for (0..100) |_| {
+    // Poll for up to 30 seconds
+    for (0..300) |_| {
         std.Thread.sleep(100 * std.time.ns_per_ms);
-        if (std.c.access(path_z, 0) == 0) { // 0 = F_OK
+        if (std.c.access(@ptrCast(path_buf[0..path.len :0]), 0) == 0) {
             return true;
         }
     }
