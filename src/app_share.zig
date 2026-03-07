@@ -13,6 +13,7 @@ const InputHandler = @import("session").InputHandler;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const XTestInput = @import("xtest_input").XTestInput;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
+const WindowManager = @import("window_manager").WindowManager;
 const generateRoomId = @import("screen_share").generateRoomId;
 
 const log = std.log.scoped(.app_share);
@@ -38,6 +39,7 @@ pub const AppShare = struct {
     share_url_buf: [512]u8,
     share_url: []const u8,
     display: HeadlessDisplay,
+    wm: ?WindowManager,
     app_pid: ?posix.pid_t,
     fbc: NvFbc,
     xinput: ?XTestInput,
@@ -57,13 +59,14 @@ pub const AppShare = struct {
         self.config = config;
         self.app_pid = null;
         self.xinput = null;
+        self.wm = null;
 
         // Copy command string (config.command may point to stack)
         if (config.command.len > self.command_buf.len) return error.CommandTooLong;
         @memcpy(self.command_buf[0..config.command.len], config.command);
         self.command_len = config.command.len;
 
-        // Start headless display
+        // Start headless display at a minimal size (will resize to app)
         self.display = HeadlessDisplay.start(config.width, config.height) catch |err| {
             log.err("headless display failed: {}", .{err});
             return error.DisplayFailed;
@@ -72,6 +75,16 @@ pub const AppShare = struct {
 
         const display_env = self.display.displayEnv();
         log.info("headless display :{d} ready", .{self.display.display_num});
+
+        // Start window manager on the headless display
+        var display_z: [16]u8 = undefined;
+        @memcpy(display_z[0..display_env.len], display_env);
+        display_z[display_env.len] = 0;
+
+        self.wm = WindowManager.init(@ptrCast(display_z[0..display_env.len :0])) catch |err| blk: {
+            log.warn("window manager init failed: {}", .{err});
+            break :blk null;
+        };
 
         // Launch the app on the headless display
         self.app_pid = self.launchApp(display_env) catch |err| {
@@ -83,11 +96,18 @@ pub const AppShare = struct {
             _ = posix.waitpid(pid, 0);
         };
 
+        // Wait for the app's window and resize display to match
+        if (self.wm) |*wm| {
+            if (wm.waitForWindow(10)) |size| {
+                log.info("app window: {d}x{d}, resizing display", .{ size.w, size.h });
+                self.display.resize(size.w, size.h);
+            } else |_| {
+                log.warn("app window not detected, using default size", .{});
+            }
+        }
+
         // Set DISPLAY env var so NvFBC captures the headless display.
         // NvFBC internally reads $DISPLAY even when we open GLX on a specific display.
-        var display_z: [16]u8 = undefined;
-        @memcpy(display_z[0..display_env.len], display_env);
-        display_z[display_env.len] = 0;
         _ = c.setenv("DISPLAY", @ptrCast(display_z[0..display_env.len :0]), 1);
 
         var fbc = NvFbc.initDisplay(.{}, config.fps, @ptrCast(display_z[0..display_env.len :0])) catch |err| {
@@ -206,6 +226,9 @@ pub const AppShare = struct {
                 }
             }
 
+            // Process X11 window events (ConfigureNotify, MapRequest, etc.)
+            if (self.wm) |*wm| wm.processEvents();
+
             if (ping_timer.read() >= ping_interval_ns) {
                 ping_timer.reset();
                 if (!self.session.sendPing()) {
@@ -267,6 +290,7 @@ pub const AppShare = struct {
         self.encoder.deinit();
         self.session.deinit();
         if (self.xinput) |*xi| xi.deinit();
+        if (self.wm) |*wm| wm.deinit();
         self.fbc.deinit();
 
         // Kill the app if still running

@@ -169,6 +169,15 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // --- Window manager module (minimal WM for headless app sharing) ---
+    const window_manager_mod = b.createModule(.{
+        .root_source_file = b.path("src/window_manager.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    window_manager_mod.linkSystemLibrary("x11", .{});
+
     // --- XTEST input module (input injection for headless app sharing) ---
     const xtest_input_mod = b.createModule(.{
         .root_source_file = b.path("src/xtest_input.zig"),
@@ -196,6 +205,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "viewer_state", .module = viewer_state_mod },
             .{ .name = "xtest_input", .module = xtest_input_mod },
             .{ .name = "headless_display", .module = headless_display_mod },
+            .{ .name = "window_manager", .module = window_manager_mod },
             .{ .name = "screen_share", .module = screen_share_mod },
         },
     });
