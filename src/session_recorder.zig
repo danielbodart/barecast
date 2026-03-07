@@ -144,10 +144,11 @@ pub const SessionRecorder = struct {
 
     fn closeChunk(self: *SessionRecorder) void {
         if (self.ivf) |*ivf| {
+            // Timebase 1000/1 (milliseconds) — matches the pts_ms values written per frame
             ivf.finalize(
                 @intCast(self.width),
                 @intCast(self.height),
-                self.fps,
+                1000,
                 1,
             ) catch {};
             ivf.deinit();

@@ -221,6 +221,11 @@ pub const AppShare = struct {
             return;
         };
 
+        // Frame pacing: NvFBC push model doesn't rate-limit captures,
+        // so we pace the loop to the target fps.
+        const frame_interval_ns: u64 = std.time.ns_per_s / self.config.fps;
+        var frame_timer = std.time.Timer.start() catch return;
+
         const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
         var ping_timer = std.time.Timer.start() catch return;
 
@@ -272,6 +277,13 @@ pub const AppShare = struct {
 
                 self.sendAppMeta();
             }
+
+            // Frame pacing — sleep to maintain target fps
+            const elapsed_frame_ns = frame_timer.read();
+            if (elapsed_frame_ns < frame_interval_ns) {
+                std.Thread.sleep(frame_interval_ns - elapsed_frame_ns);
+            }
+            frame_timer.reset();
 
             const frame = self.fbc.grabFrame() catch |err| switch (err) {
                 error.NvFbcMustRecreate => blk: {
