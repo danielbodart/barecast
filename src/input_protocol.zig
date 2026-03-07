@@ -21,6 +21,8 @@ pub const MsgType = enum(u8) {
     draw_clear = 0x14,
 
     // Host → viewer
+    viewer_left = 0xFD,
+    relay = 0xFE,
     color_assign = 0xFF,
 };
 
@@ -42,6 +44,8 @@ pub const Message = union(MsgType) {
     draw_end: void,
     draw_undo: void,
     draw_clear: void,
+    viewer_left: struct { color_index: u8 },
+    relay: struct { color_index: u8, payload: []const u8 },
     color_assign: struct { color_index: u8 },
 };
 
@@ -122,6 +126,14 @@ pub fn decode(data: []const u8) DecodeError!Message {
         .draw_end => return .{ .draw_end = {} },
         .draw_undo => return .{ .draw_undo = {} },
         .draw_clear => return .{ .draw_clear = {} },
+        .viewer_left => {
+            if (data.len < 2) return error.Truncated;
+            return .{ .viewer_left = .{ .color_index = data[1] } };
+        },
+        .relay => {
+            if (data.len < 3) return error.Truncated;
+            return .{ .relay = .{ .color_index = data[1], .payload = data[2..] } };
+        },
         .color_assign => {
             if (data.len < 2) return error.Truncated;
             return .{ .color_assign = .{ .color_index = data[1] } };
@@ -132,6 +144,22 @@ pub fn decode(data: []const u8) DecodeError!Message {
 /// Encode a color_assign message (host → viewer).
 pub fn encodeColorAssign(color_index: u8) [2]u8 {
     return .{ @intFromEnum(MsgType.color_assign), color_index };
+}
+
+/// Encode a viewer_left message (host → viewer).
+pub fn encodeViewerLeft(color_index: u8) [2]u8 {
+    return .{ @intFromEnum(MsgType.viewer_left), color_index };
+}
+
+/// Encode a relay message (host → viewer): [0xFE][color_index][original...].
+/// Returns the number of bytes written, or null if buf is too small.
+pub fn encodeRelay(color_index: u8, original: []const u8, buf: []u8) ?usize {
+    const total = 2 + original.len;
+    if (total > buf.len) return null;
+    buf[0] = @intFromEnum(MsgType.relay);
+    buf[1] = color_index;
+    @memcpy(buf[2 .. 2 + original.len], original);
+    return total;
 }
 
 fn readU16(bytes: *const [2]u8) u16 {
@@ -266,4 +294,26 @@ test "encodeColorAssign roundtrip" {
     const encoded = encodeColorAssign(7);
     const msg = try decode(&encoded);
     try std.testing.expectEqual(msg.color_assign.color_index, 7);
+}
+
+test "encodeViewerLeft roundtrip" {
+    const encoded = encodeViewerLeft(3);
+    const msg = try decode(&encoded);
+    try std.testing.expectEqual(msg.viewer_left.color_index, 3);
+}
+
+test "encodeRelay roundtrip" {
+    const original = [_]u8{ 0x01, 0x80, 0x07, 0x38, 0x04 }; // mouse_move
+    var buf: [64]u8 = undefined;
+    const len = encodeRelay(2, &original, &buf).?;
+    try std.testing.expectEqual(len, 7);
+    const msg = try decode(buf[0..len]);
+    try std.testing.expectEqual(msg.relay.color_index, 2);
+    try std.testing.expectEqualSlices(u8, &original, msg.relay.payload);
+}
+
+test "encodeRelay too small returns null" {
+    const original = [_]u8{ 0x01, 0x80, 0x07, 0x38, 0x04 };
+    var buf: [3]u8 = undefined;
+    try std.testing.expect(encodeRelay(0, &original, &buf) == null);
 }

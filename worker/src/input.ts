@@ -7,6 +7,8 @@
  * - Input: mouse moves host cursor, keyboard types
  */
 
+import type { OverlayRenderer } from "./overlay";
+
 export type ViewerMode = "draw" | "input";
 
 // Wire protocol message types (must match src/input_protocol.zig)
@@ -21,6 +23,8 @@ const MSG_DRAW_MOVE = 0x11;
 const MSG_DRAW_END = 0x12;
 const MSG_DRAW_UNDO = 0x13;
 const MSG_DRAW_CLEAR = 0x14;
+const MSG_VIEWER_LEFT = 0xfd;
+const MSG_RELAY = 0xfe;
 const MSG_COLOR_ASSIGN = 0xff;
 
 // Long-press threshold for right-click clear (ms)
@@ -35,6 +39,7 @@ export class InputController {
     private rightPressTimer: ReturnType<typeof setTimeout> | null = null;
     private onModeChange: ((mode: ViewerMode) => void) | null = null;
     private onColorAssign: ((index: number) => void) | null = null;
+    private overlay: OverlayRenderer | null = null;
 
     // Native video resolution (for coordinate mapping)
     private nativeW = 0;
@@ -46,12 +51,14 @@ export class InputController {
         opts?: {
             onModeChange?: (mode: ViewerMode) => void;
             onColorAssign?: (index: number) => void;
+            overlay?: OverlayRenderer;
         },
     ) {
         this.dc = dc;
         this.video = video;
         this.onModeChange = opts?.onModeChange ?? null;
         this.onColorAssign = opts?.onColorAssign ?? null;
+        this.overlay = opts?.overlay ?? null;
 
         dc.binaryType = "arraybuffer";
         dc.onmessage = (e) => this.handleHostMessage(e);
@@ -74,6 +81,7 @@ export class InputController {
         // Clear all drawings when entering input mode
         if (was === "draw" && this.mode === "input") {
             this.send1(MSG_DRAW_CLEAR);
+            this.overlay?.handleLocalDraw("clear");
         }
         this.onModeChange?.(this.mode);
     }
@@ -170,11 +178,13 @@ export class InputController {
         const pt = this.mapCoords(e.clientX, e.clientY);
         if (!pt) return;
 
-        // Always send cursor position so overlay shows colored cursor in both modes
+        // Always send cursor position and update local overlay cursor
         this.sendXY(MSG_MOUSE_MOVE, pt.x, pt.y);
+        this.overlay?.handleLocalCursor(pt.x, pt.y);
 
         if (this.mode === "draw" && this.drawing) {
             this.sendXY(MSG_DRAW_MOVE, pt.x, pt.y);
+            this.overlay?.handleLocalDraw("move", pt.x, pt.y);
         }
     }
 
@@ -187,10 +197,12 @@ export class InputController {
                 // Left click — start drawing
                 this.drawing = true;
                 this.sendXY(MSG_DRAW_START, pt.x, pt.y);
+                this.overlay?.handleLocalDraw("start", pt.x, pt.y);
             } else if (e.button === 2) {
                 // Right click — undo (immediate), clear (long press)
                 this.rightPressTimer = setTimeout(() => {
                     this.send1(MSG_DRAW_CLEAR);
+                    this.overlay?.handleLocalDraw("clear");
                     this.rightPressTimer = null;
                 }, LONG_PRESS_MS);
             }
@@ -206,12 +218,14 @@ export class InputController {
             if (e.button === 0 && this.drawing) {
                 this.drawing = false;
                 this.send1(MSG_DRAW_END);
+                this.overlay?.handleLocalDraw("end");
             } else if (e.button === 2) {
                 if (this.rightPressTimer) {
                     // Short right-click — undo
                     clearTimeout(this.rightPressTimer);
                     this.rightPressTimer = null;
                     this.send1(MSG_DRAW_UNDO);
+                    this.overlay?.handleLocalDraw("undo");
                 }
             }
         } else if (pt) {
@@ -273,11 +287,17 @@ export class InputController {
     private handleHostMessage(e: MessageEvent): void {
         if (!(e.data instanceof ArrayBuffer)) return;
         const data = new Uint8Array(e.data);
-        if (data.length < 2) return;
+        if (data.length < 1) return;
 
-        if (data[0] === MSG_COLOR_ASSIGN) {
+        if (data[0] === MSG_COLOR_ASSIGN && data.length >= 2) {
             this.colorIndex = data[1];
             this.onColorAssign?.(this.colorIndex);
+            this.overlay?.setLocalColorIndex(this.colorIndex);
+        } else if (data[0] === MSG_RELAY && data.length >= 3) {
+            const colorIndex = data[1];
+            this.overlay?.handleRelayedMessage(colorIndex, data.subarray(2));
+        } else if (data[0] === MSG_VIEWER_LEFT && data.length >= 2) {
+            this.overlay?.removeViewer(data[1]);
         }
     }
 

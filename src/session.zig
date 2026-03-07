@@ -237,9 +237,6 @@ pub const Peer = struct {
 
         switch (msg) {
             .mouse_move => |m| {
-                // Only update the overlay cursor — don't move the host's
-                // system pointer. The system pointer is positioned just
-                // before mouse_down/mouse_up so it lands at the click target.
                 reg.updateCursor(peer_id, m.x, m.y);
             },
             .mouse_down => |m| {
@@ -273,7 +270,17 @@ pub const Peer = struct {
             .draw_end => reg.drawEnd(peer_id),
             .draw_undo => reg.drawUndo(peer_id),
             .draw_clear => reg.drawClear(peer_id),
-            .color_assign => {}, // host→viewer only, ignore if received
+            .color_assign, .viewer_left, .relay => {}, // host→viewer only, ignore if received
+        }
+
+        // Relay cursor/draw events to other viewers for browser-side rendering
+        switch (msg) {
+            .mouse_move, .draw_start, .draw_move, .draw_end, .draw_undo, .draw_clear => {
+                if (reg.getColorIndex(peer_id)) |ci| {
+                    session.relayToOthers(peer_id, ci, data);
+                }
+            },
+            else => {},
         }
     }
 
@@ -510,6 +517,37 @@ pub const BroadcastSession = struct {
         }
     }
 
+    /// Relay a message to all connected peers except the sender.
+    /// Prepends [0xFE][color_index] to the original message bytes.
+    /// Called from dcMessageCallback (libdatachannel thread).
+    pub fn relayToOthers(self: *BroadcastSession, sender_peer_id: *const [PEER_ID_LEN]u8, color_index: u8, original: []const u8) void {
+        var buf: [520]u8 = undefined;
+        const len = input_protocol.encodeRelay(color_index, original, &buf) orelse return;
+
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers) |*peer| {
+            if (peer.state.load(.acquire) != .connected) continue;
+            if (std.mem.eql(u8, &peer.peer_id, sender_peer_id)) continue;
+            if (peer.dc < 0) continue;
+            _ = c.rtcSendMessage(peer.dc, @ptrCast(buf[0..len].ptr), @intCast(len));
+        }
+    }
+
+    /// Send a viewer_left notification to all connected peers.
+    /// Called when a peer disconnects so browsers can remove the cursor.
+    pub fn sendViewerLeft(self: *BroadcastSession, color_index: u8) void {
+        const msg = input_protocol.encodeViewerLeft(color_index);
+
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers) |*peer| {
+            if (peer.state.load(.acquire) != .connected) continue;
+            if (peer.dc < 0) continue;
+            _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));
+        }
+    }
+
     /// Check and clear force-keyframe flags across all connected peers.
     pub fn shouldForceKeyframe(self: *BroadcastSession) bool {
         var need_key = false;
@@ -583,9 +621,12 @@ pub const BroadcastSession = struct {
             }
         }
 
-        // Remove viewer from registry (clears cursors and drawing paths)
+        // Notify other viewers and remove from registry
         if (freed) |peer| {
             if (self.viewer_registry) |reg| {
+                if (reg.getColorIndex(&peer.peer_id)) |ci| {
+                    self.sendViewerLeft(ci);
+                }
                 reg.removeViewer(&peer.peer_id);
             }
         }

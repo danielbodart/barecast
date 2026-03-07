@@ -252,6 +252,14 @@ pub const ViewerRegistry = struct {
         }
     }
 
+    /// Get color index for a viewer by peer ID.
+    pub fn getColorIndex(self: *ViewerRegistry, peer_id: *const [PEER_ID_LEN]u8) ?u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.findViewerLocked(peer_id)) |v| return v.color_index;
+        return null;
+    }
+
     /// Check if any viewer has active content (cursors or drawings).
     pub fn hasActiveContent(self: *ViewerRegistry) bool {
         self.mutex.lock();

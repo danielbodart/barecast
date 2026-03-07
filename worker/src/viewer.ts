@@ -1,4 +1,5 @@
 import { InputController, VIEWER_COLORS, type ViewerMode } from "./input";
+import { OverlayRenderer } from "./overlay";
 
 const video = document.getElementById("video") as HTMLVideoElement;
 const statusEl = document.getElementById("status")!;
@@ -43,6 +44,7 @@ if (!roomId) {
     let streamSized = false;
     let isZoom = false;
     let inputCtrl: InputController | null = null;
+    let overlay: OverlayRenderer | null = null;
     let iceServers: RTCIceServer[] = [
         { urls: "stun:stun.cloudflare.com:3478" },
     ];
@@ -428,6 +430,10 @@ if (!roomId) {
                     inputCtrl.destroy();
                     inputCtrl = null;
                 }
+                if (overlay) {
+                    overlay.destroy();
+                    overlay = null;
+                }
                 setStatus("Waiting for sharer...");
                 if (pc) {
                     pc.close();
@@ -445,6 +451,10 @@ if (!roomId) {
         if (inputCtrl) {
             inputCtrl.destroy();
             inputCtrl = null;
+        }
+        if (overlay) {
+            overlay.destroy();
+            overlay = null;
         }
         if (pc) {
             pc.close();
@@ -481,7 +491,11 @@ if (!roomId) {
             if (dc.label !== "input") return;
 
             if (inputCtrl) inputCtrl.destroy();
+            if (overlay) overlay.destroy();
+            overlay = new OverlayRenderer(video);
+            overlay.start();
             inputCtrl = new InputController(dc, video, {
+                overlay,
                 onModeChange: (mode) => updateModeUI(mode),
                 onColorAssign: (index) => {
                     if (colorDot) {

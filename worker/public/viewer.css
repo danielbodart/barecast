@@ -26,6 +26,10 @@ body.viewer {
     overflow: hidden;
 }
 
+.video-wrap {
+    position: relative;
+}
+
 body.zoom .video-wrap {
     width: 100vw;
     height: 100vh;

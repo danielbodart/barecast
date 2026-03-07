@@ -81,9 +81,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{
-            .{ .name = "viewer_state", .module = viewer_state_mod },
-        },
     });
     overlay_mod.linkSystemLibrary("x11", .{});
     overlay_mod.linkSystemLibrary("cairo", .{});

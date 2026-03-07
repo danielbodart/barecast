@@ -204,10 +204,7 @@ pub const ScreenShare = struct {
         };
 
         const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
-        const overlay_interval_ns: u64 = 50 * std.time.ns_per_ms;
         var ping_timer = std.time.Timer.start() catch return;
-        var overlay_timer = std.time.Timer.start() catch return;
-        var overlay_was_active = false;
 
         const meta_interval_ns: u64 = 5 * std.time.ns_per_s;
         var meta_timer = std.time.Timer.start() catch return;
@@ -222,17 +219,6 @@ pub const ScreenShare = struct {
                 ping_timer.reset();
                 if (!self.session.sendPing()) {
                     self.session.reconnect();
-                }
-            }
-
-            if (overlay_timer.read() >= overlay_interval_ns) {
-                overlay_timer.reset();
-                if (self.overlay) |*o| {
-                    const active = self.viewer_registry.hasActiveContent();
-                    if (active or overlay_was_active) {
-                        o.redraw(&self.viewer_registry);
-                    }
-                    overlay_was_active = active;
                 }
             }
 

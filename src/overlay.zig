@@ -1,10 +1,6 @@
 const std = @import("std");
 const nvfbc = @import("nvfbc");
 const Box = nvfbc.Box;
-const viewer_state = @import("viewer_state");
-const ViewerRegistry = viewer_state.ViewerRegistry;
-const Color = viewer_state.Color;
-const Point = viewer_state.Point;
 
 const x = @cImport({
     @cInclude("X11/Xlib.h");
@@ -51,8 +47,6 @@ pub const Overlay = struct {
 
     const bracket_len = 40;
     const bracket_width = 3.0;
-    const cursor_size = 24.0;
-    const draw_line_width = 2.5;
 
     pub fn init(box: Box) !Overlay {
         const dpy = x.XOpenDisplay(null) orelse return error.OverlayFailed;
@@ -129,33 +123,17 @@ pub const Overlay = struct {
         return self;
     }
 
-    /// Full redraw: clear → brackets → per-viewer paths → per-viewer cursors.
-    pub fn redraw(self: *Overlay, registry: *ViewerRegistry) void {
+    /// Redraw brackets only. Cursor and draw-path rendering has moved to
+    /// browser-side SVG overlay (see worker/src/overlay.ts).
+    pub fn redraw(self: *Overlay) void {
         const cr = cairo.cairo_create(self.surface) orelse return;
         defer cairo.cairo_destroy(cr);
 
-        // Clear to transparent
         cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_CLEAR);
         cairo.cairo_paint(cr);
         cairo.cairo_set_operator(cr, cairo.CAIRO_OPERATOR_OVER);
 
-        // Brackets
         self.drawBracketsOn(cr);
-
-        // Viewer content — lock registry for snapshot
-        registry.mutex.lock();
-        defer registry.mutex.unlock();
-
-        for (&registry.viewers) |*viewer| {
-            if (!viewer.active) continue;
-            const col = viewer.color();
-
-            // Drawing paths
-            self.drawViewerPaths(cr, viewer, col);
-
-            // Cursor
-            self.drawCursor(cr, viewer.cursor_x, viewer.cursor_y, col);
-        }
 
         cairo.cairo_surface_flush(self.surface);
         _ = x.XFlush(self.display);
@@ -207,59 +185,6 @@ pub const Overlay = struct {
         cairo.cairo_line_to(cr, w - half, h - half);
         cairo.cairo_line_to(cr, w - half, h - blen);
         cairo.cairo_stroke(cr);
-    }
-
-    fn drawViewerPaths(self: *const Overlay, cr: *cairo.cairo_t, viewer: *const viewer_state.Viewer, col: Color) void {
-        _ = self;
-        cairo.cairo_set_source_rgba(cr, col.r, col.g, col.b, 0.8);
-        cairo.cairo_set_line_width(cr, draw_line_width);
-        cairo.cairo_set_line_cap(cr, cairo.CAIRO_LINE_CAP_ROUND);
-        cairo.cairo_set_line_join(cr, cairo.CAIRO_LINE_JOIN_ROUND);
-
-        // Completed paths
-        for (viewer.completedPaths()) |path| {
-            drawPath(cr, path.slice());
-        }
-
-        // Current in-progress path
-        if (viewer.current_path) |path| {
-            drawPath(cr, path.slice());
-        }
-    }
-
-    fn drawPath(cr: *cairo.cairo_t, points: []const Point) void {
-        if (points.len < 2) return;
-        cairo.cairo_move_to(cr, @floatFromInt(points[0].x), @floatFromInt(points[0].y));
-        for (points[1..]) |pt| {
-            cairo.cairo_line_to(cr, @floatFromInt(pt.x), @floatFromInt(pt.y));
-        }
-        cairo.cairo_stroke(cr);
-    }
-
-    fn drawCursor(_: *const Overlay, cr: *cairo.cairo_t, cx: u16, cy: u16, col: Color) void {
-        const fx: f64 = @floatFromInt(cx);
-        const fy: f64 = @floatFromInt(cy);
-        const s = cursor_size;
-
-        // Arrow cursor shape: tip at (fx, fy), Bibata-inspired
-        // Black fill with viewer color tint, white outline
-
-        // Define arrow path
-        cairo.cairo_new_path(cr);
-        cairo.cairo_move_to(cr, fx, fy); // tip
-        cairo.cairo_line_to(cr, fx, fy + s * 0.95);
-        cairo.cairo_line_to(cr, fx + s * 0.28, fy + s * 0.72);
-        cairo.cairo_line_to(cr, fx + s * 0.65, fy + s * 0.72);
-        cairo.cairo_close_path(cr);
-
-        // White outline
-        cairo.cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
-        cairo.cairo_set_line_width(cr, 2.0);
-        cairo.cairo_stroke_preserve(cr);
-
-        // Colored fill (viewer's color, slightly darkened)
-        cairo.cairo_set_source_rgba(cr, col.r * 0.8, col.g * 0.8, col.b * 0.8, 0.95);
-        cairo.cairo_fill(cr);
     }
 
     pub fn deinit(self: *Overlay) void {
