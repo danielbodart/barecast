@@ -54,7 +54,7 @@ pub const HeadlessDisplay = struct {
             log.warn("xrandr --fb failed: {}, display may be at default resolution", .{err});
         };
 
-        // Start picom compositor (enables NvFBC diff map)
+        // Start picom compositor (enables NvFBC diff map for idle detection)
         self.spawnPicom() catch |err| {
             log.warn("picom failed to start: {}, NvFBC diff map may not work", .{err});
         };

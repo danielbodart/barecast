@@ -83,9 +83,6 @@ pub const AppShare = struct {
             _ = posix.waitpid(pid, 0);
         };
 
-        // Give the app a moment to create its window
-        std.Thread.sleep(1 * std.time.ns_per_s);
-
         // Set DISPLAY env var so NvFBC captures the headless display.
         // NvFBC internally reads $DISPLAY even when we open GLX on a specific display.
         var display_z: [16]u8 = undefined;
