@@ -28,6 +28,16 @@ pub fn main() !void {
 
     const config_path = std.mem.span(args[1]);
 
+    // When our parent (the daemon) dies, we should die too.
+    // PR_SET_PDEATHSIG is cleared by setuid exec, so we re-set it here.
+    const PR_SET_PDEATHSIG: i32 = 1;
+    _ = std.os.linux.prctl(PR_SET_PDEATHSIG, @as(usize, @intCast(posix.SIG.TERM)), 0, 0, 0);
+    // Race check: if parent already died during exec, we were reparented to init
+    if (std.os.linux.getppid() == 1) {
+        log.info("parent already exited, cleaning up", .{});
+        std.process.exit(0);
+    }
+
     // Find a free display number
     const display = findFreeDisplay() orelse {
         log.err("no free display number found (tried :10-:99)", .{});
@@ -138,15 +148,54 @@ fn handleSignal(_: c_int) callconv(.c) void {
 
 fn findFreeDisplay() ?u8 {
     for (10..100) |d| {
-        var path_buf: [32]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
+        var socket_buf: [32]u8 = undefined;
+        const socket_path = std.fmt.bufPrint(&socket_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
+        socket_buf[socket_path.len] = 0;
         // Check if socket exists
-        const path_z: [*:0]const u8 = @ptrCast(path.ptr);
-        if (std.c.access(path_z, 0) != 0) { // 0 = F_OK
+        if (std.c.access(@ptrCast(socket_buf[0..socket_path.len :0]), 0) != 0) {
+            return @intCast(d); // Free display
+        }
+        // Socket exists — check if the owning process is still alive
+        if (isDisplayStale(d)) {
+            log.info("cleaning up stale display :{d}", .{d});
+            cleanupDisplay(d);
             return @intCast(d);
         }
     }
     return null;
+}
+
+/// Check if a display's lock file references a dead process.
+fn isDisplayStale(display: usize) bool {
+    var lock_buf: [32]u8 = undefined;
+    const lock_path = std.fmt.bufPrint(&lock_buf, "/tmp/.X{d}-lock", .{display}) catch return false;
+
+    const file = std.fs.openFileAbsolute(lock_path, .{}) catch return false;
+    defer file.close();
+
+    var pid_buf: [16]u8 = undefined;
+    const n = file.read(&pid_buf) catch return false;
+    const pid_str = std.mem.trim(u8, pid_buf[0..n], " \n\r");
+    const pid = std.fmt.parseInt(posix.pid_t, pid_str, 10) catch return false;
+
+    // If kill(pid, 0) fails with ESRCH, process doesn't exist
+    posix.kill(pid, 0) catch |err| {
+        if (err == error.ProcessNotFound) return true;
+    };
+    return false;
+}
+
+/// Remove stale lock file and socket for a display.
+fn cleanupDisplay(display: usize) void {
+    var lock_buf: [32]u8 = undefined;
+    if (std.fmt.bufPrint(&lock_buf, "/tmp/.X{d}-lock", .{display})) |path| {
+        std.fs.cwd().deleteFile(path) catch {};
+    } else |_| {}
+
+    var socket_buf: [32]u8 = undefined;
+    if (std.fmt.bufPrint(&socket_buf, "/tmp/.X11-unix/X{d}", .{display})) |path| {
+        std.fs.cwd().deleteFile(path) catch {};
+    } else |_| {}
 }
 
 fn waitForDisplay(display: u8) bool {
