@@ -53,8 +53,8 @@ fn handleShare(args: *std.process.ArgIterator) void {
         std.process.exit(1);
     };
 
-    if (!std.mem.eql(u8, share_type, "screen") and !std.mem.eql(u8, share_type, "terminal")) {
-        std.debug.print("Unknown share type: {s}\nExpected: screen, terminal\n", .{share_type});
+    if (!std.mem.eql(u8, share_type, "screen") and !std.mem.eql(u8, share_type, "terminal") and !std.mem.eql(u8, share_type, "app")) {
+        std.debug.print("Unknown share type: {s}\nExpected: screen, terminal, app\n", .{share_type});
         std.process.exit(1);
     }
 
@@ -68,6 +68,7 @@ fn handleShare(args: *std.process.ArgIterator) void {
     w.writeByte('"') catch return;
 
     const is_screen = std.mem.eql(u8, share_type, "screen");
+    const is_app = std.mem.eql(u8, share_type, "app");
 
     // Parse remaining flags
     while (args.next()) |arg| {
@@ -95,8 +96,8 @@ fn handleShare(args: *std.process.ArgIterator) void {
             w.writeAll(",\"geometry\":\"") catch return;
             w.writeAll(geom) catch return;
             w.writeByte('"') catch return;
-        } else if (!is_screen) {
-            // Positional arg in terminal mode = command
+        } else if (!is_screen or is_app) {
+            // Positional arg in terminal/app mode = command
             w.writeAll(",\"command\":\"") catch return;
             w.writeAll(arg) catch return;
             w.writeByte('"') catch return;
@@ -122,7 +123,7 @@ fn handleUnshare(args: *std.process.ArgIterator) void {
     w.writeAll("{\"cmd\":\"unshare\"") catch return;
 
     if (target) |t| {
-        if (std.mem.eql(u8, t, "screen") or std.mem.eql(u8, t, "terminal")) {
+        if (std.mem.eql(u8, t, "screen") or std.mem.eql(u8, t, "terminal") or std.mem.eql(u8, t, "app")) {
             w.writeAll(",\"type\":\"") catch return;
             w.writeAll(t) catch return;
             w.writeByte('"') catch return;
@@ -290,7 +291,8 @@ fn printUsage() void {
         \\  zerocast leave                                Leave room and stop all shares
         \\  zerocast share screen [WxH+X+Y] [--fps <n>] [--record]
         \\  zerocast share terminal [command] [--record]
-        \\  zerocast unshare [screen | terminal | <session-id>]
+        \\  zerocast share app <command>
+        \\  zerocast unshare [screen | terminal | app | <session-id>]
         \\  zerocast status                               Show current room and sessions
         \\  zerocast start                                Start the daemon (systemd)
         \\  zerocast stop                                 Stop the daemon (systemd)
@@ -303,6 +305,7 @@ fn printUsage() void {
         \\  zerocast share screen --fps 60 --record       60fps + record to IVF
         \\  zerocast share terminal                       Share interactive shell
         \\  zerocast share terminal htop --record         Share htop + record .cast
+        \\  zerocast share app code                       Share VS Code in headless display
         \\  zerocast unshare                              Stop all shares
         \\
     , .{build_options.version});

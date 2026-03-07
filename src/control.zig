@@ -7,6 +7,7 @@ const log = std.log.scoped(.control);
 pub const ShareType = enum {
     screen,
     terminal,
+    app,
 };
 
 pub const Request = union(enum) {
