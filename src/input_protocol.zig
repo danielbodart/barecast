@@ -20,6 +20,9 @@ pub const MsgType = enum(u8) {
     draw_undo = 0x13,
     draw_clear = 0x14,
 
+    // Viewer → host (app share)
+    app_resize = 0x20,
+
     // Host → viewer
     viewer_left = 0xFD,
     relay = 0xFE,
@@ -44,6 +47,7 @@ pub const Message = union(MsgType) {
     draw_end: void,
     draw_undo: void,
     draw_clear: void,
+    app_resize: struct { width: u16, height: u16 },
     viewer_left: struct { color_index: u8 },
     relay: struct { color_index: u8, payload: []const u8 },
     color_assign: struct { color_index: u8 },
@@ -126,6 +130,13 @@ pub fn decode(data: []const u8) DecodeError!Message {
         .draw_end => return .{ .draw_end = {} },
         .draw_undo => return .{ .draw_undo = {} },
         .draw_clear => return .{ .draw_clear = {} },
+        .app_resize => {
+            if (data.len < 5) return error.Truncated;
+            return .{ .app_resize = .{
+                .width = readU16(data[1..3]),
+                .height = readU16(data[3..5]),
+            } };
+        },
         .viewer_left => {
             if (data.len < 2) return error.Truncated;
             return .{ .viewer_left = .{ .color_index = data[1] } };

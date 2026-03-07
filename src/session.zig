@@ -270,6 +270,9 @@ pub const Peer = struct {
             .draw_end => reg.drawEnd(peer_id),
             .draw_undo => reg.drawUndo(peer_id),
             .draw_clear => reg.drawClear(peer_id),
+            .app_resize => |r| {
+                if (session.resize_callback) |cb| cb(session, r.width, r.height);
+            },
             .color_assign, .viewer_left, .relay => {}, // host→viewer only, ignore if received
         }
 
@@ -412,6 +415,7 @@ pub const BroadcastSession = struct {
     bytes_sent: std.atomic.Value(u64),
     frames_sent: std.atomic.Value(u64),
     meta_callback: ?*const fn (*BroadcastSession) void,
+    resize_callback: ?*const fn (*BroadcastSession, u16, u16) void,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8, share_id: []const u8, share_type: []const u8, mode: SessionMode) !BroadcastSession {
@@ -449,6 +453,7 @@ pub const BroadcastSession = struct {
         session.bytes_sent = std.atomic.Value(u64).init(0);
         session.frames_sent = std.atomic.Value(u64).init(0);
         session.meta_callback = null;
+        session.resize_callback = null;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {

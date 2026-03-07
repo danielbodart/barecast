@@ -23,6 +23,7 @@ const MSG_DRAW_MOVE = 0x11;
 const MSG_DRAW_END = 0x12;
 const MSG_DRAW_UNDO = 0x13;
 const MSG_DRAW_CLEAR = 0x14;
+const MSG_APP_RESIZE = 0x20;
 const MSG_VIEWER_LEFT = 0xfd;
 const MSG_RELAY = 0xfe;
 const MSG_COLOR_ASSIGN = 0xff;
@@ -40,6 +41,8 @@ export class InputController {
     private onModeChange: ((mode: ViewerMode) => void) | null = null;
     private onColorAssign: ((index: number) => void) | null = null;
     private overlay: OverlayRenderer | null = null;
+    private resizeObserver: ResizeObserver | null = null;
+    private resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Native video resolution (for coordinate mapping)
     private nativeW = 0;
@@ -64,6 +67,18 @@ export class InputController {
         dc.onmessage = (e) => this.handleHostMessage(e);
 
         this.bindEvents();
+
+        // Send resize when the video element changes size (debounced)
+        this.resizeObserver = new ResizeObserver(() => {
+            if (this.resizeTimer) clearTimeout(this.resizeTimer);
+            this.resizeTimer = setTimeout(() => {
+                const rect = this.video.getBoundingClientRect();
+                const w = Math.round(rect.width * devicePixelRatio);
+                const h = Math.round(rect.height * devicePixelRatio);
+                if (w > 0 && h > 0) this.sendResize(w, h);
+            }, 250);
+        });
+        this.resizeObserver.observe(this.video);
     }
 
     get currentMode(): ViewerMode {
@@ -88,6 +103,14 @@ export class InputController {
 
     destroy(): void {
         this.unbindEvents();
+        if (this.resizeObserver) {
+            this.resizeObserver.disconnect();
+            this.resizeObserver = null;
+        }
+        if (this.resizeTimer) {
+            clearTimeout(this.resizeTimer);
+            this.resizeTimer = null;
+        }
     }
 
     // ── Coordinate mapping ──────────────────────────────────────────────
@@ -322,6 +345,11 @@ export class InputController {
         view.setUint16(1, px, true);
         view.setUint16(3, py, true);
         this.send(buf);
+    }
+
+    /** [0x20] [u16 width] [u16 height] = 5 bytes */
+    private sendResize(width: number, height: number): void {
+        this.sendXY(MSG_APP_RESIZE, Math.min(width, 65535), Math.min(height, 65535));
     }
 
     /** [type] [u16 x] [u16 y] [u8 button] = 6 bytes */

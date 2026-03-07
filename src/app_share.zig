@@ -173,6 +173,7 @@ pub const AppShare = struct {
         };
         self.session.viewer_registry = &self.viewer_registry;
         self.session.meta_callback = appMetaCallback;
+        self.session.resize_callback = appResizeCallback;
         if (self.xinput) |*xi| {
             self.session.input_handler = xi.inputHandler();
         }
@@ -354,4 +355,12 @@ pub const AppShare = struct {
 fn appMetaCallback(session: *BroadcastSession) void {
     const self: *AppShare = @fieldParentPtr("session", session);
     self.sendAppMeta();
+}
+
+fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
+    const self: *AppShare = @fieldParentPtr("session", session);
+    if (width < 100 or height < 100) return; // ignore tiny sizes
+    log.info("viewer resize: {d}x{d}", .{ width, height });
+    self.display.resize(@intCast(width), @intCast(height));
+    if (self.wm) |*wm| wm.resizeApp(@intCast(width), @intCast(height));
 }
