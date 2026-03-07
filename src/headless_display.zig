@@ -1,5 +1,9 @@
 const std = @import("std");
 const posix = std.posix;
+const libc = @cImport({
+    @cInclude("stdlib.h");
+    @cInclude("unistd.h");
+});
 
 const log = std.log.scoped(.headless);
 
@@ -146,12 +150,11 @@ pub const HeadlessDisplay = struct {
         if (pid == 0) {
             // Child: exec the helper
             // Redirect stdout to a pipe so parent can read display number
-            const err = posix.execveZ(
+            posix.execveZ(
                 helper_path.ptr,
                 &argv,
                 @ptrCast(std.c.environ),
-            );
-            _ = err;
+            ) catch {};
             posix.exit(127);
         }
 
@@ -206,23 +209,15 @@ pub const HeadlessDisplay = struct {
         const res = std.fmt.bufPrint(&res_buf, "{d}x{d}", .{ self.width, self.height }) catch return error.XrandrFailed;
         res_buf[res.len] = 0;
 
-        const envp = [_:null]?[*:0]const u8{
-            @ptrCast(std.fmt.bufPrint(&([_]u8{0} ** 64), "DISPLAY=:{d}", .{self.display_num}) catch return error.XrandrFailed),
-        };
-        _ = envp;
-
-        // Use fork+exec for xrandr
         const pid = posix.fork() catch return error.XrandrFailed;
         if (pid == 0) {
-            // Set DISPLAY for the child
-            _ = std.c.setenv("DISPLAY", @ptrCast(display_z[0..env.len :0]), 1);
+            _ = libc.setenv("DISPLAY", @ptrCast(display_z[0..env.len :0]), 1);
             const argv = [_:null]?[*:0]const u8{
                 "xrandr",
                 "--fb",
                 @ptrCast(res_buf[0..res.len :0]),
             };
-            const err = posix.execveZ("/usr/bin/xrandr", &argv, @ptrCast(std.c.environ));
-            _ = err;
+            _ = libc.execvp("xrandr", @ptrCast(&argv));
             posix.exit(127);
         }
         _ = posix.waitpid(pid, 0);
@@ -235,7 +230,7 @@ pub const HeadlessDisplay = struct {
             var display_z: [16]u8 = undefined;
             const env = std.fmt.bufPrint(&display_z, ":{d}", .{self.display_num}) catch posix.exit(127);
             display_z[env.len] = 0;
-            _ = std.c.setenv("DISPLAY", @ptrCast(display_z[0..env.len :0]), 1);
+            _ = libc.setenv("DISPLAY", @ptrCast(display_z[0..env.len :0]), 1);
 
             // Redirect stdout/stderr to /dev/null
             const devnull = posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch posix.exit(127);
@@ -247,8 +242,7 @@ pub const HeadlessDisplay = struct {
                 "--backend",
                 "glx",
             };
-            const err = posix.execveZ("/usr/bin/picom", &argv, @ptrCast(std.c.environ));
-            _ = err;
+            _ = libc.execvp("picom", @ptrCast(&argv));
             posix.exit(127);
         }
         self.picom_pid = pid;

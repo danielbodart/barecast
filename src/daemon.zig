@@ -4,6 +4,8 @@ const control = @import("control");
 const ScreenShare = @import("screen_share").ScreenShare;
 const ScreenShareConfig = @import("screen_share").ScreenShareConfig;
 const parseGeometry = @import("screen_share").parseGeometry;
+const AppShare = @import("app_share").AppShare;
+const AppShareConfig = @import("app_share").AppShareConfig;
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
 const build_options = @import("build_options");
@@ -23,6 +25,7 @@ const MAX_SESSIONS = 8;
 const SharePayload = union(enum) {
     screen: *ScreenShare,
     terminal: *TerminalShare,
+    app: *AppShare,
 };
 
 const SessionSlot = struct {
@@ -220,6 +223,16 @@ fn handleStatus(buf: []u8) []const u8 {
                         .title = share.currentTitle(),
                     };
                 },
+                .app => |share| {
+                    infos[count] = .{
+                        .id = &share.session_id,
+                        .type = .app,
+                        .room = share.share_url,
+                        .viewers = share.viewerCount(),
+                        .recording = false,
+                        .uptime_s = share.uptimeSeconds(),
+                    };
+                },
             }
             count += 1;
         }
@@ -232,6 +245,9 @@ fn handleStatus(buf: []u8) []const u8 {
 fn handleShare(req: control.ShareRequest, buf: []u8) []const u8 {
     if (req.type == .terminal) {
         return handleShareTerminal(req, buf);
+    }
+    if (req.type == .app) {
+        return handleShareApp(req, buf);
     }
     return handleShareScreen(req, buf);
 }
@@ -348,6 +364,105 @@ fn screenThreadEntry(result: *ScreenInitResult, config: ScreenShareConfig, slot_
     // (GL/CUDA contexts are thread-local)
     share.deinit();
 }
+
+// ── App share ────────────────────────────────────────────────────────────
+
+const AppInitResult = struct {
+    share: ?*AppShare = null,
+    err_msg: ?[]const u8 = null,
+    done: std.Thread.ResetEvent = .{},
+};
+
+fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
+    const allocator = std.heap.c_allocator;
+
+    const command = req.command orelse
+        return control.writeErrorResponse(buf, "app share requires a command") orelse "";
+
+    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
+            return control.writeErrorResponse(buf, "internal error") orelse "",
+        else => return control.writeErrorResponse(buf, "internal error") orelse "",
+    };
+
+    if (currentRoom() == null) {
+        var id_buf: [16]u8 = undefined;
+        generateRoomId(&id_buf) catch
+            return control.writeErrorResponse(buf, "failed to generate room ID") orelse "";
+        setRoom(&id_buf);
+        log.info("auto-joined room: {s}", .{currentRoom().?});
+    }
+
+    const config = AppShareConfig{
+        .command = command,
+        .fps = req.fps,
+        .base_url = base_url,
+        .room_id = currentRoom(),
+    };
+
+    const slot_idx = findEmptySlot() orelse {
+        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
+    };
+
+    const result = allocator.create(AppInitResult) catch
+        return control.writeErrorResponse(buf, "out of memory") orelse "";
+    defer allocator.destroy(result);
+    result.* = .{};
+
+    const thread = std.Thread.spawn(.{}, appThreadEntry, .{ result, config, slot_idx }) catch |err| {
+        log.err("app thread spawn failed: {}", .{err});
+        return control.writeErrorResponse(buf, "failed to start app thread") orelse "";
+    };
+
+    result.done.wait();
+
+    if (result.err_msg) |err_msg| {
+        thread.join();
+        return control.writeErrorResponse(buf, err_msg) orelse "";
+    }
+
+    const share = result.share.?;
+
+    sessions_mutex.lock();
+    sessions[slot_idx].thread = thread;
+    sessions_mutex.unlock();
+
+    return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
+        control.writeErrorResponse(buf, "internal error") orelse "";
+}
+
+fn appThreadEntry(result: *AppInitResult, config: AppShareConfig, slot_idx: usize) void {
+    const allocator = std.heap.c_allocator;
+
+    const share = allocator.create(AppShare) catch {
+        result.err_msg = "out of memory";
+        result.done.set();
+        return;
+    };
+
+    share.initInPlace(config) catch {
+        allocator.destroy(share);
+        result.err_msg = "app share init failed";
+        result.done.set();
+        return;
+    };
+
+    sessions_mutex.lock();
+    sessions[slot_idx].payload = .{ .app = share };
+    sessions_mutex.unlock();
+
+    share.start();
+
+    result.share = share;
+    result.done.set();
+
+    share.runLoop();
+
+    // Clean up on the same thread (GL/CUDA contexts are thread-local)
+    share.deinit();
+}
+
+// ── Terminal share ───────────────────────────────────────────────────────
 
 fn handleShareTerminal(req: control.ShareRequest, buf: []u8) []const u8 {
     const allocator = std.heap.c_allocator;
@@ -514,6 +629,7 @@ fn getSessionId(payload: SharePayload) *const [16]u8 {
     return switch (payload) {
         .screen => |s| &s.session_id,
         .terminal => |t| &t.session_id,
+        .app => |a| &a.session_id,
     };
 }
 
@@ -521,6 +637,7 @@ fn getSessionType(payload: SharePayload) control.ShareType {
     return switch (payload) {
         .screen => .screen,
         .terminal => .terminal,
+        .app => .app,
     };
 }
 
@@ -528,15 +645,17 @@ fn signalStop(payload: SharePayload) void {
     switch (payload) {
         .screen => |s| s.should_stop.store(true, .release),
         .terminal => |t| t.should_stop.store(true, .release),
+        .app => |a| a.should_stop.store(true, .release),
     }
 }
 
 fn deinitAndFree(payload: SharePayload) void {
     const allocator = std.heap.c_allocator;
     switch (payload) {
-        // Screen shares deinit on their capture thread (GL contexts are thread-local).
+        // Screen/app shares deinit on their capture thread (GL contexts are thread-local).
         // We only free the heap allocation here after thread.join().
         .screen => |s| allocator.destroy(s),
+        .app => |a| allocator.destroy(a),
         .terminal => |t| {
             t.deinit();
             allocator.destroy(t);

@@ -161,6 +161,45 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // --- Headless display module (manages headless Xorg lifecycle) ---
+    const headless_display_mod = b.createModule(.{
+        .root_source_file = b.path("src/headless_display.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // --- XTEST input module (input injection for headless app sharing) ---
+    const xtest_input_mod = b.createModule(.{
+        .root_source_file = b.path("src/xtest_input.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "keymap", .module = keymap_mod },
+            .{ .name = "session", .module = session_mod },
+        },
+    });
+    xtest_input_mod.linkSystemLibrary("x11", .{});
+    xtest_input_mod.linkSystemLibrary("xtst", .{});
+
+    // --- App share module (headless display + NvFBC capture pipeline) ---
+    const app_share_mod = b.createModule(.{
+        .root_source_file = b.path("src/app_share.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "nvfbc", .module = nvfbc_mod },
+            .{ .name = "encoder", .module = encoder_mod },
+            .{ .name = "session", .module = session_mod },
+            .{ .name = "viewer_state", .module = viewer_state_mod },
+            .{ .name = "xtest_input", .module = xtest_input_mod },
+            .{ .name = "headless_display", .module = headless_display_mod },
+            .{ .name = "screen_share", .module = screen_share_mod },
+        },
+    });
+
     // --- Terminal share module (PTY management + WebRTC data channel) ---
     const terminal_share_mod = b.createModule(.{
         .root_source_file = b.path("src/terminal_share.zig"),
@@ -182,6 +221,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "control", .module = control_mod },
             .{ .name = "screen_share", .module = screen_share_mod },
+            .{ .name = "app_share", .module = app_share_mod },
             .{ .name = "terminal_share", .module = terminal_share_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
@@ -315,6 +355,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "control", .module = control_mod },
                 .{ .name = "screen_share", .module = screen_share_mod },
+                .{ .name = "app_share", .module = app_share_mod },
                 .{ .name = "terminal_share", .module = terminal_share_mod },
                 .{ .name = "build_options", .module = build_options_mod },
             },

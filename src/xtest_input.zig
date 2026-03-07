@@ -97,7 +97,7 @@ pub const XTestInput = struct {
     /// code: KeyboardEvent.code string (e.g. "KeyA", "Space")
     pub fn injectKeyCode(self: *XTestInput, code: []const u8, value: i32) void {
         // Reuse the evdev keymap, then add the X11 offset
-        const evdev_code = keymap.codeToLinux(code) orelse {
+        const evdev_code = keymap.lookup(code) orelse {
             log.debug("unmapped key: {s}", .{code});
             return;
         };
