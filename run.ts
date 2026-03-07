@@ -194,9 +194,17 @@ export async function setup() {
     await $`echo ${sudoersRule} | sudo tee /etc/sudoers.d/zerocast > /dev/null`;
     await $`sudo chmod 440 /etc/sudoers.d/zerocast`;
 
+    // Create recordings directory (for debug recording)
+    const recordingsDir = `${SCRIPT_DIR}/recordings`;
+    await $`mkdir -p ${recordingsDir}`;
+
     console.log("Setup complete.");
     console.log("  zerocast, zerocast-kms → ~/.local/bin/ (symlinks)");
     console.log("  zerocast-xorg → /usr/local/bin/ (setuid root)");
+    console.log(`  recordings → ${recordingsDir}`);
+    console.log("");
+    console.log("To enable debug recording, set ZEROCAST_RECORD_DIR:");
+    console.log(`  ZEROCAST_RECORD_DIR=${recordingsDir}`);
 }
 
 /** Default target: build + lint + unit tests. */

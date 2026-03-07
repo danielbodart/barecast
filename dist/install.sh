@@ -112,6 +112,7 @@ install_service() {
     local work_dir="$1"
     local binary="$2"
     local with_updates="${3:-false}"
+    local with_recordings="${4:-false}"
 
     local service_dir="$HOME/.config/systemd/user"
     mkdir -p "$service_dir"
@@ -136,6 +137,9 @@ install_service() {
         echo "RestartSec=5"
         echo "Environment=DISPLAY=:0"
         echo "Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        if $with_recordings; then
+            echo "Environment=ZEROCAST_RECORD_DIR=$RECORDINGS_DIR"
+        fi
         echo ""
         echo "[Install]"
         echo "WantedBy=default.target"
@@ -351,7 +355,7 @@ cmd_install() {
         ln -sf "$SCRIPT_DIR/bin/zerocast-kms" "$HOME/.local/bin/zerocast-kms"
         echo "Symlinks: ~/.local/bin/zerocast → $SCRIPT_DIR/bin/"
 
-        install_service "$project_dir" "$SCRIPT_DIR/bin/zerocast" false
+        install_service "$project_dir" "$SCRIPT_DIR/bin/zerocast" false true
     else
         echo "=== Zerocast Installer ==="
         echo ""
@@ -364,17 +368,31 @@ cmd_install() {
             # Upgrade: preserve existing service config, just update binaries
             local has_updates=false
             [ -f "$HOME/.config/systemd/user/zerocast-update.timer" ] && has_updates=true
+            local has_recordings=false
+            grep -q "ZEROCAST_RECORD_DIR" "$HOME/.config/systemd/user/zerocast.service" 2>/dev/null && has_recordings=true
 
-            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $has_updates
+            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $has_updates $has_recordings
         else
-            # Fresh install: ask about auto-updates
+            # Fresh install: ask about auto-updates and recordings
             local enable_updates=true
             echo ""
             if ! confirm "Enable automatic updates?"; then
                 enable_updates=false
             fi
 
-            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $enable_updates
+            local enable_recordings=true
+            echo ""
+            echo "Debug recordings capture the last ~10 minutes of video per share"
+            echo "session for diagnostics. Uses up to 600MB in $RECORDINGS_DIR."
+            if ! confirm "Enable debug recordings?"; then
+                enable_recordings=false
+            fi
+
+            if $enable_recordings; then
+                mkdir -p "$RECORDINGS_DIR"
+            fi
+
+            install_service "$INSTALL_DIR" "$INSTALL_DIR/current/bin/zerocast" $enable_updates $enable_recordings
 
             if $enable_updates; then
                 install_update_timer

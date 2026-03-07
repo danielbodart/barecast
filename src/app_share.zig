@@ -15,6 +15,7 @@ const XTestInput = @import("xtest_input").XTestInput;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
 const WindowManager = @import("window_manager").WindowManager;
 const generateRoomId = @import("control").generateRoomId;
+const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const log = std.log.scoped(.app_share);
 
@@ -25,6 +26,7 @@ pub const AppShareConfig = struct {
     fps: u32 = 30,
     room_id: ?[]const u8 = null,
     base_url: []const u8 = "https://zerocast.bodar.com",
+    record_dir: ?[]const u8 = null,
 };
 
 /// Self-contained app share session. Spawns a headless Xorg display,
@@ -46,6 +48,7 @@ pub const AppShare = struct {
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
     encoder: Encoder,
+    recorder: ?SessionRecorder,
     should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
     last_fps: u32,
@@ -185,6 +188,18 @@ pub const AppShare = struct {
             return error.EncoderInitFailed;
         };
 
+        // Recording (optional — enabled by ZEROCAST_RECORD_DIR env)
+        self.recorder = if (config.record_dir) |dir|
+            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, first_frame.width, first_frame.height)
+        else
+            null;
+        if (self.recorder != null) {
+            self.encoder.recorder = &self.recorder.?;
+            self.recorder.?.logFmt("session started: {s} {d}x{d} @{d}fps", .{
+                self.command_buf[0..self.command_len], first_frame.width, first_frame.height, config.fps,
+            });
+        }
+
         self.last_fps = 0;
         self.last_bitrate = 0;
         self.fbc = fbc;
@@ -306,6 +321,12 @@ pub const AppShare = struct {
     }
 
     pub fn deinit(self: *AppShare) void {
+        if (self.recorder) |*rec| {
+            rec.logEvent("session ended");
+            rec.deinit();
+            self.recorder = null;
+        }
+        self.encoder.recorder = null;
         self.encoder.finish() catch {};
         self.encoder.deinit();
         self.session.deinit();
@@ -372,14 +393,15 @@ pub const AppShare = struct {
 };
 
 fn appMetaCallback(session: *BroadcastSession) void {
-    const self: *AppShare = @fieldParentPtr("session", session);
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     self.sendAppMeta();
 }
 
 fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
-    const self: *AppShare = @fieldParentPtr("session", session);
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     if (width < 100 or height < 100) return; // ignore tiny sizes
     log.info("viewer resize: {d}x{d}", .{ width, height });
+    if (self.recorder) |*rec| rec.logFmt("viewer resize: {d}x{d}", .{ width, height });
     self.display.resize(@intCast(width), @intCast(height));
     if (self.wm) |*wm| wm.resizeApp(@intCast(width), @intCast(height));
 }

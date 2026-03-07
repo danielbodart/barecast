@@ -264,11 +264,18 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
         log.info("auto-joined room: {s}", .{currentRoom().?});
     }
 
+    // Recording dir from env (set by systemd service or dev mode)
+    const record_dir = std.process.getEnvVarOwned(allocator, "ZEROCAST_RECORD_DIR") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => null,
+    };
+
     const config = AppShareConfig{
         .command = command,
         .fps = req.fps,
         .base_url = base_url,
         .room_id = currentRoom(),
+        .record_dir = if (record_dir) |d| d else null,
     };
 
     const slot_idx = findEmptySlot() orelse {

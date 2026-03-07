@@ -7,7 +7,11 @@ pub const IvfWriter = struct {
     frame_count: u32,
 
     pub fn init(path: []const u8) !IvfWriter {
-        const file = try std.fs.cwd().createFile(path, .{});
+        return initDir(std.fs.cwd(), path);
+    }
+
+    pub fn initDir(dir: std.fs.Dir, name: []const u8) !IvfWriter {
+        const file = try dir.createFile(name, .{});
         errdefer file.close();
 
         // Write 32-byte file header (all fields zero — patched in finalize)

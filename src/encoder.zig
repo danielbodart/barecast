@@ -4,6 +4,7 @@ const Cuda = @import("cuda").Cuda;
 const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
+const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const log = std.log.scoped(.encoder);
 
@@ -59,6 +60,7 @@ pub const Encoder = struct {
     width: u32,
     height: u32,
     fps: u32,
+    recorder: ?*SessionRecorder = null,
     consecutive_skips: u64 = 0,
     idle_logged: bool = false,
     idle_keyframe_sent: bool = false,
@@ -164,6 +166,9 @@ pub const Encoder = struct {
                 .ivf => |*ivf| try ivf.writeFrame(encoded.data, pts_ms),
                 .session => |s| s.sendFrame(encoded.data, pts_ms, capture_ntp),
             }
+            if (self.recorder) |rec| {
+                rec.writeFrame(encoded.data, pts_ms, &self.timer);
+            }
             self.stats.total_bytes += encoded.data.len;
             if (encoded.is_key) self.stats.keyframes += 1;
         }
@@ -204,6 +209,16 @@ pub const Encoder = struct {
                     self.stats.frames_skipped,
                 },
             );
+            if (self.recorder) |rec| {
+                rec.logTimings(
+                    self.timings.cuda_copy_us / n,
+                    self.timings.encode_us / n,
+                    self.timings.send_us / n,
+                    self.timings.total_us / n,
+                    n,
+                    self.stats.frames_skipped,
+                );
+            }
             self.timings.reset();
         }
     }
@@ -220,6 +235,10 @@ pub const Encoder = struct {
         self.idle_keyframe_sent = false;
         self.force_next_keyframe = true;
         self.timings.reset();
+        if (self.recorder) |rec| {
+            rec.updateResolution(new_frame.width, new_frame.height);
+            rec.logFmt("pipeline reinit: {d}x{d}", .{ new_frame.width, new_frame.height });
+        }
         log.info("pipeline reinit: {}x{}", .{ new_frame.width, new_frame.height });
     }
 

@@ -101,6 +101,18 @@ pub fn build(b: *std.Build) void {
     });
     session_mod.addIncludePath(b.path("libdatachannel/include"));
 
+    // --- Session recorder module (chunked IVF recording + diagnostics) ---
+    const session_recorder_mod = b.createModule(.{
+        .root_source_file = b.path("src/session_recorder.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "ivf", .module = ivf_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
+    });
+
     const encoder_mod = b.createModule(.{
         .root_source_file = b.path("src/encoder.zig"),
         .target = target,
@@ -111,6 +123,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "nvenc", .module = nvenc_mod },
             .{ .name = "ivf", .module = ivf_mod },
             .{ .name = "session", .module = session_mod },
+            .{ .name = "session_recorder", .module = session_recorder_mod },
         },
     });
 
@@ -168,6 +181,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "xtest_input", .module = xtest_input_mod },
             .{ .name = "headless_display", .module = headless_display_mod },
             .{ .name = "window_manager", .module = window_manager_mod },
+            .{ .name = "session_recorder", .module = session_recorder_mod },
         },
     });
 
