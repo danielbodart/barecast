@@ -86,6 +86,7 @@ pub const NV_ENC_BUFFER_FORMAT_NV12: u32 = 0x00000001;
 pub const NV_ENC_BUFFER_FORMAT_ARGB: u32 = 0x01000000;
 pub const NV_ENC_BUFFER_FORMAT_ABGR: u32 = 0x10000000;
 
+const NV_ENC_TUNING_INFO_HIGH_QUALITY: u32 = 1;
 const NV_ENC_TUNING_INFO_LOW_LATENCY: u32 = 2;
 const NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY: u32 = 3;
 const NV_ENC_PARAMS_RC_CONSTQP: u32 = 0x0;
@@ -289,7 +290,7 @@ const InitializeParams = extern struct {
     maxEncodeWidth: u32 = 0,
     maxEncodeHeight: u32 = 0,
     meHintCounts: [2]MeHintCounts = [_]MeHintCounts{.{}} ** 2,
-    tuningInfo: u32 = NV_ENC_TUNING_INFO_LOW_LATENCY,
+    tuningInfo: u32 = NV_ENC_TUNING_INFO_HIGH_QUALITY,
     bufferFormat: u32 = 0,
     _reserved: [287]u32 = [_]u32{0} ** 287,
     _pad1: u32 = 0,
@@ -622,7 +623,7 @@ pub const Nvenc = struct {
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
-        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_LOW_LATENCY, &preset_config);
+        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset_config);
         if (status != .success) {
             logNvencError(&fns, encoder_handle, "nvEncGetEncodePresetConfigEx", status);
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
