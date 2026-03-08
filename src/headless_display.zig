@@ -89,12 +89,29 @@ pub const HeadlessDisplay = struct {
             \\Section "ServerLayout"
             \\    Identifier "Layout0"
             \\    Screen 0 "Screen0"
+            \\    InputDevice "Pointer0" "CorePointer"
+            \\    InputDevice "Keyboard0" "CoreKeyboard"
             \\EndSection
             \\
             \\Section "ServerFlags"
             \\    Option "AllowMouseOpenFail" "true"
             \\    Option "AllowEmptyInput" "true"
             \\    Option "AutoAddDevices" "false"
+            \\EndSection
+            \\
+            \\Section "Files"
+            \\    FontPath "/usr/share/fonts/X11/misc"
+            \\    FontPath "built-ins"
+            \\EndSection
+            \\
+            \\Section "InputDevice"
+            \\    Identifier "Pointer0"
+            \\    Driver "void"
+            \\EndSection
+            \\
+            \\Section "InputDevice"
+            \\    Identifier "Keyboard0"
+            \\    Driver "void"
             \\EndSection
             \\
             \\Section "Device"
@@ -126,10 +143,21 @@ pub const HeadlessDisplay = struct {
     fn spawnXorg(self: *HeadlessDisplay) !void {
         const helper_path = findHelper() orelse return error.HelperNotFound;
 
+        const display_num = findFreeDisplay() orelse return error.HelperFailed;
+        self.display_num = display_num;
+
+        const env = std.fmt.bufPrint(&self.display_env, ":{d}", .{display_num}) catch return error.HelperFailed;
+        self.display_env_len = env.len;
+
+        var display_arg: [4]u8 = undefined;
+        const display_str = std.fmt.bufPrint(&display_arg, "{d}", .{display_num}) catch return error.HelperFailed;
+        display_arg[display_str.len] = 0;
+
         const config_z = self.configPathZ();
         const argv = [_:null]?[*:0]const u8{
             helper_path,
             config_z,
+            @ptrCast(display_arg[0..display_str.len :0]),
         };
 
         const pid = posix.fork() catch return error.HelperFailed;
@@ -145,26 +173,13 @@ pub const HeadlessDisplay = struct {
         }
 
         self.xorg_pid = pid;
-
-        const display_num = self.waitForHelperReady(pid) catch return error.HelperFailed;
-        self.display_num = display_num;
-
-        const env = std.fmt.bufPrint(&self.display_env, ":{d}", .{display_num}) catch return error.HelperFailed;
-        self.display_env_len = env.len;
+        self.waitForReady(pid, display_num) catch return error.HelperFailed;
     }
 
-    fn waitForHelperReady(self: *HeadlessDisplay, pid: posix.pid_t) !u8 {
-        _ = self;
-
-        var existing = [_]bool{false} ** 100;
-        for (10..100) |d| {
-            var path_buf: [32]u8 = undefined;
-            const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
-            path_buf[path.len] = 0;
-            if (std.c.access(@ptrCast(path.ptr), 0) == 0) {
-                existing[d] = true;
-            }
-        }
+    fn waitForReady(_: *HeadlessDisplay, pid: posix.pid_t, display_num: u8) !void {
+        var path_buf: [32]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{display_num}) catch return error.HelperFailed;
+        path_buf[path.len] = 0;
 
         for (0..150) |_| {
             std.Thread.sleep(100 * std.time.ns_per_ms);
@@ -172,17 +187,58 @@ pub const HeadlessDisplay = struct {
             const wr = posix.waitpid(pid, posix.W.NOHANG);
             if (wr.pid != 0) return error.HelperFailed;
 
-            for (10..100) |d| {
-                if (existing[d]) continue;
-                var path_buf: [32]u8 = undefined;
-                const path = std.fmt.bufPrint(&path_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
-                path_buf[path.len] = 0;
-                if (std.c.access(@ptrCast(path.ptr), 0) == 0) {
-                    return @intCast(d);
-                }
+            if (std.c.access(@ptrCast(path_buf[0..path.len :0]), 0) == 0) {
+                return;
             }
         }
         return error.HelperFailed;
+    }
+
+    fn findFreeDisplay() ?u8 {
+        for (10..100) |d| {
+            var socket_buf: [32]u8 = undefined;
+            const socket_path = std.fmt.bufPrint(&socket_buf, "/tmp/.X11-unix/X{d}", .{d}) catch continue;
+            socket_buf[socket_path.len] = 0;
+            if (std.c.access(@ptrCast(socket_buf[0..socket_path.len :0]), 0) != 0) {
+                return @intCast(d);
+            }
+            if (isDisplayStale(d)) {
+                log.info("cleaning up stale display :{d}", .{d});
+                cleanupDisplay(d);
+                return @intCast(d);
+            }
+        }
+        return null;
+    }
+
+    fn isDisplayStale(display: usize) bool {
+        var lock_buf: [32]u8 = undefined;
+        const lock_path = std.fmt.bufPrint(&lock_buf, "/tmp/.X{d}-lock", .{display}) catch return false;
+
+        const file = std.fs.openFileAbsolute(lock_path, .{}) catch return false;
+        defer file.close();
+
+        var pid_buf: [16]u8 = undefined;
+        const n = file.read(&pid_buf) catch return false;
+        const pid_str = std.mem.trim(u8, pid_buf[0..n], " \n\r");
+        const pid = std.fmt.parseInt(posix.pid_t, pid_str, 10) catch return false;
+
+        posix.kill(pid, 0) catch |err| {
+            if (err == error.ProcessNotFound) return true;
+        };
+        return false;
+    }
+
+    fn cleanupDisplay(display: usize) void {
+        var lock_buf: [32]u8 = undefined;
+        if (std.fmt.bufPrint(&lock_buf, "/tmp/.X{d}-lock", .{display})) |path| {
+            std.fs.cwd().deleteFile(path) catch {};
+        } else |_| {}
+
+        var socket_buf: [32]u8 = undefined;
+        if (std.fmt.bufPrint(&socket_buf, "/tmp/.X11-unix/X{d}", .{display})) |path| {
+            std.fs.cwd().deleteFile(path) catch {};
+        } else |_| {}
     }
 
     fn setResolution(self: *HeadlessDisplay) !void {

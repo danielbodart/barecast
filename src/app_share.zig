@@ -71,15 +71,27 @@ pub const AppShare = struct {
         @memcpy(self.command_buf[0..config.command.len], config.command);
         self.command_len = config.command.len;
 
+        var t = std.time.Timer.start() catch null;
+        const ts = struct {
+            fn elapsed(timer: *?std.time.Timer) u64 {
+                if (timer.*) |*tt| {
+                    const ms = tt.read() / std.time.ns_per_ms;
+                    tt.reset();
+                    return ms;
+                }
+                return 0;
+            }
+        };
+
         // Start headless display at a minimal size (will resize to app)
         self.display = HeadlessDisplay.start(config.width, config.height) catch |err| {
             log.err("headless display failed: {}", .{err});
             return error.DisplayFailed;
         };
         errdefer self.display.stop();
+        const t_display = ts.elapsed(&t);
 
         const display_env = self.display.displayEnv();
-        log.info("headless display :{d} ready", .{self.display.display_num});
 
         // Start window manager on the headless display
         var display_z: [16]u8 = undefined;
@@ -90,6 +102,7 @@ pub const AppShare = struct {
             log.warn("window manager init failed: {}", .{err});
             break :blk null;
         };
+        const t_wm_init = ts.elapsed(&t);
 
         // Launch the app on the headless display
         self.app_pid = self.launchApp(display_env) catch |err| {
@@ -100,6 +113,7 @@ pub const AppShare = struct {
             posix.kill(pid, posix.SIG.TERM) catch {};
             _ = posix.waitpid(pid, 0);
         };
+        const t_app_launch = ts.elapsed(&t);
 
         // Wait for the app's window and resize display to match
         if (self.wm) |*wm| {
@@ -110,18 +124,20 @@ pub const AppShare = struct {
                 log.warn("app window not detected, using default size", .{});
             }
         }
+        const t_window_wait = ts.elapsed(&t);
 
         var fbc = NvFbc.initDisplay(.{}, config.fps, @ptrCast(display_z[0..display_env.len :0])) catch |err| {
             log.err("NvFBC init on headless display failed: {}", .{err});
             return error.NvFbcFailed;
         };
         errdefer fbc.deinit();
+        const t_nvfbc = ts.elapsed(&t);
 
         const first_frame = fbc.grabFrame() catch |err| {
             log.err("first frame grab failed: {}", .{err});
             return error.NvFbcFailed;
         };
-        log.info("NvFBC: {}x{}, texture={}", .{ first_frame.width, first_frame.height, first_frame.texture_id });
+        const t_grab = ts.elapsed(&t);
 
         // Room ID
         if (config.room_id) |id| {
@@ -178,6 +194,7 @@ pub const AppShare = struct {
         if (self.xinput) |*xi| {
             self.session.input_handler = xi.inputHandler();
         }
+        const t_session = ts.elapsed(&t);
 
         // Encoder
         self.encoder = Encoder.init(&fbc, first_frame, .{ .session = &self.session }, config.fps) catch |err| {
@@ -185,6 +202,7 @@ pub const AppShare = struct {
             self.session.deinit();
             return error.EncoderInitFailed;
         };
+        const t_encoder = ts.elapsed(&t);
 
         // Recording (optional — enabled by ZEROCAST_RECORD_DIR env)
         self.recorder = if (config.record_dir) |dir|
@@ -197,6 +215,11 @@ pub const AppShare = struct {
                 self.command_buf[0..self.command_len], first_frame.width, first_frame.height, config.fps,
             });
         }
+
+        log.info("startup: display={d}ms wm_init={d}ms app_launch={d}ms window_wait={d}ms nvfbc={d}ms grab={d}ms session={d}ms encoder={d}ms total={d}ms", .{
+            t_display, t_wm_init, t_app_launch, t_window_wait, t_nvfbc, t_grab, t_session, t_encoder,
+            t_display + t_wm_init + t_app_launch + t_window_wait + t_nvfbc + t_grab + t_session + t_encoder,
+        });
 
         self.last_fps = 0;
         self.last_bitrate = 0;
