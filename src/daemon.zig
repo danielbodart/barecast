@@ -62,24 +62,30 @@ pub fn run() void {
         return;
     };
 
-    // Check for existing daemon
-    if (isSocketAlive(sock_path)) {
-        log.err("daemon already running (socket responds at {s})", .{sock_path});
-        return;
+    // Check for existing daemon — connect and send a status request.
+    // A successful response means the daemon is genuinely alive.
+    // A connect failure or response timeout means the socket is stale.
+    switch (checkExistingDaemon(sock_path)) {
+        .alive => {
+            log.err("daemon already running (socket responds at {s})", .{sock_path});
+            return;
+        },
+        .stale => {
+            log.info("removing stale socket at {s}", .{sock_path});
+            std.fs.cwd().deleteFile(sock_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => {
+                    log.err("failed to unlink stale socket: {}", .{err});
+                    return;
+                },
+            };
+        },
+        .none => {},
     }
 
-    // Unlink stale socket if it exists
     const sock_path_z = toSockaddr(sock_path) orelse {
         log.err("socket path too long", .{});
         return;
-    };
-
-    std.fs.cwd().deleteFile(sock_path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => {
-            log.err("failed to unlink stale socket: {}", .{err});
-            return;
-        },
     };
 
     // Create and bind the listener
@@ -607,13 +613,29 @@ fn stopAllSessions() u32 {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-fn isSocketAlive(path: []const u8) bool {
-    const addr = toSockaddr(path) orelse return false;
-    const sock = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch return false;
+const DaemonCheck = enum { alive, stale, none };
+
+fn checkExistingDaemon(path: []const u8) DaemonCheck {
+    const addr = toSockaddr(path) orelse return .none;
+    const sock = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch return .none;
     defer posix.close(sock);
 
-    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch return false;
-    return true;
+    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch return .none;
+
+    // Connected — but is it actually responding? Send a status request with a short timeout.
+    const timeout = posix.timeval{ .sec = 2, .usec = 0 };
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch return .stale;
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch return .stale;
+
+    const request = "{\"cmd\":\"status\"}\n";
+    _ = posix.write(sock, request) catch return .stale;
+
+    // Read response — any valid data means the daemon is alive
+    var buf: [4096]u8 = undefined;
+    const n = posix.read(sock, &buf) catch return .stale;
+    if (n == 0) return .stale;
+
+    return .alive;
 }
 
 fn toSockaddr(path: []const u8) ?std.os.linux.sockaddr.un {
