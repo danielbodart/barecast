@@ -110,6 +110,9 @@ pub const Peer = struct {
             pkt_init.maxFragmentSize = 1200;
             pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
             pkt_init.absCaptureTimeId = 3; // extmap ID for abs-capture-time
+            pkt_init.playoutDelayId = 4; // extmap ID for playout-delay
+            pkt_init.playoutDelayMin = 0; // render immediately
+            pkt_init.playoutDelayMax = 0;
             _ = c.rtcSetAV1Packetizer(track, &pkt_init);
 
             // RTCP chain
