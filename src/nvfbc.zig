@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("X11/Xlib.h");
     @cInclude("GL/glx.h");
+    @cInclude("stdlib.h");
 });
 
 // ============================================================================
@@ -217,6 +218,10 @@ pub const ApiFunctionList = extern struct {
 
 const CreateInstanceFn = *const fn (*ApiFunctionList) callconv(.c) Status;
 
+// Process-global mutex: NvFBC's NvFBCCreateHandle internally reads $DISPLAY,
+// so we must serialize setenv("DISPLAY") + createHandle across all threads.
+var display_env_mutex: std.Thread.Mutex = .{};
+
 // ============================================================================
 // GLX context helper
 // ============================================================================
@@ -374,7 +379,10 @@ pub const NvFbc = struct {
         const createHandle = fns.nvFBCCreateHandle orelse return error.NvFbcInitFailed;
         const getStatus = fns.nvFBCGetStatus orelse return error.NvFbcInitFailed;
 
-        // Create handle — try without key first, then with enable_key fallback
+        // Create handle — try without key first, then with enable_key fallback.
+        // NvFBCCreateHandle internally reads $DISPLAY to open its own X11 connection,
+        // so we must hold a mutex across setenv + createHandle to prevent races
+        // when multiple sessions init or resize concurrently.
         var session: SessionHandle = 0;
         var create_params = CreateHandleParams{
             .bExternallyManagedContext = .true_,
@@ -382,24 +390,34 @@ pub const NvFbc = struct {
             .glxFBConfig = glx.fb_config,
         };
 
-        status = createHandle(&session, &create_params);
-        if (status != .success) {
-            const enable_key = [_]u8{ 0xac, 0x10, 0xc9, 0x2e, 0xa5, 0xe6, 0x87, 0x4f, 0x8f, 0x4b, 0xf4, 0x61, 0xf8, 0x56, 0x27, 0xe9 };
-            create_params.privateData = &enable_key;
-            create_params.privateDataSize = 16;
+        {
+            display_env_mutex.lock();
+            defer display_env_mutex.unlock();
+
+            if (display_name) |dn| {
+                _ = c.setenv("DISPLAY", dn, 1);
+            }
 
             status = createHandle(&session, &create_params);
             if (status != .success) {
-                const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
-                std.debug.print("NvFBC: CreateHandle failed ({s}): {s}\n", .{
-                    @tagName(status),
-                    err_str orelse "unknown",
-                });
-                if (status == .err_max_clients) {
-                    std.debug.print("NvFBC: Another capture session is already running. Kill it with: pkill -f zerocast\n", .{});
-                }
-                return error.NvFbcInitFailed;
+                const enable_key = [_]u8{ 0xac, 0x10, 0xc9, 0x2e, 0xa5, 0xe6, 0x87, 0x4f, 0x8f, 0x4b, 0xf4, 0x61, 0xf8, 0x56, 0x27, 0xe9 };
+                create_params.privateData = &enable_key;
+                create_params.privateDataSize = 16;
+
+                status = createHandle(&session, &create_params);
             }
+        }
+
+        if (status != .success) {
+            const err_str = if (fns.nvFBCGetLastErrorStr) |f| f(session) else null;
+            std.debug.print("NvFBC: CreateHandle failed ({s}): {s}\n", .{
+                @tagName(status),
+                err_str orelse "unknown",
+            });
+            if (status == .err_max_clients) {
+                std.debug.print("NvFBC: Another capture session is already running. Kill it with: pkill -f zerocast\n", .{});
+            }
+            return error.NvFbcInitFailed;
         }
 
         // Get status
