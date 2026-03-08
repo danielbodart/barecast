@@ -112,7 +112,7 @@ export async function build() {
     await ensureCmakeLibs();
     const ver = await version();
     console.log(`Building v${ver}...`);
-    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe -Dcpu=x86_64_v3`;
+    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall -Dcpu=x86_64_v3`;
 }
 
 export async function rebuildLibs() {
@@ -279,7 +279,7 @@ export async function ci() {
     await $`zig build test`;
 
     console.log(`Building v${ver}...`);
-    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe -Dcpu=x86_64_v3`;
+    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall -Dcpu=x86_64_v3`;
     await dist();
 
     // Worker: install deps, build viewer TS, deploy to production
