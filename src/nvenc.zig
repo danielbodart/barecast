@@ -119,7 +119,22 @@ const RcParams = extern struct {
     maxBitRate: u32 = 0,
     vbvBufferSize: u32 = 0,
     vbvInitialDelay: u32 = 0,
-    enableFlags: u32 = 0, // bitfield: enableMinQP, enableMaxQP, etc.
+    bitfield_flags: packed struct(u32) {
+        enableMinQP: u1 = 0,
+        enableMaxQP: u1 = 0,
+        enableInitialRCQP: u1 = 0,
+        enableAQ: u1 = 0,
+        reservedBitField1: u1 = 0,
+        enableLookahead: u1 = 0,
+        disableIadapt: u1 = 0,
+        disableBadapt: u1 = 0,
+        enableTemporalAQ: u1 = 0,
+        zeroReorderDelay: u1 = 0,
+        enableNonRefP: u1 = 0,
+        strictGOPTarget: u1 = 0,
+        aqStrength: u4 = 0,
+        reservedBitFields: u16 = 0,
+    } = .{},
     minQP: QP = .{},
     maxQP: QP = .{},
     initialRCQP: QP = .{},
@@ -154,7 +169,22 @@ const ConfigAv1 = extern struct {
     tier: u32 = 0,
     minPartSize: u32 = 0,
     maxPartSize: u32 = 0,
-    bitfield_flags: u32 = 0,
+    bitfield_flags: packed struct(u32) {
+        outputAnnexBFormat: u1 = 0,
+        enableTimingInfo: u1 = 0,
+        enableDecoderModelInfo: u1 = 0,
+        enableFrameIdNumbers: u1 = 0,
+        disableSeqHdr: u1 = 0,
+        repeatSeqHdr: u1 = 0,
+        enableIntraRefresh: u1 = 0,
+        chromaFormatIDC: u2 = 0,
+        enableBitstreamPadding: u1 = 0,
+        enableCustomTileConfig: u1 = 0,
+        enableFilmGrainParams: u1 = 0,
+        inputPixelBitDepthMinus8: u3 = 0,
+        pixelBitDepthMinus8: u3 = 0,
+        reserved: u14 = 0,
+    } = .{},
     idrPeriod: u32 = 120,
     intraRefreshPeriod: u32 = 0,
     intraRefreshCnt: u32 = 0,
@@ -243,7 +273,15 @@ const InitializeParams = extern struct {
     frameRateDen: u32 = 0,
     enableEncodeAsync: u32 = 0,
     enablePTD: u32 = 1,
-    reportBitfields: u32 = 0,
+    bitfield_flags: packed struct(u32) {
+        reportSliceOffsets: u1 = 0,
+        enableSubFrameWrite: u1 = 0,
+        enableExternalMEHints: u1 = 0,
+        enableMEOnlyMode: u1 = 0,
+        enableWeightedPrediction: u1 = 0,
+        enableOutputInVidmem: u1 = 0,
+        reservedBitFields: u26 = 0,
+    } = .{},
     privDataSize: u32 = 0,
     _pad0: u32 = 0,
     privData: ?*anyopaque = null,
@@ -414,7 +452,7 @@ const CreateBitstreamBuffer = extern struct {
     memoryHeap: u32 = 0,
     _reserved: u32 = 0,
     bitstreamBuffer: ?*anyopaque = null, // [out] NV_ENC_OUTPUT_PTR
-    bitstreamBufferPtr: ?*anyopaque = null,
+    _bitstreamBufferPtr: ?*anyopaque = null,
     _reserved1: [58]u32 = [_]u32{0} ** 58,
     _reserved2: [64]?*anyopaque = [_]?*anyopaque{null} ** 64,
 
@@ -603,8 +641,8 @@ pub const Nvenc = struct {
         // AV1 specific config
         const av1 = config.av1Config();
         av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
-        // Set bitfield_flags: repeatSeqHdr=1 (bit 5), chromaFormatIDC=1 (bits 7-8)
-        av1.bitfield_flags = (av1.bitfield_flags & ~@as(u32, (1 << 5) | (0x3 << 7))) | (1 << 5) | (1 << 7);
+        av1.bitfield_flags.repeatSeqHdr = 1;
+        av1.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
         // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
         // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).
         av1.colorPrimaries = 1; // BT.709
@@ -706,14 +744,13 @@ pub const Nvenc = struct {
         // Encode
         status = (self.fns.nvEncEncodePicture orelse return error.NvencEncodeFailed)(self.encoder, &pic);
 
-        // Unmap regardless of encode result
-        _ = (self.fns.nvEncUnmapInputResource orelse unreachable)(self.encoder, map.mappedResource);
-
         if (status == .err_need_more_input) {
+            _ = (self.fns.nvEncUnmapInputResource orelse unreachable)(self.encoder, map.mappedResource);
             self.frame_idx += 1;
             return null;
         }
         if (status != .success) {
+            _ = (self.fns.nvEncUnmapInputResource orelse unreachable)(self.encoder, map.mappedResource);
             logNvencError(&self.fns, self.encoder, "nvEncEncodePicture", status);
             return error.NvencEncodeFailed;
         }
@@ -721,6 +758,10 @@ pub const Nvenc = struct {
         // Lock bitstream to read encoded data
         var lock = LockBitstream{ .outputBitstream = self.bitstream_buffer };
         status = (self.fns.nvEncLockBitstream orelse return error.NvencEncodeFailed)(self.encoder, &lock);
+
+        // Unmap now that bitstream is ready
+        _ = (self.fns.nvEncUnmapInputResource orelse unreachable)(self.encoder, map.mappedResource);
+
         if (status != .success) {
             logNvencError(&self.fns, self.encoder, "nvEncLockBitstream", status);
             return error.NvencEncodeFailed;
