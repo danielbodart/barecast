@@ -113,8 +113,6 @@ export async function build() {
     const ver = await version();
     console.log(`Building v${ver}...`);
     await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe -Dcpu=x86_64_v3`;
-    // Build fpscap.so — LD_PRELOAD frame rate cap for headless OpenGL apps
-    await $`gcc -shared -fPIC -O2 -o dist/bin/fpscap.so src/fpscap.c -ldl`;
 }
 
 export async function rebuildLibs() {

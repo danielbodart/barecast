@@ -432,17 +432,22 @@ pub const AppShare = struct {
             {
                 var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
                 if (posix.readlinkZ("/proc/self/exe", &exe_buf)) |exe_path| {
-                    // Find last '/' to get directory
+                    // Find parent of bin/ dir (exe is at <prefix>/bin/zerocast)
                     var dir_end: usize = 0;
                     for (exe_path, 0..) |ch, i| {
                         if (ch == '/') dir_end = i;
                     }
+                    // dir_end points to /bin, find prefix above it
+                    var prefix_end: usize = 0;
+                    for (exe_path[0..dir_end], 0..) |ch, i| {
+                        if (ch == '/') prefix_end = i;
+                    }
                     var fpscap_path: [std.fs.max_path_bytes]u8 = undefined;
-                    const suffix = "/fpscap.so";
-                    @memcpy(fpscap_path[0..dir_end], exe_path[0..dir_end]);
-                    @memcpy(fpscap_path[dir_end..][0..suffix.len], suffix);
-                    fpscap_path[dir_end + suffix.len] = 0;
-                    _ = c.setenv("LD_PRELOAD", @ptrCast(fpscap_path[0 .. dir_end + suffix.len :0]), 1);
+                    const suffix = "/lib/libfpscap.so";
+                    @memcpy(fpscap_path[0..prefix_end], exe_path[0..prefix_end]);
+                    @memcpy(fpscap_path[prefix_end..][0..suffix.len], suffix);
+                    fpscap_path[prefix_end + suffix.len] = 0;
+                    _ = c.setenv("LD_PRELOAD", @ptrCast(fpscap_path[0 .. prefix_end + suffix.len :0]), 1);
                 } else |_| {}
                 var fps_z: [8]u8 = undefined;
                 const fps_str = std.fmt.bufPrint(&fps_z, "{d}", .{self.config.fps}) catch "30";

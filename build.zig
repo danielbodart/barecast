@@ -287,6 +287,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(xorg_exe);
 
+    // --- fpscap.so (LD_PRELOAD frame rate cap for headless OpenGL apps) ---
+    const fpscap = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "fpscap",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fpscap.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    b.installArtifact(fpscap);
+
     // --- Run step ---
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
