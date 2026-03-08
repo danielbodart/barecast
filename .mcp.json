@@ -1,6 +1,8 @@
 {
-  "playwright": {
-    "command": "npx",
-    "args": ["@playwright/mcp@latest", "--output-dir", ".playwright"]
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--output-dir", ".playwright-mcp"]
+    }
   }
 }

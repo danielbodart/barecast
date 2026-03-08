@@ -9,14 +9,13 @@ const log = std.log.scoped(.headless);
 
 /// Manages a headless Xorg display for app sharing.
 /// Generates a temp xorg.conf, spawns the zerocast-xorg helper,
-/// starts picom compositor, and sets the resolution via xrandr.
+/// and sets the resolution via xrandr.
 /// All process management runs unprivileged — only the helper is setuid.
 pub const HeadlessDisplay = struct {
     display_num: u8,
     display_env: [16]u8,
     display_env_len: usize,
     xorg_pid: ?posix.pid_t,
-    picom_pid: ?posix.pid_t,
     config_path: [128]u8,
     config_path_len: usize,
     width: u32,
@@ -31,7 +30,6 @@ pub const HeadlessDisplay = struct {
         HelperNotFound,
         HelperFailed,
         XrandrFailed,
-        PicomFailed,
     };
 
     /// Start a headless display at the given resolution.
@@ -41,7 +39,6 @@ pub const HeadlessDisplay = struct {
         self.width = width;
         self.height = height;
         self.xorg_pid = null;
-        self.picom_pid = null;
 
         // Generate temp xorg.conf
         self.writeConfig() catch return error.ConfigWriteFailed;
@@ -54,11 +51,6 @@ pub const HeadlessDisplay = struct {
             log.warn("xrandr --fb failed: {}, display may be at default resolution", .{err});
         };
 
-        // Start picom compositor (enables NvFBC diff map for idle detection)
-        self.spawnPicom() catch |err| {
-            log.warn("picom failed to start: {}, NvFBC diff map may not work", .{err});
-        };
-
         log.info("headless display :{d} ready ({d}x{d})", .{ self.display_num, width, height });
         return self;
     }
@@ -68,37 +60,17 @@ pub const HeadlessDisplay = struct {
         return self.display_env[0..self.display_env_len];
     }
 
-    /// Resize the display (called when viewer resizes).
-    /// After xrandr, picom must be restarted — xrandr invalidates picom's
-    /// compositing state, which breaks NvFBC's push model damage subscription.
+    /// Resize the display via xrandr.
     pub fn resize(self: *HeadlessDisplay, width: u32, height: u32) void {
         self.width = width;
         self.height = height;
         self.setResolution() catch |err| {
             log.warn("resize failed: {}", .{err});
-            return;
-        };
-        self.restartPicom();
-    }
-
-    fn restartPicom(self: *HeadlessDisplay) void {
-        if (self.picom_pid) |pid| {
-            posix.kill(pid, posix.SIG.TERM) catch {};
-            _ = posix.waitpid(pid, 0);
-            self.picom_pid = null;
-        }
-        self.spawnPicom() catch |err| {
-            log.warn("picom restart failed: {}", .{err});
         };
     }
 
     /// Stop the headless display and clean up all processes.
     pub fn stop(self: *HeadlessDisplay) void {
-        if (self.picom_pid) |pid| {
-            posix.kill(pid, posix.SIG.TERM) catch {};
-            _ = posix.waitpid(pid, 0);
-            self.picom_pid = null;
-        }
         if (self.xorg_pid) |pid| {
             posix.kill(pid, posix.SIG.TERM) catch {};
             _ = posix.waitpid(pid, 0);
@@ -173,9 +145,6 @@ pub const HeadlessDisplay = struct {
 
         self.xorg_pid = pid;
 
-        // Wait for the helper to report the display number via stdout
-        // The helper writes "<display_num>\n" when ready
-        // For now, poll for the socket file
         const display_num = self.waitForHelperReady(pid) catch return error.HelperFailed;
         self.display_num = display_num;
 
@@ -186,9 +155,6 @@ pub const HeadlessDisplay = struct {
     fn waitForHelperReady(self: *HeadlessDisplay, pid: posix.pid_t) !u8 {
         _ = self;
 
-        // The helper finds a free display and starts Xorg on it.
-        // Wait for ANY new socket in /tmp/.X11-unix/ (range :10-:99).
-        // Record which sockets exist before we started.
         var existing = [_]bool{false} ** 100;
         for (10..100) |d| {
             var path_buf: [32]u8 = undefined;
@@ -199,11 +165,9 @@ pub const HeadlessDisplay = struct {
             }
         }
 
-        // Poll for a NEW socket (up to 15 seconds)
         for (0..150) |_| {
             std.Thread.sleep(100 * std.time.ns_per_ms);
 
-            // Check if helper exited prematurely
             const wr = posix.waitpid(pid, posix.W.NOHANG);
             if (wr.pid != 0) return error.HelperFailed;
 
@@ -241,33 +205,6 @@ pub const HeadlessDisplay = struct {
             posix.exit(127);
         }
         _ = posix.waitpid(pid, 0);
-    }
-
-    fn spawnPicom(self: *HeadlessDisplay) !void {
-        const pid = posix.fork() catch return error.PicomFailed;
-        if (pid == 0) {
-            // Set DISPLAY
-            var display_z: [16]u8 = undefined;
-            const env = std.fmt.bufPrint(&display_z, ":{d}", .{self.display_num}) catch posix.exit(127);
-            display_z[env.len] = 0;
-            _ = libc.setenv("DISPLAY", @ptrCast(display_z[0..env.len :0]), 1);
-
-            // Redirect stdout/stderr to /dev/null
-            const devnull = posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch posix.exit(127);
-            posix.dup2(devnull, 1) catch {};
-            posix.dup2(devnull, 2) catch {};
-
-            const argv = [_:null]?[*:0]const u8{
-                "picom",
-                "--backend",
-                "glx",
-            };
-            _ = libc.execvp("picom", @ptrCast(&argv));
-            posix.exit(127);
-        }
-        self.picom_pid = pid;
-        // Give picom a moment to initialize
-        std.Thread.sleep(500 * std.time.ns_per_ms);
     }
 
     fn configPathZ(self: *HeadlessDisplay) [*:0]const u8 {

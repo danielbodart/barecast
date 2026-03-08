@@ -358,19 +358,22 @@ if (!roomId) {
             document.documentElement.style.setProperty("--video-w", vw + "px");
             document.documentElement.style.setProperty("--video-h", vh + "px");
 
-            // Resize window to stream dimensions, clamped to screen
+            // Resize window so the inner content area matches the stream.
+            // resizeTo sets outer size, so add the decoration offset.
+            const chromW = window.outerWidth - window.innerWidth;
+            const chromH = window.outerHeight - window.innerHeight;
             const ratio = vw / vh;
             const maxW = screen.availWidth;
             const maxH = screen.availHeight;
-            let fitW = vw;
-            let fitH = vh;
+            let fitW = vw + chromW;
+            let fitH = vh + chromH;
             if (fitW > maxW) {
                 fitW = maxW;
-                fitH = Math.round(maxW / ratio);
+                fitH = Math.round((maxW - chromW) / ratio) + chromH;
             }
             if (fitH > maxH) {
                 fitH = maxH;
-                fitW = Math.round(maxH * ratio);
+                fitW = Math.round((maxH - chromH) * ratio) + chromW;
             }
             window.resizeTo(fitW, fitH);
         }

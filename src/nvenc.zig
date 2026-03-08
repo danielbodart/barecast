@@ -440,22 +440,6 @@ const PresetConfig = extern struct {
     }
 };
 
-// ============================================================================
-// NV_ENC_RECONFIGURE_PARAMS — 3352 bytes, align 8
-// ============================================================================
-
-const ReconfigureParams = extern struct {
-    version: u32 = structVersionHigh(1),
-    _pad0: u32 = 0,
-    reInitEncodeParams: InitializeParams,
-    bitfield: u32 = 0, // resetEncoder:1, forceIDR:1, reserved:30
-    _reserved1: [255]u32 = [_]u32{0} ** 255,
-    _reserved2: [64]?*anyopaque = [_]?*anyopaque{null} ** 64,
-
-    comptime {
-        if (@sizeOf(ReconfigureParams) != 3352) @compileError("ReconfigureParams size mismatch");
-    }
-};
 
 // ============================================================================
 // NV_ENCODE_API_FUNCTION_LIST — 2552 bytes, align 8
@@ -496,7 +480,7 @@ const ApiFunctionList = extern struct {
     nvEncOpenEncodeSessionEx: ?OpenEncodeSessionExFn = null,
     nvEncRegisterResource: ?RegisterResourceFn = null,
     nvEncUnregisterResource: ?UnregisterResourceFn = null,
-    nvEncReconfigureEncoder: ?ReconfigureEncoderFn = null,
+    nvEncReconfigureEncoder: ?*anyopaque = null,
     _reserved1: ?*anyopaque = null,
     nvEncCreateMVBuffer: ?*anyopaque = null,
     nvEncDestroyMVBuffer: ?*anyopaque = null,
@@ -531,7 +515,6 @@ const DestroyEncoderFn = *const fn (?*anyopaque) callconv(.c) Status;
 const GetLastErrorStringFn = *const fn (?*anyopaque) callconv(.c) ?[*:0]const u8;
 const GetEncodePresetConfigExFn = *const fn (?*anyopaque, Guid, Guid, u32, *PresetConfig) callconv(.c) Status;
 const GetInputFormatsFn = *const fn (?*anyopaque, Guid, *u32, u32, *u32) callconv(.c) Status;
-const ReconfigureEncoderFn = *const fn (?*anyopaque, *ReconfigureParams) callconv(.c) Status;
 const CreateInstanceFn = *const fn (*ApiFunctionList) callconv(.c) Status;
 
 // ============================================================================
@@ -799,57 +782,6 @@ pub const Nvenc = struct {
         };
         self.frame_idx += 1;
         return frame;
-    }
-
-    /// Reconfigure the encoder for a new resolution without full teardown.
-    /// Unregisters the old CUDA resource, reconfigures dimensions, re-registers.
-    pub fn reconfigure(self: *Nvenc, cu: *const cuda.Cuda, fps: u32) !void {
-        // 1. Unregister old resource (bound to old device_ptr/dimensions)
-        if (self.registered_resource) |rr| {
-            _ = (self.fns.nvEncUnregisterResource orelse return error.NvencEncodeFailed)(self.encoder, rr);
-            self.registered_resource = null;
-        }
-
-        // 2. Build reconfigure params with new dimensions
-        var reconfig = ReconfigureParams{
-            .reInitEncodeParams = .{
-                .encodeWidth = cu.frame_width,
-                .encodeHeight = cu.frame_height,
-                .darWidth = cu.frame_width,
-                .darHeight = cu.frame_height,
-                .frameRateNum = fps,
-                .frameRateDen = 1,
-                .encodeConfig = &self.config,
-            },
-            .bitfield = 0x3, // resetEncoder = bit 0, forceIDR = bit 1
-        };
-
-        const status = (self.fns.nvEncReconfigureEncoder orelse return error.NvencEncodeFailed)(self.encoder, &reconfig);
-        if (status != .success) {
-            logNvencError(&self.fns, self.encoder, "nvEncReconfigureEncoder", status);
-            return error.NvencEncodeFailed;
-        }
-
-        // 3. Re-register with new CUDA device pointer
-        var reg = RegisterResource{
-            .width = cu.frame_width,
-            .height = cu.frame_height,
-            .pitch = @intCast(cu.device_pitch),
-            .resourceToRegister = @ptrFromInt(cu.device_ptr),
-            .bufferFormat = self.buffer_format,
-        };
-        const reg_status = (self.fns.nvEncRegisterResource orelse return error.NvencEncodeFailed)(self.encoder, &reg);
-        if (reg_status != .success) {
-            logNvencError(&self.fns, self.encoder, "nvEncRegisterResource (reconfigure)", reg_status);
-            return error.NvencEncodeFailed;
-        }
-
-        self.registered_resource = reg.registeredResource;
-        self.width = cu.frame_width;
-        self.height = cu.frame_height;
-        self.pitch = @intCast(cu.device_pitch);
-
-        std.debug.print("NVENC: reconfigured to {}x{}\n", .{ cu.frame_width, cu.frame_height });
     }
 
     pub fn deinit(self: *Nvenc) void {

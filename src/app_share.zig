@@ -49,6 +49,7 @@ pub const AppShare = struct {
     session: BroadcastSession,
     encoder: Encoder,
     recorder: ?SessionRecorder,
+    pending_resize: std.atomic.Value(u32),
     should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
     last_fps: u32,
@@ -58,6 +59,7 @@ pub const AppShare = struct {
     command_len: usize,
 
     pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
+        self.pending_resize = std.atomic.Value(u32).init(0);
         self.should_stop = std.atomic.Value(bool).init(false);
         self.config = config;
         self.app_pid = null;
@@ -278,6 +280,82 @@ pub const AppShare = struct {
                 self.sendAppMeta();
             }
 
+            // Check for pending resize (set by appResizeCallback on data channel thread)
+            const resize_val = self.pending_resize.swap(0, .acquire);
+            if (resize_val != 0) {
+                const new_w: u32 = resize_val >> 16;
+                const new_h: u32 = resize_val & 0xFFFF;
+                log.info("resize {d}x{d} — rebuilding pipeline", .{ new_w, new_h });
+
+                var t = std.time.Timer.start() catch null;
+                const ts = struct {
+                    fn elapsed(timer: *?std.time.Timer) u64 {
+                        if (timer.*) |*tt| {
+                            const us = tt.read() / std.time.ns_per_us;
+                            tt.reset();
+                            return us;
+                        }
+                        return 0;
+                    }
+                };
+
+                // 1. Tear down encoder (NVENC + CUDA)
+                self.encoder.deinit();
+                const t_encoder_deinit = ts.elapsed(&t);
+
+                // 2. Tear down NvFBC (capture session + GLX)
+                self.fbc.deinit();
+                const t_fbc_deinit = ts.elapsed(&t);
+
+                // 3. Resize display (xrandr only, no picom restart)
+                self.display.resize(new_w, new_h);
+                const t_xrandr = ts.elapsed(&t);
+
+                // 4. Resize app window
+                if (self.wm) |*wm| wm.resizeApp(new_w, new_h);
+                const t_wm = ts.elapsed(&t);
+
+                // 5. Rebuild NvFBC
+                const display_env = self.display.displayEnv();
+                var display_z: [16]u8 = undefined;
+                @memcpy(display_z[0..display_env.len], display_env);
+                display_z[display_env.len] = 0;
+
+                self.fbc = NvFbc.initDisplay(.{}, self.config.fps, @ptrCast(display_z[0..display_env.len :0])) catch |e| {
+                    log.err("NvFBC reinit failed: {}", .{e});
+                    break :loop;
+                };
+                const t_fbc_init = ts.elapsed(&t);
+
+                // 6. Grab first frame at new resolution
+                const new_frame = self.fbc.grabFrame() catch |e| {
+                    log.err("post-resize grab failed: {}", .{e});
+                    break :loop;
+                };
+                const t_grab = ts.elapsed(&t);
+
+                // 7. Rebuild encoder
+                self.encoder = Encoder.init(&self.fbc, new_frame, .{ .session = &self.session }, self.config.fps) catch |e| {
+                    log.err("encoder reinit failed: {}", .{e});
+                    break :loop;
+                };
+                if (self.recorder) |*rec| {
+                    self.encoder.recorder = rec;
+                    rec.updateResolution(new_frame.width, new_frame.height);
+                    rec.logFmt("resize: {d}x{d}", .{ new_w, new_h });
+                }
+                const t_encoder_init = ts.elapsed(&t);
+
+                log.info("resize done: encoder_deinit={d}us fbc_deinit={d}us xrandr={d}us wm={d}us fbc_init={d}us grab={d}us encoder_init={d}us total={d}us", .{
+                    t_encoder_deinit, t_fbc_deinit, t_xrandr, t_wm, t_fbc_init, t_grab, t_encoder_init,
+                    t_encoder_deinit + t_fbc_deinit + t_xrandr + t_wm + t_fbc_init + t_grab + t_encoder_init,
+                });
+
+                self.sendAppMeta();
+                frame_timer.reset();
+                continue;
+            }
+
             // Frame pacing — sleep to maintain target fps
             const elapsed_frame_ns = frame_timer.read();
             if (elapsed_frame_ns < frame_interval_ns) {
@@ -285,28 +363,9 @@ pub const AppShare = struct {
             }
             frame_timer.reset();
 
-            const frame = self.fbc.grabFrame() catch |err| switch (err) {
-                error.NvFbcMustRecreate => blk: {
-                    log.info("display resized, reinitializing capture pipeline", .{});
-                    self.fbc.recreateSession(self.config.fps) catch |e| {
-                        log.err("recreateSession failed: {}", .{e});
-                        break :loop;
-                    };
-                    const new_frame = self.fbc.grabFrame() catch |e| {
-                        log.err("post-recreate grab failed: {}", .{e});
-                        break :loop;
-                    };
-                    self.encoder.reinit(new_frame, self.config.fps) catch |e| {
-                        log.err("encoder reinit failed: {}", .{e});
-                        break :loop;
-                    };
-                    self.sendAppMeta();
-                    break :blk new_frame;
-                },
-                else => {
-                    log.err("capture error: {}", .{err});
-                    break;
-                },
+            const frame = self.fbc.grabFrame() catch |err| {
+                log.err("capture error: {}", .{err});
+                break;
             };
 
             self.encoder.processFrame(frame) catch |err| {
@@ -411,9 +470,9 @@ fn appMetaCallback(session: *BroadcastSession) void {
 
 fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
     const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
-    if (width < 100 or height < 100) return; // ignore tiny sizes
-    log.info("viewer resize: {d}x{d}", .{ width, height });
-    if (self.recorder) |*rec| rec.logFmt("viewer resize: {d}x{d}", .{ width, height });
-    self.display.resize(@intCast(width), @intCast(height));
-    if (self.wm) |*wm| wm.resizeApp(@intCast(width), @intCast(height));
+    if (width < 100 or height < 100) return;
+    // Skip no-op resizes (viewer often sends back the current video resolution)
+    if (@as(u32, width) == self.display.width and @as(u32, height) == self.display.height) return;
+    log.info("viewer resize requested: {d}x{d}", .{ width, height });
+    self.pending_resize.store((@as(u32, width) << 16) | @as(u32, height), .release);
 }

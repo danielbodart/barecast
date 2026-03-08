@@ -12,7 +12,5 @@ zerocast-linux-x86_64.tar.gz.sha256
 .playwright/
 worker/node_modules/
 worker/.wrangler/
-worker/public/viewer.js
-worker/public/install.js
-worker/public/sw.js
+worker/public/*.js
 .env

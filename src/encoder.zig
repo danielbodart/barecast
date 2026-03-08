@@ -223,25 +223,6 @@ pub const Encoder = struct {
         }
     }
 
-    /// Reinitialize the encode pipeline for a new resolution.
-    /// Called after NvFBC.recreateSession() + first grabFrame() at the new size.
-    pub fn reinit(self: *Encoder, new_frame: nvfbc.FrameResult, fps: u32) !void {
-        try self.cuda_ctx.reinitBuffers(new_frame.texture_id, new_frame.width, new_frame.height);
-        try self.nvenc.reconfigure(&self.cuda_ctx, fps);
-        self.width = new_frame.width;
-        self.height = new_frame.height;
-        self.consecutive_skips = 0;
-        self.idle_logged = false;
-        self.idle_keyframe_sent = false;
-        self.force_next_keyframe = true;
-        self.timings.reset();
-        if (self.recorder) |rec| {
-            rec.updateResolution(new_frame.width, new_frame.height);
-            rec.logFmt("pipeline reinit: {d}x{d}", .{ new_frame.width, new_frame.height });
-        }
-        log.info("pipeline reinit: {}x{}", .{ new_frame.width, new_frame.height });
-    }
-
     /// Finalize output. Only meaningful for IVF sink.
     pub fn finish(self: *Encoder) !void {
         switch (self.sink) {

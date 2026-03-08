@@ -75,6 +75,8 @@ export class InputController {
                 const rect = this.video.getBoundingClientRect();
                 const w = Math.round(rect.width * devicePixelRatio);
                 const h = Math.round(rect.height * devicePixelRatio);
+                // Skip if matching native video resolution (avoids resize loop)
+                if (w === this.video.videoWidth && h === this.video.videoHeight) return;
                 if (w > 0 && h > 0) this.sendResize(w, h);
             }, 250);
         });

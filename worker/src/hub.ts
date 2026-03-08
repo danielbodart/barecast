@@ -273,10 +273,20 @@ if (!roomId) {
             ? `/room/${roomId}/terminal?share=${shareId}`
             : `/room/${roomId}/view?share=${shareId}`;
 
+        // Use the app's native resolution for the popup content area.
+        // window.open width/height is outer size, so estimate decoration offset.
+        const chromW = window.outerWidth - window.innerWidth;
+        const chromH = window.outerHeight - window.innerHeight;
+        let popW = 1280, popH = 720;
+        const res = info.meta?.res as string | undefined;
+        if (res) {
+            const m = res.match(/^(\d+)x(\d+)$/);
+            if (m) { popW = +m[1] + chromW; popH = +m[2] + chromH; }
+        }
         const w = window.open(
             path,
             `zerocast-${shareId}`,
-            "width=1280,height=720,menubar=no,toolbar=no,location=no"
+            `width=${popW},height=${popH},menubar=no,toolbar=no,location=no`
         );
         if (w) {
             info.popout = w;
