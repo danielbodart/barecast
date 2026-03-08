@@ -96,6 +96,28 @@ const NV_ENC_MULTI_PASS_DISABLED: u32 = 0x0;
 
 const NV_ENC_PIC_FLAG_FORCEIDR: u32 = 0x2;
 const NV_ENC_PIC_FLAG_EOS: u32 = 0x8;
+
+// Encode capability indices (NV_ENC_CAPS)
+const NV_ENC_CAPS_NUM_MAX_BFRAMES: u32 = 0;
+const NV_ENC_CAPS_WIDTH_MAX: u32 = 2;
+const NV_ENC_CAPS_HEIGHT_MAX: u32 = 3;
+const NV_ENC_CAPS_NUM_MAX_TEMPORAL_LAYERS: u32 = 7;
+const NV_ENC_CAPS_SUPPORT_WEIGHTED_PREDICTION: u32 = 14;
+const NV_ENC_CAPS_SUPPORT_BFRAME_REF_MODE: u32 = 15;
+const NV_ENC_CAPS_SUPPORT_LOOKAHEAD: u32 = 18;
+const NV_ENC_CAPS_SUPPORT_CONSTRAINED_ENCODING: u32 = 19;
+const NV_ENC_CAPS_SUPPORT_INTRA_REFRESH: u32 = 20;
+const NV_ENC_CAPS_SUPPORT_10BIT_ENCODE: u32 = 21;
+const NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ: u32 = 22;
+const NV_ENC_CAPS_SUPPORT_EMPHASIS_LEVEL_MAP: u32 = 23;
+const NV_ENC_CAPS_SUPPORT_MULTIPLE_REF_FRAMES: u32 = 29;
+const NV_ENC_CAPS_SUPPORT_ALPHA_LAYER: u32 = 34;
+
+const EncodeCapsParam = extern struct {
+    version: u32 = structVersionHigh(1),
+    capsToQuery: u32 = 0,
+    _reserved: [62]u32 = [_]u32{0} ** 62,
+};
 const NV_ENC_PIC_STRUCT_FRAME: u32 = 0x01;
 
 // ============================================================================
@@ -494,7 +516,7 @@ const ApiFunctionList = extern struct {
     nvEncGetEncodeGUIDs: ?*anyopaque = null,
     nvEncGetInputFormatCount: ?*anyopaque = null,
     nvEncGetInputFormats: ?GetInputFormatsFn = null,
-    nvEncGetEncodeCaps: ?*anyopaque = null,
+    nvEncGetEncodeCaps: ?GetEncodeCapsF = null,
     nvEncGetEncodePresetCount: ?*anyopaque = null,
     nvEncGetEncodePresetGUIDs: ?*anyopaque = null,
     nvEncGetEncodePresetConfig: ?*anyopaque = null,
@@ -554,6 +576,7 @@ const DestroyEncoderFn = *const fn (?*anyopaque) callconv(.c) Status;
 const GetLastErrorStringFn = *const fn (?*anyopaque) callconv(.c) ?[*:0]const u8;
 const GetEncodePresetConfigExFn = *const fn (?*anyopaque, Guid, Guid, u32, *PresetConfig) callconv(.c) Status;
 const GetInputFormatsFn = *const fn (?*anyopaque, Guid, *u32, u32, *u32) callconv(.c) Status;
+const GetEncodeCapsF = *const fn (?*anyopaque, Guid, *EncodeCapsParam, *i32) callconv(.c) Status;
 const CreateInstanceFn = *const fn (*ApiFunctionList) callconv(.c) Status;
 
 // ============================================================================
@@ -620,6 +643,36 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
+        // Query encoder capabilities
+        if (fns.nvEncGetEncodeCaps) |getCaps| {
+            const caps = [_]struct { id: u32, name: []const u8 }{
+                .{ .id = NV_ENC_CAPS_NUM_MAX_BFRAMES, .name = "max_bframes" },
+                .{ .id = NV_ENC_CAPS_WIDTH_MAX, .name = "width_max" },
+                .{ .id = NV_ENC_CAPS_HEIGHT_MAX, .name = "height_max" },
+                .{ .id = NV_ENC_CAPS_NUM_MAX_TEMPORAL_LAYERS, .name = "max_temporal_layers" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_WEIGHTED_PREDICTION, .name = "weighted_prediction" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_BFRAME_REF_MODE, .name = "bframe_ref_mode" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_LOOKAHEAD, .name = "lookahead" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_CONSTRAINED_ENCODING, .name = "constrained_encoding" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_INTRA_REFRESH, .name = "intra_refresh" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, .name = "10bit" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ, .name = "temporal_aq" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_EMPHASIS_LEVEL_MAP, .name = "emphasis_level_map" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_MULTIPLE_REF_FRAMES, .name = "multiple_ref_frames" },
+                .{ .id = NV_ENC_CAPS_SUPPORT_ALPHA_LAYER, .name = "alpha_layer" },
+            };
+            for (caps) |cap| {
+                var param = EncodeCapsParam{ .capsToQuery = cap.id };
+                var val: i32 = 0;
+                status = getCaps(encoder_handle, codec_av1_guid, &param, &val);
+                if (status == .success) {
+                    std.log.info("NVENC cap {s}: {d}", .{ cap.name, val });
+                } else {
+                    std.log.info("NVENC cap {s}: query failed", .{cap.name});
+                }
+            }
+        }
+
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
@@ -636,8 +689,11 @@ pub const Nvenc = struct {
         config.profileGUID = profile_av1_main_guid;
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
-        config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        config.rcParams.constQP = .{ .qpInterP = 24, .qpInterB = 24, .qpIntra = 24 };
+        config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+        config.rcParams.averageBitRate = 500_000; // 500 kbps target
+        config.rcParams.maxBitRate = 1_000_000; // 1 Mbps ceiling
+        config.rcParams.vbvBufferSize = 500_000; // 1 second of average bitrate
+        config.rcParams.vbvInitialDelay = 250_000; // half buffer
 
         // AV1 specific config
         const av1 = config.av1Config();

@@ -27,7 +27,7 @@ const SwapBuffersFn = *const fn (?*anyopaque, c_ulong) callconv(.c) void;
 export fn glXSwapBuffers(dpy: ?*anyopaque, drawable: c_ulong) callconv(.c) void {
     init();
 
-    const real: SwapBuffersFn = @ptrCast(c.dlsym(c.RTLD_NEXT, "glXSwapBuffers") orelse unreachable);
+    const real: SwapBuffersFn = @ptrCast(c.dlsym(c.RTLD_NEXT, "glXSwapBuffers") orelse return);
 
     const now = std.time.Instant.now() catch unreachable;
     const elapsed: i128 = @intCast(now.since(last));
