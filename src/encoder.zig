@@ -5,6 +5,7 @@ const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
+const ColorConversion = @import("color_conversion").ColorConversion;
 
 const log = std.log.scoped(.encoder);
 
@@ -51,6 +52,7 @@ const PipelineTimings = struct {
 };
 
 pub const Encoder = struct {
+    color_conv: ColorConversion,
     cuda_ctx: Cuda,
     nvenc: NvencEncoder,
     sink: FrameSink,
@@ -72,15 +74,19 @@ pub const Encoder = struct {
         sink: FrameSink,
         fps: u32,
     ) !Encoder {
-        var cu = try Cuda.init(first_frame.texture_id, first_frame.width, first_frame.height);
+        var color_conv = try ColorConversion.init(first_frame.width, first_frame.height);
+        errdefer color_conv.deinit();
+
+        var cu = try Cuda.init(color_conv.y_texture, color_conv.uv_texture, first_frame.width, first_frame.height);
         errdefer cu.deinit();
 
         var enc = try NvencEncoder.init(&cu, fps);
         errdefer enc.deinit();
 
-        _ = fbc; // NvFBC reference retained for future use (e.g. texture slot management)
+        _ = fbc;
 
         return .{
+            .color_conv = color_conv,
             .cuda_ctx = cu,
             .nvenc = enc,
             .sink = sink,
@@ -147,8 +153,9 @@ pub const Encoder = struct {
         // ── Stage timing ──────────────────────────────────────────
         const t0 = std.time.Instant.now() catch null;
 
-        // Copy GL texture to linear CUDA device memory
-        try self.cuda_ctx.copyGlTexture();
+        // BGRA→NV12 color conversion (GPU shaders) + copy to CUDA device memory
+        self.color_conv.convert(frame.texture_id);
+        try self.cuda_ctx.copyTextures();
 
         const t1 = std.time.Instant.now() catch null;
 
@@ -239,6 +246,7 @@ pub const Encoder = struct {
     pub fn deinit(self: *Encoder) void {
         self.nvenc.deinit();
         self.cuda_ctx.deinit();
+        self.color_conv.deinit();
         switch (self.sink) {
             .ivf => |*ivf| ivf.deinit(),
             .session => {}, // session lifetime managed by main

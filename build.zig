@@ -72,6 +72,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const color_conversion_mod = b.createModule(.{
+        .root_source_file = b.path("src/color_conversion.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    color_conversion_mod.linkSystemLibrary("gl", .{});
+
     const nvenc_mod = b.createModule(.{
         .root_source_file = b.path("src/nvenc.zig"),
         .target = target,
@@ -124,6 +132,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ivf", .module = ivf_mod },
             .{ .name = "session", .module = session_mod },
             .{ .name = "session_recorder", .module = session_recorder_mod },
+            .{ .name = "color_conversion", .module = color_conversion_mod },
         },
     });
 

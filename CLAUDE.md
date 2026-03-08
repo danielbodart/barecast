@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+## IMPORTANT: Debugging mindset
+
+When something breaks, **assume we broke it**. We are the only ones writing code here. Never deflect blame to "pre-existing issues", other code, or external factors without hard evidence. The default assumption is always: our change caused the bug. Investigate from that starting point.
+
 ## What is this?
 
 Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
