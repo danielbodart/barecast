@@ -345,11 +345,15 @@ fn appThreadEntry(result: *AppInitResult, config: AppShareConfig, slot_idx: usiz
     // Clean up on the same thread (GL/CUDA contexts are thread-local)
     share.deinit();
 
-    // Clear the session slot so it can be reused
+    // Clear the session slot. If stopAllSessions/stopSessionById already
+    // cleared it (leave/unshare), the daemon owns the free after thread.join().
+    // Otherwise we're exiting naturally and must free here.
     sessions_mutex.lock();
+    const daemon_owns_free = sessions[slot_idx].payload == null;
     sessions[slot_idx] = .{};
     sessions_mutex.unlock();
-    allocator.destroy(share);
+
+    if (!daemon_owns_free) allocator.destroy(share);
 }
 
 // ── Terminal share ───────────────────────────────────────────────────────
