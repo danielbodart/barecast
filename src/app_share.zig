@@ -426,6 +426,30 @@ pub const AppShare = struct {
             display_z[display_env.len] = 0;
             _ = c.setenv("DISPLAY", @ptrCast(display_z[0..display_env.len :0]), 1);
 
+            // Cap app frame rate via fpscap.so (LD_PRELOAD glXSwapBuffers hook).
+            // Without vsync (UseDisplayDevice "none" has no vblank), GL apps spin at 100% CPU.
+            // fpscap.so uses clock_nanosleep to pace frames — no vblank dependency.
+            {
+                var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+                if (posix.readlinkZ("/proc/self/exe", &exe_buf)) |exe_path| {
+                    // Find last '/' to get directory
+                    var dir_end: usize = 0;
+                    for (exe_path, 0..) |ch, i| {
+                        if (ch == '/') dir_end = i;
+                    }
+                    var fpscap_path: [std.fs.max_path_bytes]u8 = undefined;
+                    const suffix = "/fpscap.so";
+                    @memcpy(fpscap_path[0..dir_end], exe_path[0..dir_end]);
+                    @memcpy(fpscap_path[dir_end..][0..suffix.len], suffix);
+                    fpscap_path[dir_end + suffix.len] = 0;
+                    _ = c.setenv("LD_PRELOAD", @ptrCast(fpscap_path[0 .. dir_end + suffix.len :0]), 1);
+                } else |_| {}
+                var fps_z: [8]u8 = undefined;
+                const fps_str = std.fmt.bufPrint(&fps_z, "{d}", .{self.config.fps}) catch "30";
+                fps_z[fps_str.len] = 0;
+                _ = c.setenv("FPS", @ptrCast(fps_z[0..fps_str.len :0]), 1);
+            }
+
             // Redirect stdout/stderr to /dev/null
             const devnull = posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch posix.exit(127);
             posix.dup2(devnull, 1) catch {};

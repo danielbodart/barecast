@@ -605,6 +605,12 @@ pub const Nvenc = struct {
         av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
         // Set bitfield_flags: repeatSeqHdr=1 (bit 5), chromaFormatIDC=1 (bits 7-8)
         av1.bitfield_flags = (av1.bitfield_flags & ~@as(u32, (1 << 5) | (0x3 << 7))) | (1 << 5) | (1 << 7);
+        // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
+        // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).
+        av1.colorPrimaries = 1; // BT.709
+        av1.transferCharacteristics = 1; // BT.709
+        av1.matrixCoefficients = 1; // BT.709
+        av1.colorRange = 0; // limited range — NVENC's internal RGB→YUV uses limited (16-235)
 
         const buffer_format: u32 = NV_ENC_BUFFER_FORMAT_ARGB;
 

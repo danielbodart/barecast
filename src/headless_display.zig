@@ -94,6 +94,7 @@ pub const HeadlessDisplay = struct {
             \\Section "ServerFlags"
             \\    Option "AllowMouseOpenFail" "true"
             \\    Option "AllowEmptyInput" "true"
+            \\    Option "AutoAddDevices" "false"
             \\EndSection
             \\
             \\Section "Device"
