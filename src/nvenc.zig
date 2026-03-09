@@ -607,10 +607,6 @@ pub const Nvenc = struct {
     pitch: u32,
     frame_idx: u64,
     buffer_format: u32,
-    /// Per-frame QP delta map for foveated encoding (host memory, caller-owned).
-    /// Set before encodeFrame; null disables the map for that frame.
-    qp_delta_map: ?[*]const i8 = null,
-    qp_delta_map_size: u32 = 0,
 
     pub fn init(cu: *const cuda.Cuda, fps: u32) !Nvenc {
         // dlopen libnvidia-encode
@@ -695,7 +691,9 @@ pub const Nvenc = struct {
         config.profileGUID = profile_av1_main_guid;
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
-        config.rcParams.qpMapMode = NV_ENC_QP_MAP_EMPHASIS;
+        // NOTE: NVENC emphasis level map (NV_ENC_QP_MAP_EMPHASIS) is H.264-only
+        // as of SDK 13.0. QP_MAP_DELTA returns err_invalid_param for AV1.
+        // No per-block quality control available for AV1 on NVENC.
         // Adaptive VBR: scale bitrate with resolution.
         // ~0.015 bits/pixel/frame calibrated at 1350x800@30fps → 500kbps.
         const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
@@ -804,8 +802,6 @@ pub const Nvenc = struct {
             .outputBitstream = self.bitstream_buffer,
             .bufferFmt = self.buffer_format,
             .inputTimeStamp = self.frame_idx,
-            .qpDeltaMap = if (self.qp_delta_map) |m| @constCast(@ptrCast(m)) else null,
-            .qpDeltaMapSize = self.qp_delta_map_size,
         };
         if (force_keyframe) {
             pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR;
