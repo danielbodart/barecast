@@ -699,6 +699,9 @@ pub const Nvenc = struct {
         const av1 = config.av1Config();
         av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
         av1.bitfield_flags.repeatSeqHdr = 1;
+        av1.bitfield_flags.enableIntraRefresh = 1;
+        av1.intraRefreshPeriod = fps; // refresh over 1 second of frames
+        av1.intraRefreshCnt = fps / 5; // 6 frames of intra bands per cycle at 30fps
         av1.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
         // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
         // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).

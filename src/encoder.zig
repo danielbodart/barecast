@@ -195,7 +195,7 @@ pub const Encoder = struct {
         if (summary_interval > 0 and self.timings.samples >= summary_interval) {
             const n = self.timings.samples;
             log.info(
-                "pipeline avg: cuda={d}us encode={d}us send={d}us total={d}us | max: cuda={d}us encode={d}us send={d}us total={d}us ({d} frames, {d} skipped)",
+                "pipeline avg: cuda={d}us encode={d}us send={d}us total={d}us | max: cuda={d}us encode={d}us send={d}us total={d}us ({d} frames, {d} skipped, {d} keyframes)",
                 .{
                     self.timings.cuda_copy_us / n,
                     self.timings.encode_us / n,
@@ -207,6 +207,7 @@ pub const Encoder = struct {
                     self.timings.max_total_us,
                     n,
                     self.stats.frames_skipped,
+                    self.stats.keyframes,
                 },
             );
             if (self.recorder) |rec| {
