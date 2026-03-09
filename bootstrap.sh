@@ -11,6 +11,9 @@ export PATH="$MISE_DATA_DIR:$PATH"
 
 http() { curl --progress-bar "$@" || wget -qO- "$@"; }
 
+# Ensure submodule URLs match .gitmodules (fixes stale local cache after URL changes)
+git -C "$SCRIPT_DIR" submodule sync --quiet
+
 [[ -f "$MISE_INSTALL_PATH" ]] || http https://mise.run | sh
 mise trust --quiet "$SCRIPT_DIR"
 mise install
