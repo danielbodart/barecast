@@ -694,10 +694,11 @@ pub const Nvenc = struct {
         // NOTE: NVENC emphasis level map (NV_ENC_QP_MAP_EMPHASIS) is H.264-only
         // as of SDK 13.0. QP_MAP_DELTA returns err_invalid_param for AV1.
         // No per-block quality control available for AV1 on NVENC.
-        // Adaptive VBR: scale bitrate with resolution.
-        // ~0.015 bits/pixel/frame calibrated at 1350x800@30fps → 500kbps.
+        // Adaptive VBR: linear bitrate scaling with resolution.
+        // bitrate = 90kbps base + 0.012 bits/pixel/frame
+        // Calibrated: 150x150→98kbps, 1350x800→479kbps, 4K→3.1Mbps
         const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
-        const avg_bitrate: u32 = @intCast(@min(pixels * fps * 15 / 1000, 10_000_000));
+        const avg_bitrate: u32 = @intCast(90_000 + @min(pixels * fps * 12 / 1000, 10_000_000));
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
         config.rcParams.averageBitRate = avg_bitrate;
         config.rcParams.maxBitRate = avg_bitrate * 2;
