@@ -317,6 +317,11 @@ pub const FrameResult = struct {
     /// NvFBC hardware capture timestamp (microseconds). Populated for future
     /// use in end-to-end latency measurement (abs-capture-time RTP extension).
     capture_timestamp_us: u64,
+    /// Per-128x128-block change map from NvFBC. Each byte is non-zero if
+    /// any pixel in that block changed since the previous grab.
+    diff_map: ?[*]const u8 = null,
+    diff_map_cols: u32 = 0,
+    diff_map_rows: u32 = 0,
 };
 
 pub const NvFbc = struct {
@@ -546,6 +551,9 @@ pub const NvFbc = struct {
             .height = frame_info.dwHeight,
             .is_new = is_new,
             .capture_timestamp_us = frame_info.ulTimestampUs,
+            .diff_map = if (self.diff_map_storage) |s| s.* else null,
+            .diff_map_cols = self.setup_params.diffMapSize.w,
+            .diff_map_rows = self.setup_params.diffMapSize.h,
         };
     }
 

@@ -93,6 +93,8 @@ const NV_ENC_PARAMS_RC_CONSTQP: u32 = 0x0;
 const NV_ENC_PARAMS_RC_VBR: u32 = 0x1;
 const NV_ENC_PARAMS_RC_CBR: u32 = 0x2;
 const NV_ENC_MULTI_PASS_DISABLED: u32 = 0x0;
+const NV_ENC_QP_MAP_DELTA: u32 = 1;
+const NV_ENC_QP_MAP_EMPHASIS: u32 = 2;
 
 const NV_ENC_PIC_FLAG_FORCEIDR: u32 = 0x2;
 const NV_ENC_PIC_FLAG_EOS: u32 = 0x8;
@@ -605,6 +607,10 @@ pub const Nvenc = struct {
     pitch: u32,
     frame_idx: u64,
     buffer_format: u32,
+    /// Per-frame QP delta map for foveated encoding (host memory, caller-owned).
+    /// Set before encodeFrame; null disables the map for that frame.
+    qp_delta_map: ?[*]const i8 = null,
+    qp_delta_map_size: u32 = 0,
 
     pub fn init(cu: *const cuda.Cuda, fps: u32) !Nvenc {
         // dlopen libnvidia-encode
@@ -689,19 +695,21 @@ pub const Nvenc = struct {
         config.profileGUID = profile_av1_main_guid;
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
+        config.rcParams.qpMapMode = NV_ENC_QP_MAP_EMPHASIS;
+        // Adaptive VBR: scale bitrate with resolution.
+        // ~0.015 bits/pixel/frame calibrated at 1350x800@30fps → 500kbps.
+        const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
+        const avg_bitrate: u32 = @intCast(@min(pixels * fps * 15 / 1000, 10_000_000));
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-        config.rcParams.averageBitRate = 500_000; // 500 kbps target
-        config.rcParams.maxBitRate = 1_000_000; // 1 Mbps ceiling
-        config.rcParams.vbvBufferSize = 500_000; // 1 second of average bitrate
-        config.rcParams.vbvInitialDelay = 250_000; // half buffer
+        config.rcParams.averageBitRate = avg_bitrate;
+        config.rcParams.maxBitRate = avg_bitrate * 2;
+        config.rcParams.vbvBufferSize = avg_bitrate; // 1 second of average bitrate
+        config.rcParams.vbvInitialDelay = avg_bitrate / 2; // half buffer
 
         // AV1 specific config
         const av1 = config.av1Config();
         av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
         av1.bitfield_flags.repeatSeqHdr = 1;
-        av1.bitfield_flags.enableIntraRefresh = 1;
-        av1.intraRefreshPeriod = fps; // refresh over 1 second of frames
-        av1.intraRefreshCnt = fps / 5; // 6 frames of intra bands per cycle at 30fps
         av1.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
         // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
         // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).
@@ -731,7 +739,7 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
-        std.debug.print("NVENC: initialized AV1 encoder {}x{}\n", .{ cu.frame_width, cu.frame_height });
+        std.debug.print("NVENC: initialized AV1 encoder {}x{} (target {}kbps)\n", .{ cu.frame_width, cu.frame_height, avg_bitrate / 1000 });
 
         // Register CUDA device pointer as NVENC input
         const registerResource = fns.nvEncRegisterResource orelse return error.NvencInitFailed;
@@ -796,6 +804,8 @@ pub const Nvenc = struct {
             .outputBitstream = self.bitstream_buffer,
             .bufferFmt = self.buffer_format,
             .inputTimeStamp = self.frame_idx,
+            .qpDeltaMap = if (self.qp_delta_map) |m| @constCast(@ptrCast(m)) else null,
+            .qpDeltaMapSize = self.qp_delta_map_size,
         };
         if (force_keyframe) {
             pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR;

@@ -5,6 +5,7 @@ const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
+const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 
 const log = std.log.scoped(.encoder);
 
@@ -49,6 +50,9 @@ const PipelineTimings = struct {
         self.* = .{};
     }
 };
+
+// Max QP delta map size: ceil(3840/16) * ceil(2160/16) = 240*135 = 32400
+const max_qp_map_size: u32 = 32400;
 
 pub const Encoder = struct {
     cuda_ctx: Cuda,
@@ -152,6 +156,22 @@ pub const Encoder = struct {
 
         const t1 = std.time.Instant.now() catch null;
 
+        // Build foveated QP delta map — boost quality near cursors and active regions
+        var qp_map_buf: [max_qp_map_size]i8 = undefined;
+        const map_cols: u32 = (self.width + 15) / 16;
+        const map_rows: u32 = (self.height + 15) / 16;
+        const map_size = map_cols * map_rows;
+        if (map_size <= max_qp_map_size) {
+            const map = qp_map_buf[0..map_size];
+            @memset(map, 0);
+            self.applyFoveation(map, map_cols, map_rows, frame);
+            self.nvenc.qp_delta_map = map.ptr;
+            self.nvenc.qp_delta_map_size = map_size;
+        } else {
+            self.nvenc.qp_delta_map = null;
+            self.nvenc.qp_delta_map_size = 0;
+        }
+
         // Encode — force keyframe on PLI, first frame, or after pipeline reinit
         const force_key = pli_pending or self.force_next_keyframe;
         if (self.force_next_keyframe) self.force_next_keyframe = false;
@@ -243,6 +263,82 @@ pub const Encoder = struct {
         switch (self.sink) {
             .ivf => |*ivf| ivf.deinit(),
             .session => {}, // session lifetime managed by main
+        }
+    }
+
+    /// Build foveated emphasis map: boost quality near viewer cursors and
+    /// actively-changing screen regions (from NvFBC diff map).
+    /// Uses NVENC emphasis levels: 0 = lowest importance, 3 = highest.
+    fn applyFoveation(self: *Encoder, map: []i8, map_cols: u32, map_rows: u32, frame: nvfbc.FrameResult) void {
+        const high: i8 = 3;
+        const radius_px: u32 = 150;
+        const radius_blocks = (radius_px + 15) / 16; // in 16px macroblock units
+
+        // 1. Boost actively-changing regions from NvFBC diff map (128px blocks → 16px macroblocks)
+        if (frame.diff_map) |diff| {
+            const scale = 128 / 16; // each diff block covers 8x8 macroblocks
+            var dy: u32 = 0;
+            while (dy < frame.diff_map_rows) : (dy += 1) {
+                var dx: u32 = 0;
+                while (dx < frame.diff_map_cols) : (dx += 1) {
+                    if (diff[dy * frame.diff_map_cols + dx] != 0) {
+                        // Boost corresponding 8x8 macroblock region
+                        const mb_x0 = dx * scale;
+                        const mb_y0 = dy * scale;
+                        const mb_x1 = @min(mb_x0 + scale, map_cols);
+                        const mb_y1 = @min(mb_y0 + scale, map_rows);
+                        var my = mb_y0;
+                        while (my < mb_y1) : (my += 1) {
+                            var mx = mb_x0;
+                            while (mx < mb_x1) : (mx += 1) {
+                                map[my * map_cols + mx] = high;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Boost radial area around each viewer's cursor
+        const reg: ?*ViewerRegistry = switch (self.sink) {
+            .session => |s| s.viewer_registry,
+            .ivf => null,
+        };
+        if (reg) |r| {
+            r.mutex.lock();
+            defer r.mutex.unlock();
+            for (&r.viewers) |*v| {
+                if (!v.active) continue;
+                if (v.cursor_x == 0 and v.cursor_y == 0) continue; // no cursor data yet
+                // Cursor is in pixel coords; convert to macroblock coords
+                const cx = v.cursor_x / 16;
+                const cy = v.cursor_y / 16;
+                const r_sq = radius_blocks * radius_blocks;
+                // Bounding box in macroblock coords
+                const x0 = if (cx >= radius_blocks) cx - radius_blocks else 0;
+                const y0 = if (cy >= radius_blocks) cy - radius_blocks else 0;
+                const x1 = @min(cx + radius_blocks + 1, map_cols);
+                const y1 = @min(cy + radius_blocks + 1, map_rows);
+                var my = y0;
+                while (my < y1) : (my += 1) {
+                    var mx = x0;
+                    while (mx < x1) : (mx += 1) {
+                        const ddx = if (mx >= cx) mx - cx else cx - mx;
+                        const ddy = if (my >= cy) my - cy else cy - my;
+                        const dist_sq = ddx * ddx + ddy * ddy;
+                        if (dist_sq <= r_sq) {
+                            // Linear falloff: full emphasis at center, zero at edge
+                            const dist = std.math.sqrt(@as(f32, @floatFromInt(dist_sq)));
+                            const max_r = @as(f32, @floatFromInt(radius_blocks));
+                            const t = dist / max_r; // 0.0 at center, 1.0 at edge
+                            const emphasis: i8 = @intFromFloat(@as(f32, @floatFromInt(high)) * (1.0 - t));
+                            const idx = my * map_cols + mx;
+                            // Keep the highest emphasis
+                            if (emphasis > map[idx]) map[idx] = emphasis;
+                        }
+                    }
+                }
+            }
         }
     }
 };
