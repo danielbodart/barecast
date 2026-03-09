@@ -5,7 +5,7 @@ Highly opinionated application sharing for developers.
 - **Zero latency\*** — GPU-direct capture, hardware AV1 encode, P2P WebRTC with zero jitter buffer. End-to-end latency measured as low as 1ms on a local network. (\*We use the [abs-capture-time](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/abs-capture-time/) RTP extension to measure true capture-to-render latency, and [playout-delay](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay/) set to zero to eliminate the browser's jitter buffer entirely.)
 - **Zero CPU copy** — Pixels never leave the GPU. NvFBC capture, CUDA interop, NVENC AV1 encode — all on GPU hardware. The CPU only sees the encoded bitstream.
 - **Zero audio, zero webcam** — Screen only. This is a collaboration tool, not a video call. Use your existing voice chat.
-- **Zero legacy hardware** — Requires AV1 hardware encode (NVIDIA RTX 40-series+) to share. Requires AV1 hardware decode (most GPUs from 2020+, Apple M1+) to view. No software fallback.
+- **Zero legacy hardware** — Requires AV1 hardware encode (NVIDIA RTX 40-series+) to share. No software fallback.
 - **Zero install for viewers** — Open a URL, see the application. No native app, no extension, no plugin.
 - **Zero shaders** — NvFBC gives a GPU texture. CUDA copies it to linear device memory. NVENC encodes with internal ARGB→NV12 color space conversion. No GL shaders, no compute passes.
 - **Zero codec negotiation** — AV1 only. One codec path, simpler pipeline, fewer bugs.
@@ -197,7 +197,6 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 
 **Viewer (browser only):**
 - Any browser with AV1 WebRTC decode (Chrome 70+, Firefox 67+, Safari 17+)
-- Hardware AV1 decode recommended (M1+, most GPUs from 2020+)
 
 ## Current Status
 
