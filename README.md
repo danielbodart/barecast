@@ -116,32 +116,42 @@ NAT traversal: STUN (`stun.cloudflare.com`) for ~85% of connections, Cloudflare 
 
 No codec fallback. AV1 only. One path = simpler pipeline.
 
-### Hardware-Accelerated AV1 Features (active in our pipeline)
+### What NVENC AV1 Gives Us
 
-These are AV1 capabilities that NVENC implements in hardware and that we benefit from:
+These are encoding features we configure and benefit from in our pipeline:
 
-- **Screen Content Coding** — Intra Block Copy (IBC), palette mode, and transform skip are part of the AV1 base spec (not a bolted-on extension like HEVC SCC). These tools are designed for sharp edges, flat colors, and repeated patterns — exactly what application UIs look like.
-- **128x128 superblocks** — Large static regions (IDE backgrounds, terminal backgrounds) encode as single blocks with near-zero bits. Eliminates the need for dirty rect tracking — the encoder handles unchanged regions implicitly.
-- **Up to 7 reference frames** — Unchanged regions can reference further back in the stream, spending essentially zero bits. Combined with infinite GOP (keyframes only on PLI), this means static content is almost free.
 - **P-only GOP** — `frameIntervalP=1`, no B-frames. Minimum encode latency. Keyframes only when a viewer joins or requests one via PLI.
 - **Repeat sequence headers** — Every keyframe includes the sequence header, allowing late-joining viewers to start decoding immediately without waiting for a periodic IDR.
-- **Adaptive VBR** — Linear bitrate scaling: `90kbps + (pixels × fps × 0.012)`, capped at 10Mbps. Max bitrate = 2× average. VBV buffer = 1 second. Calibrated for screen content: 150×150→98kbps, 1080p→~1.5Mbps, 4K→~3Mbps.
+- **Adaptive VBR** — Linear bitrate scaling: `90kbps + (pixels × fps × 0.012)`, capped at 10Mbps. Max bitrate = 2× average. VBV buffer = 1 second. Calibrated for screen content: 150×150 at 98kbps, 1080p at approx 1.5Mbps, 4K at approx 3Mbps.
+- **Up to 7 reference frames** — API exposes 4 forward + 3 backward refs (matching AV1 spec). We use P-only so only forward refs apply. Values are "suggestive" per NVIDIA docs — the hardware may use fewer depending on preset.
 - **HQ tuning preset** — Counterintuitively, NVENC's high-quality preset (P4 + HQ tuning) produces better results for screen content than the low-latency preset.
 - **BT.709 color metadata** — Explicit `colorPrimaries=1, transferCharacteristics=1, matrixCoefficients=1, colorRange=limited` so browsers decode consistently instead of guessing "unspecified."
+- **Direct ARGB input** — NVENC takes ARGB directly (matching NvFBC's BGRA byte order on little-endian) and performs internal CSC to NV12. No CPU color conversion needed.
+
+### Why AV1 Over H.264/HEVC (Even Without SCC)
+
+Even without the screen content coding tools (see below), AV1 is the right choice:
+
+- **30–50% better compression** than HEVC at same quality — lower bandwidth for remote sessions
+- **One codec path** — no negotiation, no fallback matrix, simpler testing
+- **Universal browser decode** — Chrome, Firefox, Safari all support AV1 WebRTC. No plugin, no flag
+- **Future-proof** — when hardware encoders do add SCC, we flip a flag. The rest of the pipeline is unchanged
 
 ### AV1 Features We Can't Use Yet
 
-These are in the AV1 spec but not available in current hardware encoders:
+These are in the AV1 spec but not available in NVENC's fixed-function hardware:
 
 | Feature | Why we want it | Why we can't have it |
 |---|---|---|
+| **Screen Content Coding** (IBC, palette mode, transform skip) | Designed for sharp edges, flat colors, and repeated patterns — exactly what application UIs look like. Software encoders (SVT-AV1, libaom) use these to dramatically improve screen content quality. | NVENC AV1 has no API fields, no capability bits, and no configuration for any SCC tool. The fixed-function ASIC simply doesn't implement them. |
+| **128×128 superblocks** | Large static regions (IDE backgrounds, terminals) encode as single blocks with near-zero bits | NVENC tile documentation references "64×64 CTU units," suggesting 64×64 is the internal superblock size. Not configurable. |
 | **4:4:4 chroma** (High Profile) | Screen content has subpixel antialiasing with distinct R/G/B values — 4:2:0 averages them out, causing colour fringing on text edges | NVENC AV1 rejects `chromaFormatIDC != 1`. Browsers don't negotiate AV1 High Profile in WebRTC. Blocked at two independent layers. NVIDIA may add it (they did for H.264/HEVC). |
 | **Film grain synthesis** | Strip noise at encode, resynthesize at decode — saves bits on dithered/antialiased content | Not implemented in any hardware encoder. |
 | **Super-resolution** | Encode at lower resolution, upsample at decode — useful when bandwidth is tight | Not in hardware encoders. |
 | **Temporal AQ** | Adaptive quantization across frames — spend bits where temporal complexity is high | NVENC supports this for H.264/HEVC but not AV1. |
 | **Emphasis level map** | Per-block quality control (foveated encoding) — sharpen text, soften backgrounds | NVENC SDK: H.264-only. Returns `err_invalid_param` for AV1. |
 
-**What we do instead:** NVENC takes ARGB input directly (matching NvFBC's BGRA byte order on little-endian) and performs internal CSC to NV12 before encoding. AV1's screen content coding tools compensate well — text remains readable and colour fringing is minimal at typical bitrates.
+The biggest gap for screen sharing is SCC. Software encoders like SVT-AV1 with `scm=1` can use IBC and palette mode for dramatically better screen content encoding, but real-time 4K encoding on CPU isn't viable. When NVIDIA adds SCC to a future NVENC generation, our pipeline is ready — there are no architectural changes needed, just new config fields.
 
 ## Latency Telemetry
 
