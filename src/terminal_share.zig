@@ -1,11 +1,17 @@
 const std = @import("std");
 const posix = std.posix;
+const builtin = @import("builtin");
 const c = @cImport({
-    @cInclude("pty.h");
-    @cInclude("utmp.h");
+    if (builtin.os.tag == .macos) {
+        @cInclude("util.h");
+    } else {
+        @cInclude("pty.h");
+        @cInclude("utmp.h");
+    }
     @cInclude("unistd.h");
     @cInclude("stdlib.h");
     @cInclude("signal.h");
+    @cInclude("fcntl.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
 });
@@ -266,7 +272,7 @@ pub const TerminalShare = struct {
         var buf: [4096]u8 = undefined;
 
         // Set master_fd non-blocking for poll
-        const O_NONBLOCK: usize = 0o4000; // linux x86_64
+        const O_NONBLOCK: usize = c.O_NONBLOCK;
         const flags = posix.fcntl(self.master_fd, posix.F.GETFL, @as(usize, 0)) catch return;
         _ = posix.fcntl(self.master_fd, posix.F.SETFL, flags | O_NONBLOCK) catch return;
 

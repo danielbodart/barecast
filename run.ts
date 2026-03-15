@@ -5,6 +5,8 @@ import { existsSync } from "fs";
 process.env.FORCE_COLOR = "1";
 
 const SCRIPT_DIR = import.meta.dir;
+const IS_LINUX = process.platform === "linux";
+const IS_MACOS = process.platform === "darwin";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -39,7 +41,7 @@ async function ensureSubmodule() {
     }
 }
 
-async function ensureDeps() {
+async function ensureLinuxDeps() {
     const missing: string[] = [];
 
     if (!await which("pkg-config")) missing.push("pkg-config");
@@ -81,6 +83,38 @@ async function ensureDeps() {
     }
 }
 
+async function ensureMacosDeps() {
+    const missing: string[] = [];
+
+    if (!await which("cmake")) missing.push("cmake");
+    if (!await which("pkg-config")) missing.push("pkg-config");
+    if (!await which("shellcheck")) missing.push("shellcheck");
+
+    // OpenSSL (needed by libdatachannel)
+    const { exitCode: sslCheck } = await $`pkg-config --exists openssl`.quiet().nothrow();
+    if (sslCheck !== 0) missing.push("openssl");
+
+    if (missing.length > 0) {
+        if (!await which("brew")) {
+            throw new Error("Homebrew is required on macOS. Install from https://brew.sh");
+        }
+        console.log(`Installing missing packages: ${missing.join(", ")}`);
+        await $`brew install ${missing}`;
+    }
+
+    // Ensure pkg-config can find Homebrew's OpenSSL
+    const opensslPrefix = (await $`brew --prefix openssl`.quiet().nothrow()).text().trim();
+    if (opensslPrefix && existsSync(`${opensslPrefix}/lib/pkgconfig`)) {
+        process.env.PKG_CONFIG_PATH = `${opensslPrefix}/lib/pkgconfig${process.env.PKG_CONFIG_PATH ? `:${process.env.PKG_CONFIG_PATH}` : ""}`;
+    }
+}
+
+async function ensureDeps() {
+    if (IS_LINUX) return ensureLinuxDeps();
+    if (IS_MACOS) return ensureMacosDeps();
+    throw new Error(`Unsupported platform: ${process.platform}`);
+}
+
 /** In a worktree, copy pre-built cmake libs from the main repo to avoid a full rebuild. */
 async function ensureCmakeLibs() {
     if (existsSync(".zig-cache/cmake/libdatachannel.a")) return;
@@ -112,7 +146,8 @@ export async function build() {
     await ensureCmakeLibs();
     const ver = await version();
     console.log(`Building v${ver}...`);
-    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall -Dcpu=x86_64_v3`;
+    const cpuFlag = IS_LINUX ? ["-Dcpu=x86_64_v3"] : [];
+    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall ${cpuFlag}`;
 }
 
 export async function rebuildLibs() {
@@ -131,8 +166,9 @@ async function ensureZigCcWrappers() {
     const { stdout } = await $`which zig`.quiet();
     const zigPath = stdout.toString().trim();
     await $`mkdir -p ${dir}`;
-    await Bun.write(`${dir}/zig-cc`, `#!/bin/sh\nexec ${zigPath} cc -march=x86_64_v3 "$@"\n`);
-    await Bun.write(`${dir}/zig-c++`, `#!/bin/sh\nexec ${zigPath} c++ -march=x86_64_v3 "$@"\n`);
+    const archFlag = IS_LINUX ? " -march=x86_64_v3" : "";
+    await Bun.write(`${dir}/zig-cc`, `#!/bin/sh\nexec ${zigPath} cc${archFlag} "$@"\n`);
+    await Bun.write(`${dir}/zig-c++`, `#!/bin/sh\nexec ${zigPath} c++${archFlag} "$@"\n`);
     await $`chmod +x ${dir}/zig-cc ${dir}/zig-c++`;
 }
 
@@ -154,57 +190,68 @@ export async function setup() {
     await build();
     const distBin = `${SCRIPT_DIR}/dist/bin`;
 
-    // Symlink unprivileged binaries into ~/.local/bin
-    console.log("Symlinking into ~/.local/bin...");
-    await $`mkdir -p ~/.local/bin`;
-    await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
-    await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
+    if (IS_LINUX) {
+        // Symlink unprivileged binaries into ~/.local/bin
+        console.log("Symlinking into ~/.local/bin...");
+        await $`mkdir -p ~/.local/bin`;
+        await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
+        await $`ln -sf ${distBin}/zerocast-kms ~/.local/bin/zerocast-kms`;
 
-    // Ensure user is in required groups
-    const { stdout } = await $`id -nG`.quiet();
-    const groups = stdout.toString();
-    for (const [group, reason] of [
-        ["video", "GPU access"],
-        ["input", "/dev/uinput access"],
-        ["tty", "VT access for headless Xorg"],
-    ] as const) {
-        if (!groups.includes(group)) {
-            console.log(`Adding user to ${group} group (${reason})...`);
-            await $`sudo usermod -aG ${group} $USER`;
+        // Ensure user is in required groups
+        const { stdout } = await $`id -nG`.quiet();
+        const groups = stdout.toString();
+        for (const [group, reason] of [
+            ["video", "GPU access"],
+            ["input", "/dev/uinput access"],
+            ["tty", "VT access for headless Xorg"],
+        ] as const) {
+            if (!groups.includes(group)) {
+                console.log(`Adding user to ${group} group (${reason})...`);
+                await $`sudo usermod -aG ${group} $USER`;
+            }
         }
+
+        // Set capabilities on zerocast-kms
+        console.log("Setting capabilities on zerocast-kms...");
+        await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
+
+        // Install setuid helper to /usr/local/bin (must be on a non-nosuid filesystem).
+        // Home directories on eCryptfs/overlayfs ignore setuid bits.
+        console.log("Installing zerocast-xorg to /usr/local/bin (setuid root)...");
+        await $`sudo cp ${distBin}/zerocast-xorg /usr/local/bin/zerocast-xorg`;
+        await $`sudo chown root:root /usr/local/bin/zerocast-xorg`;
+        await $`sudo chmod u+s /usr/local/bin/zerocast-xorg`;
+
+        // Allow passwordless sudo for auto-update of privileged helpers.
+        const user = (await $`whoami`.quiet()).text().trim();
+        const sudoersRule = `${user} ALL=(root) NOPASSWD: /usr/bin/cp * /usr/local/bin/zerocast-xorg, /usr/bin/chown root\\:root /usr/local/bin/zerocast-xorg, /usr/bin/chmod u+s /usr/local/bin/zerocast-xorg, /usr/sbin/setcap cap_sys_admin+ep *`;
+        console.log("Installing sudoers rule for passwordless helper updates...");
+        await $`echo ${sudoersRule} | sudo tee /etc/sudoers.d/zerocast > /dev/null`;
+        await $`sudo chmod 440 /etc/sudoers.d/zerocast`;
+
+        // Create recordings directory (for debug recording)
+        const recordingsDir = `${SCRIPT_DIR}/recordings`;
+        await $`mkdir -p ${recordingsDir}`;
+
+        console.log("Setup complete.");
+        console.log("  zerocast, zerocast-kms → ~/.local/bin/ (symlinks)");
+        console.log("  zerocast-xorg → /usr/local/bin/ (setuid root)");
+        console.log(`  recordings → ${recordingsDir}`);
+        console.log("");
+        console.log("To enable debug recording, set ZEROCAST_RECORD_DIR:");
+        console.log(`  ZEROCAST_RECORD_DIR=${recordingsDir}`);
+    } else if (IS_MACOS) {
+        // Symlink into ~/.local/bin
+        console.log("Symlinking into ~/.local/bin...");
+        await $`mkdir -p ~/.local/bin`;
+        await $`ln -sf ${distBin}/zerocast ~/.local/bin/zerocast`;
+
+        console.log("Setup complete.");
+        console.log("  zerocast → ~/.local/bin/ (symlink)");
+        console.log("");
+        console.log("Ensure Screen Recording permission is granted in:");
+        console.log("  System Settings → Privacy & Security → Screen Recording");
     }
-
-    // Set capabilities on zerocast-kms
-    console.log("Setting capabilities on zerocast-kms...");
-    await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
-
-    // Install setuid helper to /usr/local/bin (must be on a non-nosuid filesystem).
-    // Home directories on eCryptfs/overlayfs ignore setuid bits.
-    console.log("Installing zerocast-xorg to /usr/local/bin (setuid root)...");
-    await $`sudo cp ${distBin}/zerocast-xorg /usr/local/bin/zerocast-xorg`;
-    await $`sudo chown root:root /usr/local/bin/zerocast-xorg`;
-    await $`sudo chmod u+s /usr/local/bin/zerocast-xorg`;
-
-    // Allow passwordless sudo for auto-update of privileged helpers.
-    // The apply-update script runs as ExecStartPre (unprivileged) and
-    // needs to copy the xorg helper + set capabilities without prompting.
-    const user = (await $`whoami`.quiet()).text().trim();
-    const sudoersRule = `${user} ALL=(root) NOPASSWD: /usr/bin/cp * /usr/local/bin/zerocast-xorg, /usr/bin/chown root\\:root /usr/local/bin/zerocast-xorg, /usr/bin/chmod u+s /usr/local/bin/zerocast-xorg, /usr/sbin/setcap cap_sys_admin+ep *`;
-    console.log("Installing sudoers rule for passwordless helper updates...");
-    await $`echo ${sudoersRule} | sudo tee /etc/sudoers.d/zerocast > /dev/null`;
-    await $`sudo chmod 440 /etc/sudoers.d/zerocast`;
-
-    // Create recordings directory (for debug recording)
-    const recordingsDir = `${SCRIPT_DIR}/recordings`;
-    await $`mkdir -p ${recordingsDir}`;
-
-    console.log("Setup complete.");
-    console.log("  zerocast, zerocast-kms → ~/.local/bin/ (symlinks)");
-    console.log("  zerocast-xorg → /usr/local/bin/ (setuid root)");
-    console.log(`  recordings → ${recordingsDir}`);
-    console.log("");
-    console.log("To enable debug recording, set ZEROCAST_RECORD_DIR:");
-    console.log(`  ZEROCAST_RECORD_DIR=${recordingsDir}`);
 }
 
 /** Default target: build + lint + unit tests. */
@@ -217,22 +264,24 @@ export async function dev() {
 }
 
 export async function dist() {
-    // Validate no absolute RUNPATH (must be $ORIGIN or empty)
-    const { stdout: rpathOut } = await $`readelf -d dist/bin/zerocast 2>/dev/null`.quiet();
-    const rpathLines = rpathOut.toString().split("\n").filter(l => l.includes("RUNPATH") || l.includes("RPATH"));
-    const absolutePaths = rpathLines.filter(l => !l.includes("$ORIGIN") && /\/[a-zA-Z]/.test(l));
-    if (absolutePaths.length > 0) {
-        console.error("ERROR: binary has hardcoded absolute RUNPATH:");
-        absolutePaths.forEach(l => console.error(`  ${l.trim()}`));
-        process.exit(1);
-    }
+    if (IS_LINUX) {
+        // Validate no absolute RUNPATH (must be $ORIGIN or empty)
+        const { stdout: rpathOut } = await $`readelf -d dist/bin/zerocast 2>/dev/null`.quiet();
+        const rpathLines = rpathOut.toString().split("\n").filter(l => l.includes("RUNPATH") || l.includes("RPATH"));
+        const absolutePaths = rpathLines.filter(l => !l.includes("$ORIGIN") && /\/[a-zA-Z]/.test(l));
+        if (absolutePaths.length > 0) {
+            console.error("ERROR: binary has hardcoded absolute RUNPATH:");
+            absolutePaths.forEach(l => console.error(`  ${l.trim()}`));
+            process.exit(1);
+        }
 
-    // Validate no AVX-512 instructions (must be portable to x86_64_v3)
-    const { stdout: objdumpOut } = await $`objdump -d dist/bin/zerocast | grep -c 'zmm\\|%k[0-7],'`.quiet().nothrow();
-    const avx512Count = parseInt(objdumpOut.toString().trim()) || 0;
-    if (avx512Count > 0) {
-        console.error(`ERROR: binary contains ${avx512Count} AVX-512 instructions (not portable)`);
-        process.exit(1);
+        // Validate no AVX-512 instructions (must be portable to x86_64_v3)
+        const { stdout: objdumpOut } = await $`objdump -d dist/bin/zerocast | grep -c 'zmm\\|%k[0-7],'`.quiet().nothrow();
+        const avx512Count = parseInt(objdumpOut.toString().trim()) || 0;
+        if (avx512Count > 0) {
+            console.error(`ERROR: binary contains ${avx512Count} AVX-512 instructions (not portable)`);
+            process.exit(1);
+        }
     }
 
     // Copy dist scripts into tarball staging area
@@ -243,9 +292,14 @@ export async function dist() {
 
     const ver = await version();
     await Bun.write("dist/VERSION", ver);
-    await $`tar -czf zerocast-linux-x86_64.tar.gz -C dist bin/ VERSION install.sh zerocast-update.sh zerocast-apply-update.sh zerocast-rollback.sh`;
-    await $`sha256sum zerocast-linux-x86_64.tar.gz > zerocast-linux-x86_64.tar.gz.sha256`;
-    console.log(`Tarball: zerocast-linux-x86_64.tar.gz (v${ver})`);
+
+    const arch = IS_MACOS ? "arm64" : "x86_64";
+    const os = IS_MACOS ? "macos" : "linux";
+    const tarball = `zerocast-${os}-${arch}.tar.gz`;
+    await $`tar -czf ${tarball} -C dist bin/ VERSION install.sh zerocast-update.sh zerocast-apply-update.sh zerocast-rollback.sh`;
+    await $`sha256sum ${tarball} > ${tarball}.sha256`.nothrow(); // sha256sum may not exist on macOS
+    if (IS_MACOS) await $`shasum -a 256 ${tarball} > ${tarball}.sha256`.nothrow();
+    console.log(`Tarball: ${tarball} (v${ver})`);
 }
 
 export async function install() {
@@ -279,7 +333,8 @@ export async function ci() {
     await $`zig build test`;
 
     console.log(`Building v${ver}...`);
-    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall -Dcpu=x86_64_v3`;
+    const cpuFlag = IS_LINUX ? ["-Dcpu=x86_64_v3"] : [];
+    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall ${cpuFlag}`;
     await dist();
 
     // Worker: install deps, build viewer TS, deploy to production
@@ -291,12 +346,15 @@ export async function ci() {
     // GitHub release
     if (process.env.GH_TOKEN) {
         const commitMsg = (await $`git log -1 --format=%B`.quiet()).text().trim();
+        const arch = IS_MACOS ? "arm64" : "x86_64";
+        const os = IS_MACOS ? "macos" : "linux";
+        const tarball = `zerocast-${os}-${arch}.tar.gz`;
         console.log(`Creating release v${ver}...`);
-        await $`gh release create v${ver} zerocast-linux-x86_64.tar.gz zerocast-linux-x86_64.tar.gz.sha256 --title v${ver} --notes ${commitMsg}`;
+        await $`gh release create v${ver} ${tarball} ${tarball}.sha256 --title v${ver} --notes ${commitMsg}`;
     }
 }
 
-// ─── Integration test (requires GPU) ──────────────────────────────────────
+// ─── Integration test (requires GPU on Linux, Screen Recording on macOS) ──
 
 export async function integration() {
     await build();

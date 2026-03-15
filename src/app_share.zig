@@ -8,6 +8,7 @@ const NvFbc = nvfbc.NvFbc;
 const Box = nvfbc.Box;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
+const NvencBackend = @import("encoder_nvenc").NvencBackend;
 const BroadcastSession = @import("session").BroadcastSession;
 const InputHandler = @import("session").InputHandler;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
@@ -47,6 +48,7 @@ pub const AppShare = struct {
     xinput: ?XTestInput,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
+    nvenc_backend: NvencBackend,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -196,19 +198,32 @@ pub const AppShare = struct {
         }
         const t_session = ts.elapsed(&t);
 
-        // Encoder
-        self.encoder = Encoder.init(&fbc, first_frame, .{ .session = &self.session }, config.fps) catch |err| {
+        // Encoder backend (CUDA + NVENC)
+        self.nvenc_backend = NvencBackend.init(first_frame.texture_id, first_frame.width, first_frame.height, config.fps) catch |err| {
+            log.err("encoder backend init failed: {}", .{err});
+            self.session.deinit();
+            return error.EncoderInitFailed;
+        };
+        self.encoder = Encoder.init(
+            self.nvenc_backend.backend(),
+            first_frame.width,
+            first_frame.height,
+            .{ .session = &self.session },
+            config.fps,
+        ) catch |err| {
             log.err("encoder init failed: {}", .{err});
+            self.nvenc_backend.nvenc.deinit();
+            self.nvenc_backend.cuda_ctx.deinit();
             self.session.deinit();
             return error.EncoderInitFailed;
         };
         // Propagate detected codec to session (must happen before session.start())
-        self.session.codec = self.encoder.nvenc.codec;
+        self.session.codec = self.nvenc_backend.codec();
         const t_encoder = ts.elapsed(&t);
 
         // Recording (optional — enabled by ZEROCAST_RECORD_DIR env)
         self.recorder = if (config.record_dir) |dir|
-            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, first_frame.width, first_frame.height, self.encoder.nvenc.codec)
+            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, first_frame.width, first_frame.height, self.nvenc_backend.codec())
         else
             null;
         if (self.recorder != null) {
@@ -239,7 +254,7 @@ pub const AppShare = struct {
             return;
         };
 
-        self.encoder.processFrame(first_frame) catch |err| {
+        self.encoder.processFrame(first_frame.is_new) catch |err| {
             log.err("first frame encode error: {}", .{err});
             return;
         };
@@ -355,12 +370,22 @@ pub const AppShare = struct {
                 };
                 const t_grab = ts.elapsed(&t);
 
-                // 7. Rebuild encoder
-                self.encoder = Encoder.init(&self.fbc, new_frame, .{ .session = &self.session }, self.config.fps) catch |e| {
+                // 7. Rebuild encoder backend + encoder
+                self.nvenc_backend = NvencBackend.init(new_frame.texture_id, new_frame.width, new_frame.height, self.config.fps) catch |e| {
+                    log.err("encoder backend reinit failed: {}", .{e});
+                    break :loop;
+                };
+                self.encoder = Encoder.init(
+                    self.nvenc_backend.backend(),
+                    new_frame.width,
+                    new_frame.height,
+                    .{ .session = &self.session },
+                    self.config.fps,
+                ) catch |e| {
                     log.err("encoder reinit failed: {}", .{e});
                     break :loop;
                 };
-                self.session.codec = self.encoder.nvenc.codec;
+                self.session.codec = self.nvenc_backend.codec();
                 if (self.recorder) |*rec| {
                     self.encoder.recorder = rec;
                     rec.updateResolution(new_frame.width, new_frame.height);
@@ -390,7 +415,7 @@ pub const AppShare = struct {
                 break;
             };
 
-            self.encoder.processFrame(frame) catch |err| {
+            self.encoder.processFrame(frame.is_new) catch |err| {
                 log.err("encode error: {}", .{err});
                 break;
             };

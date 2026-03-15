@@ -1,7 +1,7 @@
 # macOS Port Plan
 
-Status: **Planning complete, implementation not started**
-Date: 2026-03-14
+Status: **Phase 2 complete — virtual display + window-level capture working**
+Date: 2026-03-15
 Minimum macOS: 14.0 (Sonoma) — required for CGVirtualDisplay
 Minimum hardware: Apple Silicon M1 — required for VideoToolbox HEVC encode
 
@@ -153,33 +153,59 @@ libdatachannel's `rtcAddTrackEx` already supports H.265 payload type and packeti
 
 ## Implementation Phases
 
-### Phase 1: Prove the pipeline (PoC)
+### Phase 1: Prove the pipeline (PoC) — DONE
 
 Goal: Capture a window and encode to HEVC on disk.
 
-- Build VideoToolbox HEVC encoder (`src/macos/videotoolbox.zig`)
-  - VTCompressionSession create with HEVC codec
-  - Accept CVPixelBuffer (IOSurface-backed), encode, extract NAL units
-  - Low-latency mode (`kVTCompressionPropertyKey_RealTime`)
-  - Bitrate control matching Linux formula (90kbps + 0.012 bps/pixel/frame)
-- Build ScreenCaptureKit wrapper (`src/macos/screen_capture.m`)
-  - Enumerate displays/windows via SCShareableContent
-  - Create SCStream with 420YpCbCr8BiPlanar pixel format
-  - Frame callback delivers CVPixelBuffer to Zig
-- Wire together: capture any visible window → encode → IVF file
-- Integration test: capture 3s, validate with ffprobe (mirrors Linux integration test)
-- Build system: `build.zig` compiles on macOS, `run.ts` detects OS, `brew` deps
+Completed:
+- VideoToolbox HEVC encoder (`src/macos/videotoolbox.m` + `encoder_videotoolbox.zig`)
+  - VTCompressionSession with HEVC codec, low-latency mode
+  - Accepts CVPixelBuffer, outputs Annex B NAL units (AVCC → Annex B conversion)
+  - ~2 bits/pixel bitrate, no B-frames
+- ScreenCaptureKit wrapper (`src/macos/screen_capture.m`)
+  - Display-level and window-level capture modes
+  - CVPixelBuffer retain/release lifecycle for thread safety
+- Encoder abstraction (`src/encoder.zig` with `EncodeBackend` vtable)
+  - `encoder_nvenc.zig` — NVIDIA backend
+  - `encoder_videotoolbox.zig` — macOS backend
+  - Both implement the same contract; encoder.zig has shared orchestration
+- Build system split: `build.zig` + `build_shared.zig` + `build_linux.zig` + `build_macos.zig`
+- `run.ts` platform detection (macOS deps via brew, no `-march=x86_64_v3`)
+- Portability fixes: `control.zig` getuid, `terminal_share.zig` pty.h + O_NONBLOCK
+- Raw Annex B `.hevc` output (IVF is AV1-specific; HEVC uses raw Annex B)
+- Validated: ffprobe confirms HEVC Main profile, 1920x1080, yuv420p, correct frame count
 
-### Phase 2: Virtual display + app isolation
+### Phase 2: Virtual display + app isolation — DONE
 
 Goal: Run an app on a hidden display and capture it.
 
-- Build CGVirtualDisplay helper process (`zerocast-vd`)
-  - Create virtual display at requested resolution
-  - Write display ID to stdout, hold alive until SIGTERM
-- Launch target app, move its window to the virtual display
-- Capture from virtual display via ScreenCaptureKit (filter by SCDisplay matching display ID)
-- End-to-end: launch app → hidden display → HEVC → IVF
+**Key discovery: virtual display not needed for most apps.** ScreenCaptureKit supports
+`SCContentFilter initWithDesktopIndependentWindow:` which captures just the window
+content — no title bar, no desktop background, no decorations. Combined with moving
+the window off-screen (`AXUIElementSetAttributeValue` with position `(-16000, 0)`),
+this gives the same isolation as Linux's headless Xorg approach but simpler.
+
+Completed:
+- Window-level capture: `sc_capture_create_window(window_id, fps)` captures just the
+  app content at the exact window size — no wasted pixels, no decorations
+- App launcher: `sc_launch_app_offscreen(app_path, &pid)` launches an app via
+  NSWorkspace, detects its window via CGWindowListCopyWindowInfo, moves it off-screen
+  via AXUIElement (Accessibility API), returns the window ID for capture
+- `capture_test.zig` — end-to-end test: launch Calculator → off-screen → window capture → HEVC
+- CGVirtualDisplay helper (`zerocast-vd`) — also implemented as a fallback for apps
+  that need a real display to render (games, OpenGL). Uses private CGVirtualDisplay API
+  with helper process pattern (display lives as long as helper runs). Key findings:
+  - `vendorID`/`productID` must be non-zero (macOS 15 rejects all-zero)
+  - `terminationHandler` must be set
+  - `dispatch_get_main_queue()` required (not global queue)
+  - SkyLight framework not needed for basic functionality
+
+**Virtual display kept as optional fallback**, not the default path. Window-level
+capture is preferred because:
+- No extra display in System Settings → Displays
+- Captures exact window content (auto-sized, no decorations)
+- Simpler (no helper process needed)
+- Works for all standard macOS apps
 
 ### Phase 3: WebRTC streaming
 
@@ -187,13 +213,13 @@ Goal: Stream to the browser viewer.
 
 - Wire VideoToolbox bitstream output into `BroadcastSession.sendFrame()`
 - Build macOS app share orchestrator (`src/macos/app_share.zig`)
-  - Owns virtual display helper lifecycle
-  - Owns ScreenCaptureKit stream
+  - Owns app launcher + window lifecycle
+  - Owns ScreenCaptureKit window-level capture
   - Owns VideoToolbox encoder
   - Connects to BroadcastSession
-- Update `session.zig` track description for H.265 (comptime codec selection)
-- Update `worker/src/viewer.ts` to handle HEVC codec negotiation
-- End-to-end: hidden app → HEVC → WebRTC → browser viewer
+- HEVC WebRTC support is now on trunk (added to NVIDIA pipeline too) — rebase to pick up
+  session.zig H.265 track support and viewer.ts HEVC codec negotiation
+- End-to-end: off-screen app → window capture → HEVC → WebRTC → browser viewer
 
 ### Phase 4: Input injection
 

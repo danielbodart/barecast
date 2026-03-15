@@ -1,0 +1,148 @@
+const std = @import("std");
+const shared_defs = @import("build_shared.zig");
+
+/// Create macOS-specific modules and return the platform module set.
+pub fn buildPlatform(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    shared: shared_defs.SharedModules,
+) shared_defs.PlatformModules {
+    // --- VideoToolbox encoder backend (HEVC via VTCompressionSession) ---
+    const encoder_vt_mod = b.createModule(.{
+        .root_source_file = b.path("src/macos/encoder_videotoolbox.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "encoder", .module = shared.encoder },
+        },
+    });
+    encoder_vt_mod.addIncludePath(b.path("src"));
+    encoder_vt_mod.addCSourceFile(.{
+        .file = b.path("src/macos/videotoolbox.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    encoder_vt_mod.linkFramework("VideoToolbox", .{});
+    encoder_vt_mod.linkFramework("CoreMedia", .{});
+    encoder_vt_mod.linkFramework("CoreVideo", .{});
+    encoder_vt_mod.linkSystemLibrary("objc", .{});
+
+    // --- App share module (ScreenCaptureKit capture + VideoToolbox encode) ---
+    const app_share_mod = b.createModule(.{
+        .root_source_file = b.path("src/macos/app_share.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "encoder", .module = shared.encoder },
+            .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
+        },
+    });
+    app_share_mod.addIncludePath(b.path("src"));
+    app_share_mod.addCSourceFile(.{
+        .file = b.path("src/macos/screen_capture.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    app_share_mod.linkFramework("ScreenCaptureKit", .{});
+    app_share_mod.linkFramework("CoreMedia", .{});
+    app_share_mod.linkFramework("CoreVideo", .{});
+    app_share_mod.linkFramework("CoreGraphics", .{});
+    app_share_mod.linkFramework("Foundation", .{});
+    app_share_mod.linkFramework("AppKit", .{});
+    app_share_mod.linkFramework("ApplicationServices", .{});
+    app_share_mod.linkSystemLibrary("objc", .{});
+
+    // --- Capture test binary (PoC: virtual display + capture → HEVC file) ---
+    const capture_test = b.addExecutable(.{
+        .name = "capture-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/macos/capture_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "encoder", .module = shared.encoder },
+                .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
+            },
+        }),
+    });
+    capture_test.root_module.addIncludePath(b.path("src"));
+    capture_test.root_module.addCSourceFile(.{
+        .file = b.path("src/macos/screen_capture.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
+    capture_test.root_module.linkFramework("ScreenCaptureKit", .{});
+    capture_test.root_module.linkFramework("CoreMedia", .{});
+    capture_test.root_module.linkFramework("CoreVideo", .{});
+    capture_test.root_module.linkFramework("CoreGraphics", .{});
+    capture_test.root_module.linkFramework("Foundation", .{});
+    capture_test.root_module.linkFramework("AppKit", .{});
+    capture_test.root_module.linkFramework("ApplicationServices", .{});
+    capture_test.root_module.linkSystemLibrary("objc", .{});
+    b.installArtifact(capture_test);
+
+    return .{ .app_share = app_share_mod };
+}
+
+/// Install macOS-specific extra binaries.
+pub fn buildExtraArtifacts(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    shared: shared_defs.SharedModules,
+) void {
+    _ = target;
+    _ = optimize;
+    _ = shared;
+
+    // --- zerocast-vd (CGVirtualDisplay helper process) ---
+    // Built as a plain C/ObjC executable via system command since it's
+    // a standalone process with its own main() in a .m file.
+    const vd_helper = b.addSystemCommand(&.{
+        "clang",
+        "-fobjc-arc",
+        "-framework", "Foundation",
+        "-framework", "CoreGraphics",
+        "-framework", "AppKit",
+        "-o",
+    });
+    const vd_output = vd_helper.addOutputFileArg("zerocast-vd");
+    vd_helper.addFileArg(b.path("src/macos/vd_helper.m"));
+    b.getInstallStep().dependOn(&b.addInstallBinFile(vd_output, "zerocast-vd").step);
+}
+
+/// Create the cmake rebuild-libs step for libdatachannel on macOS.
+pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
+    const cmake_build_dir = ".zig-cache/cmake";
+
+    const zig_cc_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-cc" });
+    const zig_cxx_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-c++" });
+
+    const cmake_configure = b.addSystemCommand(&.{
+        "cmake",
+        "-S",
+        "libdatachannel",
+        "-B",
+        cmake_build_dir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DNO_EXAMPLES=ON",
+        "-DNO_TESTS=ON",
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+    });
+    cmake_configure.addArg(b.fmt("-DCMAKE_C_COMPILER={s}", .{zig_cc_path}));
+    cmake_configure.addArg(b.fmt("-DCMAKE_CXX_COMPILER={s}", .{zig_cxx_path}));
+
+    const cmake_build = b.addSystemCommand(&.{
+        "cmake",
+        "--build",
+        cmake_build_dir,
+        "--config",
+        "Release",
+        "--parallel",
+    });
+    cmake_build.step.dependOn(&cmake_configure.step);
+
+    return &cmake_build.step;
+}

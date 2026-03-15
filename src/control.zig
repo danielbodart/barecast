@@ -194,11 +194,11 @@ pub fn writeSimpleOk(buf: []u8) ?[]const u8 {
 // ── Socket path ──────────────────────────────────────────────────────────
 
 pub fn getSocketPath(buf: *[256]u8) ?[]const u8 {
-    // XDG_RUNTIME_DIR is /run/user/$UID on systemd systems
+    // XDG_RUNTIME_DIR is /run/user/$UID on systemd systems (Linux).
+    // On macOS, falls back to /tmp/zerocast-$UID.sock.
     const runtime_dir = std.process.getEnvVarOwned(std.heap.c_allocator, "XDG_RUNTIME_DIR") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => {
-            // Fallback: /tmp/zerocast-$UID.sock
-            const uid = std.os.linux.getuid();
+            const uid = std.posix.getuid();
             const path = std.fmt.bufPrint(buf, "/tmp/zerocast-{d}.sock", .{uid}) catch return null;
             return path;
         },

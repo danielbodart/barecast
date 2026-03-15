@@ -1,17 +1,60 @@
 const std = @import("std");
-const nvfbc = @import("nvfbc");
-const Cuda = @import("cuda").Cuda;
-const NvencEncoder = @import("nvenc").Nvenc;
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const log = std.log.scoped(.encoder);
 
+// ── Encoder backend contract ─────────────────────────────────────────────
+
+/// A single encoded frame returned by the backend.
+pub const EncodedFrame = struct {
+    data: []const u8,
+    is_key: bool,
+    pts: u64,
+};
+
+/// Platform-agnostic encoder backend. Each platform (NVENC, VideoToolbox)
+/// provides a struct that can be erased into this vtable.
+pub const EncodeBackend = struct {
+    ptr: *anyopaque,
+    /// Prepare the next frame for encoding (e.g. GPU texture copy).
+    /// Called once per frame before encodeFn.
+    prepareFn: *const fn (*anyopaque) anyerror!void,
+    /// Encode one frame. Returns encoded bitstream or null if the encoder
+    /// needs more input. Caller must call unlockFn after consuming data.
+    encodeFn: *const fn (*anyopaque, force_key: bool) anyerror!?EncodedFrame,
+    /// Release the encoded bitstream buffer. Must be called after each
+    /// successful encodeFn that returned non-null.
+    unlockFn: *const fn (*anyopaque) void,
+    deinitFn: *const fn (*anyopaque) void,
+
+    pub fn prepare(self: EncodeBackend) !void {
+        return self.prepareFn(self.ptr);
+    }
+
+    pub fn encode(self: EncodeBackend, force_key: bool) !?EncodedFrame {
+        return self.encodeFn(self.ptr, force_key);
+    }
+
+    pub fn unlock(self: EncodeBackend) void {
+        self.unlockFn(self.ptr);
+    }
+
+    pub fn deinit(self: EncodeBackend) void {
+        self.deinitFn(self.ptr);
+    }
+};
+
+// ── Frame sink ───────────────────────────────────────────────────────────
+
 pub const FrameSink = union(enum) {
     ivf: IvfWriter,
     session: *BroadcastSession,
+    none, // No sink — caller writes encoded data directly (e.g. macOS PoC)
 };
+
+// ── Encoder (shared orchestration) ───────────────────────────────────────
 
 pub const Stats = struct {
     frames_encoded: u64 = 0,
@@ -22,23 +65,23 @@ pub const Stats = struct {
 
 /// Rolling averages for pipeline stage durations (microseconds).
 const PipelineTimings = struct {
-    cuda_copy_us: u64 = 0,
+    prepare_us: u64 = 0,
     encode_us: u64 = 0,
     send_us: u64 = 0,
     total_us: u64 = 0,
-    max_cuda_copy_us: u64 = 0,
+    max_prepare_us: u64 = 0,
     max_encode_us: u64 = 0,
     max_send_us: u64 = 0,
     max_total_us: u64 = 0,
     samples: u64 = 0,
 
-    fn accumulate(self: *PipelineTimings, cuda_copy: u64, encode: u64, send: u64) void {
-        self.cuda_copy_us += cuda_copy;
+    fn accumulate(self: *PipelineTimings, prepare: u64, encode: u64, send: u64) void {
+        self.prepare_us += prepare;
         self.encode_us += encode;
         self.send_us += send;
-        const total = cuda_copy + encode + send;
+        const total = prepare + encode + send;
         self.total_us += total;
-        self.max_cuda_copy_us = @max(self.max_cuda_copy_us, cuda_copy);
+        self.max_prepare_us = @max(self.max_prepare_us, prepare);
         self.max_encode_us = @max(self.max_encode_us, encode);
         self.max_send_us = @max(self.max_send_us, send);
         self.max_total_us = @max(self.max_total_us, total);
@@ -51,8 +94,7 @@ const PipelineTimings = struct {
 };
 
 pub const Encoder = struct {
-    cuda_ctx: Cuda,
-    nvenc: NvencEncoder,
+    backend: EncodeBackend,
     sink: FrameSink,
     stats: Stats,
     timer: std.time.Timer,
@@ -66,45 +108,32 @@ pub const Encoder = struct {
     idle_keyframe_sent: bool = false,
     force_next_keyframe: bool = false,
 
-    pub fn init(
-        fbc: *nvfbc.NvFbc,
-        first_frame: nvfbc.FrameResult,
-        sink: FrameSink,
-        fps: u32,
-    ) !Encoder {
-        var cu = try Cuda.init(first_frame.texture_id, first_frame.width, first_frame.height);
-        errdefer cu.deinit();
-
-        var enc = try NvencEncoder.init(&cu, fps);
-        errdefer enc.deinit();
-
-        _ = fbc; // NvFBC reference retained for future use (e.g. texture slot management)
-
+    pub fn init(backend: EncodeBackend, width: u32, height: u32, sink: FrameSink, fps: u32) !Encoder {
         return .{
-            .cuda_ctx = cu,
-            .nvenc = enc,
+            .backend = backend,
             .sink = sink,
             .stats = .{},
             .timer = try std.time.Timer.start(),
             .timings = .{},
-            .width = first_frame.width,
-            .height = first_frame.height,
+            .width = width,
+            .height = height,
             .fps = fps,
         };
     }
 
-    /// Process one captured frame: CUDA copy → NVENC encode → sink dispatch.
-    pub fn processFrame(self: *Encoder, frame: nvfbc.FrameResult) !void {
+    /// Process one captured frame: prepare → encode → sink dispatch.
+    /// `is_new` indicates whether the frame content changed since last call.
+    pub fn processFrame(self: *Encoder, is_new: bool) !void {
         // Even when idle, the first PLI (viewer join) must be serviced — encode
         // the last captured texture as a keyframe so new viewers can start decoding.
         // Subsequent PLIs while still idle are ignored to avoid periodic keyframe bursts.
         const pli_raw = switch (self.sink) {
             .session => |s| s.shouldForceKeyframe(),
-            .ivf => false,
+            .ivf, .none => false,
         };
         const pli_pending = pli_raw and !self.idle_keyframe_sent;
 
-        if (!frame.is_new and !pli_pending) {
+        if (!is_new and !pli_pending) {
             self.stats.frames_skipped += 1;
             self.consecutive_skips += 1;
             // Log idle state once after ~1s of no changes
@@ -115,11 +144,11 @@ pub const Encoder = struct {
             return;
         }
 
-        if (pli_pending and !frame.is_new) {
+        if (pli_pending and !is_new) {
             // Idle PLI — send one keyframe but stay in idle state
             log.info("idle PLI — sending keyframe after {d} skipped frames", .{self.consecutive_skips});
             self.idle_keyframe_sent = true;
-        } else if (frame.is_new) {
+        } else if (is_new) {
             // Real content change — reset idle tracking
             if (self.idle_logged) {
                 log.info("resuming encode after {d} skipped frames", .{self.consecutive_skips});
@@ -147,24 +176,25 @@ pub const Encoder = struct {
         // ── Stage timing ──────────────────────────────────────────
         const t0 = std.time.Instant.now() catch null;
 
-        // Copy GL texture to linear CUDA device memory
-        try self.cuda_ctx.copyGlTexture();
+        // Prepare frame for encoding (e.g. GPU texture copy)
+        try self.backend.prepare();
 
         const t1 = std.time.Instant.now() catch null;
 
         // Encode — force keyframe on PLI, first frame, or after pipeline reinit
         const force_key = pli_pending or self.force_next_keyframe;
         if (self.force_next_keyframe) self.force_next_keyframe = false;
-        const maybe_encoded = try self.nvenc.encodeFrame(force_key);
+        const maybe_encoded = try self.backend.encode(force_key);
 
         const t2 = std.time.Instant.now() catch null;
 
         if (maybe_encoded) |encoded| {
-            defer self.nvenc.unlockBitstream();
+            defer self.backend.unlock();
 
             switch (self.sink) {
                 .ivf => |*ivf| try ivf.writeFrame(encoded.data, pts_ms),
                 .session => |s| s.sendFrame(encoded.data, pts_ms, capture_ntp),
+                .none => {},
             }
             if (self.recorder) |rec| {
                 rec.writeFrame(encoded.data, pts_ms, &self.timer);
@@ -177,15 +207,15 @@ pub const Encoder = struct {
 
         // ── Accumulate timing ─────────────────────────────────────
         if (t0 != null and t1 != null and t2 != null and t3 != null) {
-            const cuda_us = t1.?.since(t0.?) / std.time.ns_per_us;
+            const prepare_us = t1.?.since(t0.?) / std.time.ns_per_us;
             const encode_us = t2.?.since(t1.?) / std.time.ns_per_us;
             const send_us = t3.?.since(t2.?) / std.time.ns_per_us;
 
-            log.debug("frame {d}: cuda={d}us encode={d}us send={d}us pts={d}ms", .{
-                self.stats.frames_encoded, cuda_us, encode_us, send_us, pts_ms,
+            log.debug("frame {d}: prepare={d}us encode={d}us send={d}us pts={d}ms", .{
+                self.stats.frames_encoded, prepare_us, encode_us, send_us, pts_ms,
             });
 
-            self.timings.accumulate(cuda_us, encode_us, send_us);
+            self.timings.accumulate(prepare_us, encode_us, send_us);
         }
 
         self.stats.frames_encoded += 1;
@@ -195,13 +225,13 @@ pub const Encoder = struct {
         if (summary_interval > 0 and self.timings.samples >= summary_interval) {
             const n = self.timings.samples;
             log.info(
-                "pipeline avg: cuda={d}us encode={d}us send={d}us total={d}us | max: cuda={d}us encode={d}us send={d}us total={d}us ({d} frames, {d} skipped, {d} keyframes)",
+                "pipeline avg: prepare={d}us encode={d}us send={d}us total={d}us | max: prepare={d}us encode={d}us send={d}us total={d}us ({d} frames, {d} skipped, {d} keyframes)",
                 .{
-                    self.timings.cuda_copy_us / n,
+                    self.timings.prepare_us / n,
                     self.timings.encode_us / n,
                     self.timings.send_us / n,
                     self.timings.total_us / n,
-                    self.timings.max_cuda_copy_us,
+                    self.timings.max_prepare_us,
                     self.timings.max_encode_us,
                     self.timings.max_send_us,
                     self.timings.max_total_us,
@@ -212,7 +242,7 @@ pub const Encoder = struct {
             );
             if (self.recorder) |rec| {
                 rec.logTimings(
-                    self.timings.cuda_copy_us / n,
+                    self.timings.prepare_us / n,
                     self.timings.encode_us / n,
                     self.timings.send_us / n,
                     self.timings.total_us / n,
@@ -233,17 +263,15 @@ pub const Encoder = struct {
                 self.fps,
                 1,
             ),
-            .session => {},
+            .session, .none => {},
         }
     }
 
     pub fn deinit(self: *Encoder) void {
-        self.nvenc.deinit();
-        self.cuda_ctx.deinit();
+        self.backend.deinit();
         switch (self.sink) {
             .ivf => |*ivf| ivf.deinit(),
-            .session => {}, // session lifetime managed by main
+            .session, .none => {}, // session lifetime managed by main
         }
     }
-
 };
