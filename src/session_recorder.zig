@@ -1,6 +1,7 @@
 const std = @import("std");
 const IvfWriter = @import("ivf").IvfWriter;
 const build_options = @import("build_options");
+const Codec = @import("codec").Codec;
 
 const log = std.log.scoped(.recorder);
 
@@ -12,14 +13,20 @@ const log = std.log.scoped(.recorder);
 /// Alongside each IVF chunk, a `.log` file captures structured session
 /// diagnostics (events, timing summaries, stats).
 pub const SessionRecorder = struct {
+    const ChunkWriter = union(enum) {
+        ivf: IvfWriter,
+        raw: std.fs.File,
+    };
+
     dir: std.fs.Dir,
     seq: usize,
     keep_bytes: u64,
     chunk_duration_ns: u64,
     fps: u32,
+    codec: Codec,
 
     // Current chunk state
-    ivf: ?IvfWriter,
+    chunk: ?ChunkWriter,
     chunk_start_ns: u64,
     chunk_bytes: u64,
     width: u32,
@@ -42,6 +49,7 @@ pub const SessionRecorder = struct {
         fps: u32,
         width: u32,
         height: u32,
+        codec: Codec,
     ) ?SessionRecorder {
         const dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
             log.warn("cannot open recording dir {s}: {}", .{ dir_path, err });
@@ -54,7 +62,8 @@ pub const SessionRecorder = struct {
             .keep_bytes = max_total_default,
             .chunk_duration_ns = chunk_duration_default_s * std.time.ns_per_s,
             .fps = fps,
-            .ivf = null,
+            .codec = codec,
+            .chunk = null,
             .chunk_start_ns = 0,
             .chunk_bytes = 0,
             .width = width,
@@ -72,16 +81,27 @@ pub const SessionRecorder = struct {
     pub fn writeFrame(self: *SessionRecorder, data: []const u8, pts_ms: u64, timer: *std.time.Timer) void {
         // Check if we need to rotate
         const elapsed_ns = timer.read();
-        if (elapsed_ns - self.chunk_start_ns >= self.chunk_duration_ns and self.ivf != null) {
+        if (elapsed_ns - self.chunk_start_ns >= self.chunk_duration_ns and self.chunk != null) {
             self.rotateChunk(timer);
         }
 
-        if (self.ivf) |*ivf| {
-            ivf.writeFrame(data, pts_ms) catch |err| {
-                log.warn("recording write failed: {}", .{err});
-                return;
-            };
-            self.chunk_bytes += data.len + 12; // frame data + 12-byte IVF frame header
+        if (self.chunk) |*chunk| {
+            switch (chunk.*) {
+                .ivf => |*ivf| {
+                    ivf.writeFrame(data, pts_ms) catch |err| {
+                        log.warn("recording write failed: {}", .{err});
+                        return;
+                    };
+                    self.chunk_bytes += data.len + 12; // frame data + 12-byte IVF frame header
+                },
+                .raw => |*file| {
+                    file.writeAll(data) catch |err| {
+                        log.warn("recording write failed: {}", .{err});
+                        return;
+                    };
+                    self.chunk_bytes += data.len;
+                },
+            }
         }
     }
 
@@ -129,30 +149,50 @@ pub const SessionRecorder = struct {
     // ── Internal ──────────────────────────────────────────────────────
 
     fn openChunk(self: *SessionRecorder) void {
-        var name_buf: [16]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "{d:0>3}.ivf", .{self.seq % max_chunks}) catch return;
+        var name_buf: [20]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "{d:0>3}.{s}", .{ self.seq % max_chunks, self.codec.recordingExt() }) catch return;
 
-        self.ivf = IvfWriter.initDir(self.dir, name) catch |err| {
-            log.warn("cannot create recording chunk {s}: {}", .{ name, err });
-            return;
+        self.chunk = switch (self.codec) {
+            .av1 => blk: {
+                const ivf = IvfWriter.initDir(self.dir, name) catch |err| {
+                    log.warn("cannot create recording chunk {s}: {}", .{ name, err });
+                    break :blk null;
+                };
+                self.chunk_bytes = 32; // IVF 32-byte file header
+                break :blk .{ .ivf = ivf };
+            },
+            .hevc => blk: {
+                const file = self.dir.createFile(name, .{}) catch |err| {
+                    log.warn("cannot create recording chunk {s}: {}", .{ name, err });
+                    break :blk null;
+                };
+                self.chunk_bytes = 0;
+                break :blk .{ .raw = file };
+            },
         };
 
         self.chunk_start_ns = if (self.seq == 0) 0 else self.chunk_start_ns + self.chunk_duration_ns;
-        self.chunk_bytes = 32; // IVF header
-        log.info("recording chunk {d:0>3} started", .{self.seq % max_chunks});
+        log.info("recording chunk {d:0>3} started ({s})", .{ self.seq % max_chunks, self.codec.name() });
     }
 
     fn closeChunk(self: *SessionRecorder) void {
-        if (self.ivf) |*ivf| {
-            // Timebase 1000/1 (milliseconds) — matches the pts_ms values written per frame
-            ivf.finalize(
-                @intCast(self.width),
-                @intCast(self.height),
-                1000,
-                1,
-            ) catch {};
-            ivf.deinit();
-            self.ivf = null;
+        if (self.chunk) |*chunk| {
+            switch (chunk.*) {
+                .ivf => |*ivf| {
+                    // Timebase 1000/1 (milliseconds) — matches the pts_ms values written per frame
+                    ivf.finalize(
+                        @intCast(self.width),
+                        @intCast(self.height),
+                        1000,
+                        1,
+                    ) catch {};
+                    ivf.deinit();
+                },
+                .raw => |*file| {
+                    file.close();
+                },
+            }
+            self.chunk = null;
         }
 
         // Write log alongside the chunk
@@ -193,6 +233,7 @@ pub const SessionRecorder = struct {
     }
 
     fn pruneOldChunks(self: *SessionRecorder) void {
+        const ext = self.codec.recordingExt();
         // Calculate total size of recordings in the directory
         var total: u64 = 0;
         var oldest_idx: usize = 0;
@@ -200,8 +241,8 @@ pub const SessionRecorder = struct {
         var sizes: [max_chunks]u64 = [_]u64{0} ** max_chunks;
 
         for (0..max_chunks) |i| {
-            var name_buf: [16]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "{d:0>3}.ivf", .{i}) catch continue;
+            var name_buf: [20]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "{d:0>3}.{s}", .{ i, ext }) catch continue;
             if (self.dir.statFile(name)) |stat| {
                 sizes[i] = @intCast(stat.size);
                 total += sizes[i];
@@ -213,15 +254,15 @@ pub const SessionRecorder = struct {
         // Start from the chunk after the one we're about to write
         oldest_idx = (self.seq + 1) % max_chunks;
         while (total > self.keep_bytes and chunk_count > 1) {
-            var name_buf: [16]u8 = undefined;
-            const ivf_name = std.fmt.bufPrint(&name_buf, "{d:0>3}.ivf", .{oldest_idx}) catch break;
+            var name_buf: [20]u8 = undefined;
+            const chunk_name = std.fmt.bufPrint(&name_buf, "{d:0>3}.{s}", .{ oldest_idx, ext }) catch break;
             if (sizes[oldest_idx] > 0) {
                 total -= sizes[oldest_idx];
                 sizes[oldest_idx] = 0;
                 chunk_count -= 1;
-                self.dir.deleteFile(ivf_name) catch {};
-                var log_buf: [16]u8 = undefined;
-                const log_name = std.fmt.bufPrint(&log_buf, "{d:0>3}.log", .{oldest_idx}) catch "";
+                self.dir.deleteFile(chunk_name) catch {};
+                var log_buf2: [16]u8 = undefined;
+                const log_name = std.fmt.bufPrint(&log_buf2, "{d:0>3}.log", .{oldest_idx}) catch "";
                 self.dir.deleteFile(log_name) catch {};
                 log.info("pruned old recording chunk {d:0>3}", .{oldest_idx});
             }

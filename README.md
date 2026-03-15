@@ -2,13 +2,12 @@
 
 Highly opinionated application sharing for developers.
 
-- **Zero latency\*** — GPU-direct capture, hardware AV1 encode, P2P WebRTC with zero jitter buffer. End-to-end latency measured as low as 1ms on a local network. (\*We use the [abs-capture-time](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/abs-capture-time/) RTP extension to measure true capture-to-render latency, and [playout-delay](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay/) set to zero to eliminate the browser's jitter buffer entirely.)
-- **Zero CPU copy** — Pixels never leave the GPU. NvFBC capture, CUDA interop, NVENC AV1 encode — all on GPU hardware. The CPU only sees the encoded bitstream.
+- **Zero latency\*** — GPU-direct capture, hardware encode, P2P WebRTC with zero jitter buffer. End-to-end latency measured as low as 1ms on a local network. (\*We use the [abs-capture-time](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/abs-capture-time/) RTP extension to measure true capture-to-render latency, and [playout-delay](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay/) set to zero to eliminate the browser's jitter buffer entirely.)
+- **Zero CPU copy** — Pixels never leave the GPU. NvFBC capture, CUDA interop, NVENC encode — all on GPU hardware. The CPU only sees the encoded bitstream.
 - **Zero audio, zero webcam** — Screen only. This is a collaboration tool, not a video call. Use your existing voice chat.
-- **Zero legacy hardware** — Requires AV1 hardware encode (NVIDIA RTX 40-series+) to share. No software fallback.
 - **Zero install for viewers** — Open a URL, see the application. No native app, no extension, no plugin.
 - **Zero shaders** — NvFBC gives a GPU texture. CUDA copies it to linear device memory. NVENC encodes with internal ARGB→NV12 color space conversion. No GL shaders, no compute passes.
-- **Zero codec negotiation** — AV1 only. One codec path, simpler pipeline, fewer bugs.
+- **Zero codec negotiation** — AV1 preferred, HEVC fallback. Auto-detected at startup. One codec per session, no mid-stream switching.
 - **Zero infrastructure** — Signaling runs on Cloudflare Workers (serverless, hibernating Durable Objects). Media flows P2P via STUN. Cloudflare TURN as a last resort.
 - **Zero config** — Run the binary, share the URL. That's it.
 
@@ -22,7 +21,7 @@ Two sharing modes, both streaming over WebRTC to a browser viewer:
 
 ### Application Sharing (`zerocast share app <command>`)
 
-Launches your application in an isolated headless Xorg display, captures it via NvFBC, and streams AV1 over WebRTC. Each app gets its own X server — no compositor needed, no interference with your host desktop.
+Launches your application in an isolated headless Xorg display, captures it via NvFBC, and streams over WebRTC. Each app gets its own X server — no compositor needed, no interference with your host desktop.
 
 - **Isolated display** — One headless Xorg per app (`:10`, `:11`, etc.), `UseDisplayDevice "none"` avoids modesetting conflicts with the host GPU
 - **Viewer-initiated resize** — Viewer resizes their browser window, the pipeline tears down and rebuilds at the new resolution (~300ms)
@@ -56,8 +55,8 @@ Each room gets a landing page showing all active shares as live stats cards (res
 
 ```
 zerocast daemon
-├── share app glxgears     → Headless Xorg :10 → NvFBC → CUDA → NVENC AV1 → WebRTC
-├── share app firefox      → Headless Xorg :11 → NvFBC → CUDA → NVENC AV1 → WebRTC
+├── share app glxgears     → Headless Xorg :10 → NvFBC → CUDA → NVENC (AV1/HEVC) → WebRTC
+├── share app firefox      → Headless Xorg :11 → NvFBC → CUDA → NVENC (AV1/HEVC) → WebRTC
 ├── share terminal         → PTY → data channel → xterm.js
 └── Unix socket ← CLI commands (share, unshare, join, status)
 
@@ -73,8 +72,8 @@ Cloudflare Worker + Durable Object
 ```
 NvFBC (GPU texture, BGRA)
   → CUDA resource (cuGraphicsGLRegisterImage, zero-copy)
-    → NVENC AV1 hardware encode (ARGB input, internal CSC to NV12)
-      → libdatachannel (AV1 RTP packetization, SRTP, abs-capture-time)
+    → NVENC hardware encode (AV1 or HEVC, ARGB input, internal CSC to NV12)
+      → libdatachannel (RTP packetization, SRTP, abs-capture-time)
         → WebRTC P2P to browser
 ```
 
@@ -112,46 +111,35 @@ Sharer (Zig)              Worker DO              Viewer (Browser)
 
 NAT traversal: STUN (`stun.cloudflare.com`) for ~85% of connections, Cloudflare TURN relay as fallback.
 
-## AV1: Why, and What We Use
+## Codec Support
 
-No codec fallback. AV1 only. One path = simpler pipeline.
+AV1 preferred, HEVC fallback. The codec is auto-detected at startup by querying the GPU's supported encode GUIDs. One codec per session — no mid-stream negotiation.
 
-### What NVENC AV1 Gives Us
+| Codec | GPU requirement | Browser decode |
+|-------|----------------|---------------|
+| **AV1** (preferred) | NVIDIA RTX 40-series+ (Ada/Blackwell) | Chrome 70+, Firefox 67+, Safari 17+ |
+| **HEVC** (fallback) | NVIDIA GTX 950+ (Maxwell Gen 2+) | Chrome 107+, Safari 11+, Firefox 120+ |
 
-These are encoding features we configure and benefit from in our pipeline:
-
-- **P-only GOP** — `frameIntervalP=1`, no B-frames. Minimum encode latency. Keyframes only when a viewer joins or requests one via PLI.
-- **Repeat sequence headers** — Every keyframe includes the sequence header, allowing late-joining viewers to start decoding immediately without waiting for a periodic IDR.
-- **Adaptive VBR** — Linear bitrate scaling: `90kbps + (pixels × fps × 0.012)`, capped at 10Mbps. Max bitrate = 2× average. VBV buffer = 1 second. Calibrated for screen content: 150×150 at 98kbps, 1080p at approx 1.5Mbps, 4K at approx 3Mbps.
-- **Up to 7 reference frames** — API exposes 4 forward + 3 backward refs (matching AV1 spec). We use P-only so only forward refs apply. Values are "suggestive" per NVIDIA docs — the hardware may use fewer depending on preset.
-- **HQ tuning preset** — Counterintuitively, NVENC's high-quality preset (P4 + HQ tuning) produces better results for screen content than the low-latency preset.
-- **BT.709 color metadata** — Explicit `colorPrimaries=1, transferCharacteristics=1, matrixCoefficients=1, colorRange=limited` so browsers decode consistently instead of guessing "unspecified."
-- **Direct ARGB input** — NVENC takes ARGB directly (matching NvFBC's BGRA byte order on little-endian) and performs internal CSC to NV12. No CPU color conversion needed.
-
-### Why AV1 Over H.264/HEVC (Even Without SCC)
-
-Even without the screen content coding tools (see below), AV1 is the right choice:
+### Why AV1 is Preferred
 
 - **30–50% better compression** than HEVC at same quality — lower bandwidth for remote sessions
-- **One codec path** — no negotiation, no fallback matrix, simpler testing
-- **Universal browser decode** — Chrome, Firefox, Safari all support AV1 WebRTC. No plugin, no flag
-- **Future-proof** — when hardware encoders do add SCC, we flip a flag. The rest of the pipeline is unchanged
+- **Universal browser decode** — all major browsers support AV1 WebRTC without flags
+- **Future-proof** — when hardware encoders add screen content coding tools (IBC, palette mode), AV1 benefits most
 
-### AV1 Features We Can't Use Yet
+### Why HEVC Fallback Matters
 
-These are in the AV1 spec but not available in NVENC's fixed-function hardware:
+AV1 hardware encode requires RTX 40-series or newer. HEVC goes back to 2014 (GTX 950), covering the entire GTX 10-series, RTX 20-series, and RTX 30-series — a vastly larger installed base.
 
-| Feature | Why we want it | Why we can't have it |
-|---|---|---|
-| **Screen Content Coding** (IBC, palette mode, transform skip) | Designed for sharp edges, flat colors, and repeated patterns — exactly what application UIs look like. Software encoders (SVT-AV1, libaom) use these to dramatically improve screen content quality. | NVENC AV1 has no API fields, no capability bits, and no configuration for any SCC tool. The fixed-function ASIC simply doesn't implement them. |
-| **128×128 superblocks** | Large static regions (IDE backgrounds, terminals) encode as single blocks with near-zero bits | NVENC tile documentation references "64×64 CTU units," suggesting 64×64 is the internal superblock size. Not configurable. |
-| **4:4:4 chroma** (High Profile) | Screen content has subpixel antialiasing with distinct R/G/B values — 4:2:0 averages them out, causing colour fringing on text edges | NVENC AV1 rejects `chromaFormatIDC != 1`. Browsers don't negotiate AV1 High Profile in WebRTC. Blocked at two independent layers. NVIDIA may add it (they did for H.264/HEVC). |
-| **Film grain synthesis** | Strip noise at encode, resynthesize at decode — saves bits on dithered/antialiased content | Not implemented in any hardware encoder. |
-| **Super-resolution** | Encode at lower resolution, upsample at decode — useful when bandwidth is tight | Not in hardware encoders. |
-| **Temporal AQ** | Adaptive quantization across frames — spend bits where temporal complexity is high | NVENC supports this for H.264/HEVC but not AV1. |
-| **Emphasis level map** | Per-block quality control (foveated encoding) — sharpen text, soften backgrounds | NVENC SDK: H.264-only. Returns `err_invalid_param` for AV1. |
+### NVENC Encoding Configuration
 
-The biggest gap for screen sharing is SCC. Software encoders like SVT-AV1 with `scm=1` can use IBC and palette mode for dramatically better screen content encoding, but real-time 4K encoding on CPU isn't viable. When NVIDIA adds SCC to a future NVENC generation, our pipeline is ready — there are no architectural changes needed, just new config fields.
+Both codecs share the same pipeline configuration:
+
+- **P-only GOP** — `frameIntervalP=1`, no B-frames. Minimum encode latency. Keyframes only when a viewer joins or requests one via PLI.
+- **Repeat headers** — Every keyframe includes sequence/parameter headers (AV1: `repeatSeqHdr`, HEVC: `repeatSPSPPS`), allowing late-joining viewers to start decoding immediately.
+- **Adaptive VBR** — Linear bitrate scaling: `90kbps + (pixels × fps × 0.012)`, capped at 10Mbps. Max bitrate = 2× average. VBV buffer = 1 second. Calibrated for screen content: 150×150 at 98kbps, 1080p at approx 1.5Mbps, 4K at approx 3Mbps.
+- **HQ tuning preset** — Counterintuitively, NVENC's high-quality preset (P4 + HQ tuning) produces better results for screen content than the low-latency preset.
+- **BT.709 color metadata** — Explicit BT.709 primaries/transfer/matrix with limited range so browsers decode consistently. AV1 uses top-level config fields; HEVC uses VUI parameters.
+- **Direct ARGB input** — NVENC takes ARGB directly (matching NvFBC's BGRA byte order on little-endian) and performs internal CSC to NV12. No CPU color conversion needed.
 
 ## Latency Telemetry
 
@@ -175,8 +163,9 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 | `src/app_share.zig` | App sharing session — headless Xorg, NvFBC capture loop, resize, input |
 | `src/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
 | `src/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
+| `src/codec.zig` | Codec enum (AV1/HEVC) — shared across encoder, session, recorder |
 | `src/encoder.zig` | Encode pipeline — CUDA copy, NVENC encode, idle detection, timing telemetry |
-| `src/nvenc.zig` | NVENC SDK 12.0 bindings — AV1 config, VBR rate control, capability query |
+| `src/nvenc.zig` | NVENC SDK 12.0 bindings — AV1/HEVC config, codec detection, VBR rate control |
 | `src/cuda.zig` | CUDA Driver API — GL texture interop, pitched device memory |
 | `src/nvfbc.zig` | NvFBC bindings — GPU texture capture, polling mode |
 | `src/daemon.zig` | Daemon — Unix socket listener, session slots (up to 8), thread lifecycle |
@@ -201,17 +190,17 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 ## Hardware Requirements
 
 **Sharer (native Zig binary):**
-- NVIDIA RTX 40-series+ (NVENC AV1 encode) — currently the only supported backend
-- AMD/Intel VAAPI AV1 — future Linux backend
-- Apple M3+ (VideoToolbox AV1) — future macOS backend
+- NVIDIA GTX 950+ (HEVC) or RTX 40-series+ (AV1) — auto-detected at startup
+- Intel/AMD VA-API — future Linux backend
+- Apple Silicon (VideoToolbox) — future macOS backend
 
 **Viewer (browser only):**
-- Any browser with AV1 WebRTC decode (Chrome 70+, Firefox 67+, Safari 17+)
+- Any modern browser — AV1 and HEVC are both widely supported in WebRTC
 
 ## Current Status
 
 **Working end-to-end on Linux + NVIDIA + X11:**
-- Application sharing with headless Xorg, NvFBC capture, AV1 encode, WebRTC streaming
+- Application sharing with headless Xorg, NvFBC capture, hardware encode (AV1/HEVC), WebRTC streaming
 - Terminal sharing with PTY, data channel transport, xterm.js viewer
 - Multi-cursor collaboration with drawing/annotation
 - Remote keyboard/mouse input
@@ -222,7 +211,7 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 **Next:**
 - macOS backend (ScreenCaptureKit + VideoToolbox + Metal)
 - Linux Wayland support (KMS/DRM capture path is implemented, needs EGL→CUDA wiring)
-- AMD/Intel GPU support via VAAPI
+- Intel/AMD GPU support via VA-API (HEVC + AV1)
 
 ## Build & Run
 
@@ -246,7 +235,7 @@ dist/bin/zerocast share terminal                                 # share a termi
 ./run.ts build        # zig build ReleaseSafe
 ./run.ts test         # unit + property tests
 ./run.ts lint         # zwanzig static analysis + shellcheck
-./run.ts integration  # GPU integration test (captures 3s IVF, validates with ffprobe)
+./run.ts integration  # GPU integration test (captures 3s video, validates with ffprobe)
 ./run.ts worker-dev   # local Cloudflare Worker on :8787
 ./run.ts worker-deploy # deploy Worker to production
 ./run.ts rebuild-libs # rebuild libdatachannel static libs

@@ -301,11 +301,11 @@ export async function ci() {
 export async function integration() {
     await build();
     const testFile = "/tmp/zerocast-test.ivf";
-    console.log("Capturing 3s to IVF...");
+    console.log("Capturing 3s to video...");
     await $`timeout 10 dist/bin/zerocast --record ${testFile} 3`.nothrow();
 
     if (!existsSync(testFile)) {
-        console.error("ERROR: IVF file was not created");
+        console.error("ERROR: recording file was not created");
         process.exit(1);
     }
 
@@ -316,8 +316,9 @@ export async function integration() {
     const codec = parts[0];
     const frames = parseInt(parts[1]) || 0;
 
-    if (codec !== "av1") {
-        console.error(`ERROR: expected codec av1, got ${codec}`);
+    const validCodecs = ["av1", "hevc"];
+    if (!validCodecs.includes(codec)) {
+        console.error(`ERROR: expected codec av1 or hevc, got ${codec}`);
         process.exit(1);
     }
     if (frames < 10) {

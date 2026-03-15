@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// IVF container writer for AV1 bitstreams.
+/// IVF container writer for AV1 bitstreams (AV1 only — HEVC uses raw Annex B).
 /// Format: 32-byte file header + (12-byte frame header + OBU data) per frame.
 pub const IvfWriter = struct {
     file: std.fs.File,

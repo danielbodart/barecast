@@ -1,5 +1,6 @@
 const std = @import("std");
 const cuda = @import("cuda");
+pub const Codec = @import("codec").Codec;
 
 // ============================================================================
 // NVENC API version constants (SDK 12.0)
@@ -60,9 +61,19 @@ pub const codec_av1_guid = Guid{
     .data4 = .{ 0x86, 0x2d, 0x5d, 0x15, 0xcd, 0x16, 0xd2, 0x54 },
 };
 
+pub const codec_hevc_guid = Guid{
+    .data1 = 0x790cdc88, .data2 = 0x4522, .data3 = 0x4d7b,
+    .data4 = .{ 0x94, 0x25, 0xbd, 0xa9, 0x97, 0x5f, 0x76, 0x03 },
+};
+
 pub const profile_av1_main_guid = Guid{
     .data1 = 0x5f2a39f5, .data2 = 0xf14e, .data3 = 0x4f95,
     .data4 = .{ 0x9a, 0x9e, 0xb7, 0x6d, 0x56, 0x8f, 0xcf, 0x97 },
+};
+
+pub const profile_hevc_main_guid = Guid{
+    .data1 = 0xb514c39a, .data2 = 0xb55b, .data3 = 0x40fa,
+    .data4 = .{ 0x87, 0x8f, 0xf1, 0x25, 0x3b, 0x4d, 0xfd, 0xec },
 };
 
 pub const preset_p4_guid = Guid{
@@ -240,8 +251,89 @@ const ConfigAv1 = extern struct {
 };
 
 // ============================================================================
+// NV_ENC_CONFIG_HEVC_VUI_PARAMETERS — 112 bytes
+// ============================================================================
+
+const HevcVuiParameters = extern struct {
+    overscanInfoPresentFlag: u32 = 0,
+    overscanInfo: u32 = 0,
+    videoSignalTypePresentFlag: u32 = 0,
+    videoFormat: u32 = 0,
+    videoFullRangeFlag: u32 = 0,
+    colourDescriptionPresentFlag: u32 = 0,
+    colourPrimaries: u32 = 0,
+    transferCharacteristics: u32 = 0,
+    colourMatrix: u32 = 0,
+    chromaSampleLocationFlag: u32 = 0,
+    chromaSampleLocationTop: u32 = 0,
+    chromaSampleLocationBot: u32 = 0,
+    bitstreamRestrictionFlag: u32 = 0,
+    timingInfoPresentFlag: u32 = 0,
+    numUnitInTicks: u32 = 0,
+    timeScale: u32 = 0,
+    _reserved: [12]u32 = [_]u32{0} ** 12,
+
+    comptime {
+        if (@sizeOf(HevcVuiParameters) != 112) @compileError("HevcVuiParameters size mismatch");
+    }
+};
+
+// ============================================================================
+// NV_ENC_CONFIG_HEVC — 1560 bytes, align 8
+// ============================================================================
+
+const ConfigHevc = extern struct {
+    level: u32 = 0,
+    tier: u32 = 0,
+    minCUSize: u32 = 0,
+    maxCUSize: u32 = 0,
+    bitfield_flags: packed struct(u32) {
+        useConstrainedIntraPred: u1 = 0,
+        disableDeblockAcrossSliceBoundary: u1 = 0,
+        outputBufferingPeriodSEI: u1 = 0,
+        outputPictureTimingSEI: u1 = 0,
+        outputAUD: u1 = 0,
+        enableLTR: u1 = 0,
+        disableSPSPPS: u1 = 0,
+        repeatSPSPPS: u1 = 0,
+        enableIntraRefresh: u1 = 0,
+        chromaFormatIDC: u2 = 0,
+        pixelBitDepthMinus8: u3 = 0,
+        enableFillerDataInsertion: u1 = 0,
+        enableConstrainedEncoding: u1 = 0,
+        enableAlphaLayerEncoding: u1 = 0,
+        singleSliceIntraRefresh: u1 = 0,
+        outputRecoveryPointSEI: u1 = 0,
+        outputTimeCodeSEI: u1 = 0,
+        reserved: u12 = 0,
+    } = .{},
+    idrPeriod: u32 = 0,
+    intraRefreshPeriod: u32 = 0,
+    intraRefreshCnt: u32 = 0,
+    maxNumRefFramesInDPB: u32 = 0,
+    ltrNumFrames: u32 = 0,
+    vpsId: u32 = 0,
+    spsId: u32 = 0,
+    ppsId: u32 = 0,
+    sliceMode: u32 = 0,
+    sliceModeData: u32 = 0,
+    maxTemporalLayersMinus1: u32 = 0,
+    hevcVUIParameters: HevcVuiParameters = .{},
+    ltrTrustMode: u32 = 0,
+    useBFramesAsRef: u32 = 0,
+    numRefL0: u32 = 0,
+    numRefL1: u32 = 0,
+    _reserved1: [214]u32 = [_]u32{0} ** 214,
+    _reserved2: [64]?*anyopaque = [_]?*anyopaque{null} ** 64,
+
+    comptime {
+        if (@sizeOf(ConfigHevc) != 1560) @compileError("ConfigHevc size mismatch");
+    }
+};
+
+// ============================================================================
 // NV_ENC_CODEC_CONFIG (union) — 1792 bytes, align 8
-// We represent it as a byte array and cast to ConfigAv1 when needed.
+// We represent it as a byte array and cast to the codec-specific config.
 // ============================================================================
 
 const CodecConfig = [1792]u8;
@@ -269,6 +361,11 @@ const Config = extern struct {
 
     /// Get a typed pointer to the AV1 config within encodeCodecConfig.
     pub fn av1Config(self: *Config) *ConfigAv1 {
+        return @ptrCast(@alignCast(&self.encodeCodecConfig));
+    }
+
+    /// Get a typed pointer to the HEVC config within encodeCodecConfig.
+    pub fn hevcConfig(self: *Config) *ConfigHevc {
         return @ptrCast(@alignCast(&self.encodeCodecConfig));
     }
 };
@@ -512,10 +609,10 @@ const ApiFunctionList = extern struct {
     version: u32 = structVersion(2),
     _reserved: u32 = 0,
     nvEncOpenEncodeSession: ?*anyopaque = null,
-    nvEncGetEncodeGUIDCount: ?*anyopaque = null,
+    nvEncGetEncodeGUIDCount: ?GetEncodeGUIDCountFn = null,
     nvEncGetEncodeProfileGUIDCount: ?*anyopaque = null,
     nvEncGetEncodeProfileGUIDs: ?*anyopaque = null,
-    nvEncGetEncodeGUIDs: ?*anyopaque = null,
+    nvEncGetEncodeGUIDs: ?GetEncodeGUIDsFn = null,
     nvEncGetInputFormatCount: ?*anyopaque = null,
     nvEncGetInputFormats: ?GetInputFormatsFn = null,
     nvEncGetEncodeCaps: ?GetEncodeCapsF = null,
@@ -563,6 +660,8 @@ const ApiFunctionList = extern struct {
 // Function pointer types (Linux ABI — no stdcall)
 // ============================================================================
 
+const GetEncodeGUIDCountFn = *const fn (?*anyopaque, *u32) callconv(.c) Status;
+const GetEncodeGUIDsFn = *const fn (?*anyopaque, [*]Guid, u32, *u32) callconv(.c) Status;
 const OpenEncodeSessionExFn = *const fn (*OpenEncodeSessionExParams, *?*anyopaque) callconv(.c) Status;
 const InitializeEncoderFn = *const fn (?*anyopaque, *InitializeParams) callconv(.c) Status;
 const CreateBitstreamBufferFn = *const fn (?*anyopaque, *CreateBitstreamBuffer) callconv(.c) Status;
@@ -602,6 +701,7 @@ pub const Nvenc = struct {
     registered_resource: ?*anyopaque,
     bitstream_buffer: ?*anyopaque,
     config: Config,
+    codec: Codec,
     width: u32,
     height: u32,
     pitch: u32,
@@ -645,6 +745,16 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
+        // Detect codec: prefer AV1, fall back to HEVC
+        const codec = detectCodec(encoder_handle, &fns) catch {
+            _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
+            return error.NvencInitFailed;
+        };
+        const codec_guid = switch (codec) {
+            .av1 => codec_av1_guid,
+            .hevc => codec_hevc_guid,
+        };
+
         // Query encoder capabilities
         if (fns.nvEncGetEncodeCaps) |getCaps| {
             const caps = [_]struct { id: u32, name: []const u8 }{
@@ -666,7 +776,7 @@ pub const Nvenc = struct {
             for (caps) |cap| {
                 var param = EncodeCapsParam{ .capsToQuery = cap.id };
                 var val: i32 = 0;
-                status = getCaps(encoder_handle, codec_av1_guid, &param, &val);
+                status = getCaps(encoder_handle, codec_guid, &param, &val);
                 if (status == .success) {
                     std.log.info("NVENC cap {s}: {d}", .{ cap.name, val });
                 } else {
@@ -678,7 +788,7 @@ pub const Nvenc = struct {
         // Query preset config for good defaults
         const getPresetConfigEx = fns.nvEncGetEncodePresetConfigEx orelse return error.NvencInitFailed;
         var preset_config = PresetConfig{};
-        status = getPresetConfigEx(encoder_handle, codec_av1_guid, preset_p4_guid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset_config);
+        status = getPresetConfigEx(encoder_handle, codec_guid, preset_p4_guid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset_config);
         if (status != .success) {
             logNvencError(&fns, encoder_handle, "nvEncGetEncodePresetConfigEx", status);
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
@@ -688,12 +798,8 @@ pub const Nvenc = struct {
         // Start with preset defaults, override what we need
         var config = preset_config.presetCfg;
         config.version = structVersionHigh(8);
-        config.profileGUID = profile_av1_main_guid;
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
-        // NOTE: NVENC emphasis level map (NV_ENC_QP_MAP_EMPHASIS) is H.264-only
-        // as of SDK 13.0. QP_MAP_DELTA returns err_invalid_param for AV1.
-        // No per-block quality control available for AV1 on NVENC.
         // Adaptive VBR: linear bitrate scaling with resolution.
         // bitrate = 90kbps base + 0.012 bits/pixel/frame
         // Calibrated: 150x150→98kbps, 1350x800→479kbps, 4K→3.1Mbps
@@ -705,23 +811,43 @@ pub const Nvenc = struct {
         config.rcParams.vbvBufferSize = avg_bitrate; // 1 second of average bitrate
         config.rcParams.vbvInitialDelay = avg_bitrate / 2; // half buffer
 
-        // AV1 specific config
-        const av1 = config.av1Config();
-        av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
-        av1.bitfield_flags.repeatSeqHdr = 1;
-        av1.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
-        // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
-        // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).
-        av1.colorPrimaries = 1; // BT.709
-        av1.transferCharacteristics = 1; // BT.709
-        av1.matrixCoefficients = 1; // BT.709
-        av1.colorRange = 0; // limited range — NVENC's internal RGB→YUV uses limited (16-235)
+        // Codec-specific config
+        switch (codec) {
+            .av1 => {
+                config.profileGUID = profile_av1_main_guid;
+                const av1 = config.av1Config();
+                av1.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
+                av1.bitfield_flags.repeatSeqHdr = 1;
+                av1.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
+                // Color metadata — NvFBC captures sRGB framebuffer, signal BT.709 so browsers
+                // decode consistently instead of guessing (0 = "unspecified" per AV1 spec).
+                av1.colorPrimaries = 1; // BT.709
+                av1.transferCharacteristics = 1; // BT.709
+                av1.matrixCoefficients = 1; // BT.709
+                av1.colorRange = 0; // limited range — NVENC's internal RGB→YUV uses limited (16-235)
+            },
+            .hevc => {
+                config.profileGUID = profile_hevc_main_guid;
+                const hevc = config.hevcConfig();
+                hevc.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
+                hevc.bitfield_flags.repeatSPSPPS = 1; // VPS/SPS/PPS on every IDR
+                hevc.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
+                // Color metadata via VUI — same BT.709 signaling as AV1 path
+                hevc.hevcVUIParameters.videoSignalTypePresentFlag = 1;
+                hevc.hevcVUIParameters.colourDescriptionPresentFlag = 1;
+                hevc.hevcVUIParameters.colourPrimaries = 1; // BT.709
+                hevc.hevcVUIParameters.transferCharacteristics = 1; // BT.709
+                hevc.hevcVUIParameters.colourMatrix = 1; // BT.709
+                hevc.hevcVUIParameters.videoFullRangeFlag = 0; // limited range
+            },
+        }
 
         const buffer_format: u32 = NV_ENC_BUFFER_FORMAT_ARGB;
 
         // Initialize encoder — ARGB input matches NvFBC BGRA byte order on LE.
         const initEncoder = fns.nvEncInitializeEncoder orelse return error.NvencInitFailed;
         var init_params = InitializeParams{
+            .encodeGUID = codec_guid,
             .encodeWidth = cu.frame_width,
             .encodeHeight = cu.frame_height,
             .darWidth = cu.frame_width,
@@ -738,7 +864,7 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
-        std.debug.print("NVENC: initialized AV1 encoder {}x{} (target {}kbps)\n", .{ cu.frame_width, cu.frame_height, avg_bitrate / 1000 });
+        std.debug.print("NVENC: initialized {s} encoder {}x{} (target {}kbps)\n", .{ codec.name(), cu.frame_width, cu.frame_height, avg_bitrate / 1000 });
 
         // Register CUDA device pointer as NVENC input
         const registerResource = fns.nvEncRegisterResource orelse return error.NvencInitFailed;
@@ -774,6 +900,7 @@ pub const Nvenc = struct {
             .registered_resource = reg.registeredResource,
             .bitstream_buffer = bs.bitstreamBuffer,
             .config = config,
+            .codec = codec,
             .width = cu.frame_width,
             .height = cu.frame_height,
             .pitch = @intCast(cu.device_pitch),
@@ -909,6 +1036,51 @@ pub const Nvenc = struct {
         _ = std.c.dlclose(self.lib);
     }
 };
+
+/// Query supported encode codecs and pick the best one (AV1 > HEVC).
+fn detectCodec(encoder: ?*anyopaque, fns: *const ApiFunctionList) !Codec {
+    const getCount = fns.nvEncGetEncodeGUIDCount orelse return error.NvencInitFailed;
+    const getGUIDs = fns.nvEncGetEncodeGUIDs orelse return error.NvencInitFailed;
+
+    var count: u32 = 0;
+    var status = getCount(encoder, &count);
+    if (status != .success or count == 0) {
+        std.debug.print("NVENC: failed to query encode GUID count\n", .{});
+        return error.NvencInitFailed;
+    }
+
+    var guids: [16]Guid = undefined;
+    var returned: u32 = 0;
+    status = getGUIDs(encoder, &guids, @min(count, 16), &returned);
+    if (status != .success or returned == 0) {
+        std.debug.print("NVENC: failed to enumerate encode GUIDs\n", .{});
+        return error.NvencInitFailed;
+    }
+
+    var has_av1 = false;
+    var has_hevc = false;
+    for (guids[0..returned]) |guid| {
+        if (guidEql(guid, codec_av1_guid)) has_av1 = true;
+        if (guidEql(guid, codec_hevc_guid)) has_hevc = true;
+    }
+
+    if (has_av1) {
+        std.log.info("NVENC: AV1 supported, using AV1", .{});
+        return .av1;
+    }
+    if (has_hevc) {
+        std.log.info("NVENC: AV1 not supported, falling back to HEVC", .{});
+        return .hevc;
+    }
+
+    std.debug.print("NVENC: neither AV1 nor HEVC supported\n", .{});
+    return error.NvencInitFailed;
+}
+
+fn guidEql(a: Guid, b: Guid) bool {
+    return a.data1 == b.data1 and a.data2 == b.data2 and a.data3 == b.data3 and
+        std.mem.eql(u8, &a.data4, &b.data4);
+}
 
 fn logNvencError(fns: *const ApiFunctionList, encoder: ?*anyopaque, context: []const u8, status: Status) void {
     const err_str = if (fns.nvEncGetLastErrorString) |f| f(encoder) else null;

@@ -72,6 +72,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const codec_mod = b.createModule(.{
+        .root_source_file = b.path("src/codec.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const nvenc_mod = b.createModule(.{
         .root_source_file = b.path("src/nvenc.zig"),
         .target = target,
@@ -79,6 +85,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "cuda", .module = cuda_mod },
+            .{ .name = "codec", .module = codec_mod },
         },
     });
 
@@ -97,6 +104,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "input_protocol", .module = input_protocol_mod },
             .{ .name = "viewer_state", .module = viewer_state_mod },
+            .{ .name = "codec", .module = codec_mod },
         },
     });
     session_mod.addIncludePath(b.path("libdatachannel/include"));
@@ -110,6 +118,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "ivf", .module = ivf_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "codec", .module = codec_mod },
         },
     });
 

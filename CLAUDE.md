@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What is this?
 
-Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary captures the screen via KMS/DRM, hardware-encodes AV1 via NVENC, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
+Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary captures the screen via KMS/DRM, hardware-encodes video via NVENC (AV1 preferred, HEVC fallback), and streams to a browser viewer over WebRTC. See `README.md` for the full design.
 
 ## Build & Run
 
@@ -47,7 +47,7 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 
 Two Zig binaries + one Cloudflare Worker:
 
-- **`zerocast`** — Main binary (unprivileged). Screen capture pipeline: DMA-BUF → EGL → CUDA → NVENC AV1 → libdatachannel WebRTC → browser.
+- **`zerocast`** — Main binary (unprivileged). Screen capture pipeline: DMA-BUF → EGL → CUDA → NVENC (AV1/HEVC) → libdatachannel WebRTC → browser.
 - **`zerocast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
 - **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
 
@@ -60,7 +60,7 @@ Two Zig binaries + one Cloudflare Worker:
 - **`src/screen_share.zig`** — Self-contained screen share session (NvFbc → Encoder → BroadcastSession).
 - **`src/terminal_share.zig`** — Terminal share session (PTY + asciinema v2 recording).
 - **`src/session.zig`** — Multi-viewer WebRTC broadcast (libdatachannel peer management, signaling).
-- **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (IVF or WebRTC).
+- **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (recording or WebRTC).
 - **`src/kms.zig`** — Entry point for the privileged KMS helper.
 - **`src/protocol.zig`** — Wire protocol structs for IPC between zerocast and zerocast-kms.
 - **`src/prop_tests.zig`** — Property-based tests (minish).
@@ -76,7 +76,7 @@ Two Zig binaries + one Cloudflare Worker:
 ./run.ts lint    # static analysis (zwanzig) + shellcheck
 ```
 
-Three test tiers: unit tests (inline `test` blocks), property tests (minish), integration tests (`./run.ts integration`, requires GPU — captures 3s IVF, validates with ffprobe).
+Three test tiers: unit tests (inline `test` blocks), property tests (minish), integration tests (`./run.ts integration`, requires GPU — captures 3s of video, validates with ffprobe).
 
 ## Conventions
 
@@ -90,4 +90,4 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
 - libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)
 - libdatachannel built with zig cc/c++ (libc++ ABI) to match Zig's linker
-- AV1 only, no codec fallback
+- AV1 preferred, HEVC fallback (auto-detected via NVENC GUID enumeration)

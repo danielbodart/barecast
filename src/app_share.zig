@@ -202,11 +202,13 @@ pub const AppShare = struct {
             self.session.deinit();
             return error.EncoderInitFailed;
         };
+        // Propagate detected codec to session (must happen before session.start())
+        self.session.codec = self.encoder.nvenc.codec;
         const t_encoder = ts.elapsed(&t);
 
         // Recording (optional — enabled by ZEROCAST_RECORD_DIR env)
         self.recorder = if (config.record_dir) |dir|
-            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, first_frame.width, first_frame.height)
+            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, first_frame.width, first_frame.height, self.encoder.nvenc.codec)
         else
             null;
         if (self.recorder != null) {
@@ -358,6 +360,7 @@ pub const AppShare = struct {
                     log.err("encoder reinit failed: {}", .{e});
                     break :loop;
                 };
+                self.session.codec = self.encoder.nvenc.codec;
                 if (self.recorder) |*rec| {
                     self.encoder.recorder = rec;
                     rec.updateResolution(new_frame.width, new_frame.height);

@@ -5,6 +5,7 @@ const c = @cImport({
 });
 const input_protocol = @import("input_protocol");
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
+const Codec = @import("codec").Codec;
 
 const log = std.log.scoped(.session);
 
@@ -12,7 +13,7 @@ pub const MAX_PEERS: usize = 8;
 pub const PEER_ID_LEN: usize = 16;
 
 pub const SessionMode = enum {
-    video, // AV1 track + unreliable "input" data channel
+    video, // Video track (AV1 or HEVC) + unreliable "input" data channel
     terminal, // No track + reliable "terminal" data channel
 };
 
@@ -86,10 +87,13 @@ pub const Peer = struct {
     }
 
     fn startScreen(self: *Peer) void {
-        // Add sendonly AV1 track
+        // Add sendonly video track — codec determined by NVENC detection
         var track_init = std.mem.zeroes(c.rtcTrackInit);
         track_init.direction = c.RTC_DIRECTION_SENDONLY;
-        track_init.codec = c.RTC_CODEC_AV1;
+        track_init.codec = switch (self.session.codec) {
+            .av1 => c.RTC_CODEC_AV1,
+            .hevc => c.RTC_CODEC_H265,
+        };
         track_init.payloadType = 96;
         track_init.ssrc = 1;
         track_init.mid = "0";
@@ -101,19 +105,28 @@ pub const Peer = struct {
         if (track >= 0) {
             self.track = track;
 
-            // AV1 packetizer
             var pkt_init = std.mem.zeroes(c.rtcPacketizerInit);
             pkt_init.ssrc = 1;
             pkt_init.cname = "zerocast";
             pkt_init.payloadType = 96;
             pkt_init.clockRate = 90000;
             pkt_init.maxFragmentSize = 1200;
-            pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
             pkt_init.absCaptureTimeId = 3; // extmap ID for abs-capture-time
             pkt_init.playoutDelayId = 4; // extmap ID for playout-delay
             pkt_init.playoutDelayMin = 0; // render immediately
             pkt_init.playoutDelayMax = 0;
-            _ = c.rtcSetAV1Packetizer(track, &pkt_init);
+
+            switch (self.session.codec) {
+                .av1 => {
+                    pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
+                    _ = c.rtcSetAV1Packetizer(track, &pkt_init);
+                },
+                .hevc => {
+                    // NVENC HEVC outputs Annex B (start-code delimited NAL units)
+                    pkt_init.nalSeparator = c.RTC_NAL_SEPARATOR_START_SEQUENCE;
+                    _ = c.rtcSetH265Packetizer(track, &pkt_init);
+                },
+            }
 
             // RTCP chain
             _ = c.rtcChainRtcpSrReporter(track);
@@ -412,6 +425,7 @@ pub const BroadcastSession = struct {
     ws_url_z: [600]u8,
     ws_url_len: usize,
     mode: SessionMode,
+    codec: Codec,
     viewer_registry: ?*ViewerRegistry,
     input_handler: ?InputHandler,
     terminal_callback: ?TerminalDataCallback,
@@ -450,6 +464,7 @@ pub const BroadcastSession = struct {
         session.ws_url_z = url_z;
         session.ws_url_len = ws_url.len;
         session.mode = mode;
+        session.codec = .av1; // default; set by app_share after encoder init
         session.viewer_registry = null;
         session.input_handler = null;
         session.terminal_callback = null;
@@ -485,7 +500,7 @@ pub const BroadcastSession = struct {
         _ = c.rtcSetMessageCallback(self.ws, wsMessageCallback);
     }
 
-    /// Send one encoded AV1 frame to all connected peers.
+    /// Send one encoded video frame to all connected peers.
     /// Called from the main thread within the NVENC bitstream lock window.
     /// Holds peers_mutex to prevent deinit from invalidating track handles
     /// mid-send. The critical section is short — rtcSendMessage just enqueues.
