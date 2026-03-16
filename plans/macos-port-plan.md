@@ -207,19 +207,20 @@ capture is preferred because:
 - Simpler (no helper process needed)
 - Works for all standard macOS apps
 
-### Phase 3: WebRTC streaming
+### Phase 3: WebRTC streaming — DONE
 
 Goal: Stream to the browser viewer.
 
-- Wire VideoToolbox bitstream output into `BroadcastSession.sendFrame()`
-- Build macOS app share orchestrator (`src/macos/app_share.zig`)
-  - Owns app launcher + window lifecycle
-  - Owns ScreenCaptureKit window-level capture
-  - Owns VideoToolbox encoder
-  - Connects to BroadcastSession
-- HEVC WebRTC support is now on trunk (added to NVIDIA pipeline too) — rebase to pick up
-  session.zig H.265 track support and viewer.ts HEVC codec negotiation
-- End-to-end: off-screen app → window capture → HEVC → WebRTC → browser viewer
+Completed:
+- macOS `app_share.zig` rewritten to full Linux parity — BroadcastSession, ViewerRegistry,
+  SessionRecorder, ping/meta/resize, app lifecycle monitoring via `kill(pid, 0)`
+- FrameSink `.session` wired: capture → `setPixelBuffer` → `encoder.processFrame` → WebRTC
+- Viewer-driven resize: `sc_resize_window()` via AXUIElement → tear down + rebuild pipeline
+- Display capture removed — window-level capture only (`sc_capture_create_window`)
+- `capture_test.zig` removed (PoC artifact, no longer needed)
+- Build system: `build_macos.zig` wires session, control, viewer_state, session_recorder modules
+- Daemon portability: `daemon.zig` + `cli.zig` sockaddr fixed (`std.posix.sockaddr.un`)
+- HEVC WebRTC already on trunk (session.zig H.265 track + viewer.ts codec negotiation)
 
 ### Phase 4: Input injection
 

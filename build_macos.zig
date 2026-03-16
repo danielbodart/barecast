@@ -28,7 +28,7 @@ pub fn buildPlatform(
     encoder_vt_mod.linkFramework("CoreVideo", .{});
     encoder_vt_mod.linkSystemLibrary("objc", .{});
 
-    // --- App share module (ScreenCaptureKit capture + VideoToolbox encode) ---
+    // --- App share module (ScreenCaptureKit capture + VideoToolbox encode + WebRTC) ---
     const app_share_mod = b.createModule(.{
         .root_source_file = b.path("src/macos/app_share.zig"),
         .target = target,
@@ -37,6 +37,10 @@ pub fn buildPlatform(
         .imports = &.{
             .{ .name = "encoder", .module = shared.encoder },
             .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
+            .{ .name = "session", .module = shared.session },
+            .{ .name = "viewer_state", .module = shared.viewer_state },
+            .{ .name = "control", .module = shared.control },
+            .{ .name = "session_recorder", .module = shared.session_recorder },
         },
     });
     app_share_mod.addIncludePath(b.path("src"));
@@ -52,35 +56,6 @@ pub fn buildPlatform(
     app_share_mod.linkFramework("AppKit", .{});
     app_share_mod.linkFramework("ApplicationServices", .{});
     app_share_mod.linkSystemLibrary("objc", .{});
-
-    // --- Capture test binary (PoC: virtual display + capture → HEVC file) ---
-    const capture_test = b.addExecutable(.{
-        .name = "capture-test",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/macos/capture_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "encoder", .module = shared.encoder },
-                .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
-            },
-        }),
-    });
-    capture_test.root_module.addIncludePath(b.path("src"));
-    capture_test.root_module.addCSourceFile(.{
-        .file = b.path("src/macos/screen_capture.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
-    capture_test.root_module.linkFramework("ScreenCaptureKit", .{});
-    capture_test.root_module.linkFramework("CoreMedia", .{});
-    capture_test.root_module.linkFramework("CoreVideo", .{});
-    capture_test.root_module.linkFramework("CoreGraphics", .{});
-    capture_test.root_module.linkFramework("Foundation", .{});
-    capture_test.root_module.linkFramework("AppKit", .{});
-    capture_test.root_module.linkFramework("ApplicationServices", .{});
-    capture_test.root_module.linkSystemLibrary("objc", .{});
-    b.installArtifact(capture_test);
 
     return .{ .app_share = app_share_mod };
 }

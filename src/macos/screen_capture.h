@@ -8,7 +8,7 @@ typedef struct SCCapture SCCapture;
 
 /// Capture result from a single frame.
 typedef struct {
-    void *pixel_buffer;     // CVPixelBufferRef — caller must NOT release
+    void *pixel_buffer;     // CVPixelBufferRef — caller must release via sc_capture_release_frame()
     uint32_t width;
     uint32_t height;
     int is_new;             // 1 if content changed since last frame
@@ -18,11 +18,6 @@ typedef struct {
 /// Captures the window content only — no title bar, no desktop.
 /// Returns NULL on failure (e.g. no Screen Recording permission).
 SCCapture *sc_capture_create_window(uint32_t window_id, uint32_t fps);
-
-/// Create a capture session for a display.
-/// Pass display_id=0 to capture the main display.
-/// Returns NULL on failure.
-SCCapture *sc_capture_create_display(uint32_t display_id, uint32_t fps);
 
 /// Start capturing. Returns 0 on success.
 int sc_capture_start(SCCapture *cap);
@@ -41,5 +36,9 @@ void sc_capture_destroy(SCCapture *cap);
 /// Launch an app, move its window off-screen, and return its window ID.
 /// Returns 0 on failure.
 uint32_t sc_launch_app_offscreen(const char *app_path, int64_t *out_pid);
+
+/// Resize a window by PID using AXUIElement.
+/// Returns 0 on success, non-zero on failure.
+int sc_resize_window(int64_t pid, uint32_t width, uint32_t height);
 
 #endif

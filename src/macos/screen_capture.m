@@ -1,5 +1,5 @@
-// ScreenCaptureKit capture — supports window-level and display-level capture.
-// Window-level capture delivers just the window content (no title bar, no desktop).
+// ScreenCaptureKit capture — window-level capture only.
+// Delivers just the window content (no title bar, no desktop).
 
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <CoreVideo/CoreVideo.h>
@@ -159,36 +159,6 @@ SCCapture *sc_capture_create_window(uint32_t window_id, uint32_t fps) {
     return finalizeCaptureSetup(cap, filter, width, height);
 }
 
-SCCapture *sc_capture_create_display(uint32_t display_id, uint32_t fps) {
-    SCCapture *cap = calloc(1, sizeof(SCCapture));
-    if (!cap) return NULL;
-    cap->fps = fps;
-
-    SCShareableContent *content = getShareableContent();
-    if (!content) { free(cap); return NULL; }
-
-    // Find the requested display (0 = first/main display)
-    SCDisplay *display = nil;
-    if (display_id == 0) {
-        display = content.displays.firstObject;
-    } else {
-        for (SCDisplay *d in content.displays) {
-            if (d.displayID == display_id) {
-                display = d;
-                break;
-            }
-        }
-    }
-    if (!display) {
-        NSLog(@"Display %u not found in shareable content", display_id);
-        free(cap);
-        return NULL;
-    }
-
-    SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
-    return finalizeCaptureSetup(cap, filter, (uint32_t)display.width, (uint32_t)display.height);
-}
-
 int sc_capture_start(SCCapture *cap) {
     if (!cap || !cap->stream) return -1;
 
@@ -340,5 +310,38 @@ uint32_t sc_launch_app_offscreen(const char *app_path, int64_t *out_pid) {
         }
 
         return targetWindowID;
+    }
+}
+
+// ── Window resize ───────────────────────────────────────────────────────
+
+int sc_resize_window(int64_t pid, uint32_t width, uint32_t height) {
+    @autoreleasepool {
+        AXUIElementRef appElement = AXUIElementCreateApplication((pid_t)pid);
+        if (!appElement) return -1;
+
+        CFArrayRef windows = NULL;
+        AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute, (CFTypeRef *)&windows);
+        if (!windows || CFArrayGetCount(windows) == 0) {
+            if (windows) CFRelease(windows);
+            CFRelease(appElement);
+            return -1;
+        }
+
+        AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, 0);
+        CGSize size = CGSizeMake((CGFloat)width, (CGFloat)height);
+        AXValueRef sizeValue = AXValueCreate(kAXValueCGSizeType, &size);
+        AXError err = AXUIElementSetAttributeValue(window, kAXSizeAttribute, sizeValue);
+        CFRelease(sizeValue);
+        CFRelease(windows);
+        CFRelease(appElement);
+
+        if (err != kAXErrorSuccess) {
+            NSLog(@"AXUIElement resize failed: %d", (int)err);
+            return -1;
+        }
+
+        NSLog(@"Resized window for pid %lld to %ux%u", (long long)pid, width, height);
+        return 0;
     }
 }

@@ -1,12 +1,15 @@
-// macOS app share — Phase 1 PoC.
-// Captures the main display via ScreenCaptureKit, encodes HEVC via VideoToolbox,
-// writes raw Annex B to a file (or streams via WebRTC session in later phases).
+// macOS app share — captures a window via ScreenCaptureKit, encodes HEVC via
+// VideoToolbox, and streams over WebRTC. Mirrors src/app_share.zig (Linux).
 
 const std = @import("std");
 const encoder_mod = @import("encoder");
 const Encoder = encoder_mod.Encoder;
 const FrameSink = encoder_mod.FrameSink;
 const VideoToolboxBackend = @import("encoder_videotoolbox").VideoToolboxBackend;
+const BroadcastSession = @import("session").BroadcastSession;
+const ViewerRegistry = @import("viewer_state").ViewerRegistry;
+const generateRoomId = @import("control").generateRoomId;
+const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const c = @cImport({
     @cInclude("macos/screen_capture.h");
@@ -25,48 +28,77 @@ pub const AppShareConfig = struct {
 };
 
 pub const AppShare = struct {
-    // Fields required by daemon.zig contract
     session_id: [16]u8,
+    room_id_buf: [16]u8,
+    room_id: []const u8,
+    room_url_buf: [512]u8,
     share_url_buf: [512]u8,
     share_url: []const u8,
-    should_stop: std.atomic.Value(bool),
-
-    // macOS-specific
+    app_pid: i64,
+    window_id: u32,
     capture: *c.SCCapture,
+    viewer_registry: ViewerRegistry,
+    session: BroadcastSession,
     vt_backend: VideoToolboxBackend,
     encoder: Encoder,
-    output_file: ?std.fs.File,
-    config: AppShareConfig,
+    recorder: ?SessionRecorder,
+    pending_resize: std.atomic.Value(u32),
+    should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
-    frames_written: u64,
+    last_fps: u32,
+    last_bitrate: u64,
+    config: AppShareConfig,
+    command_buf: [512]u8,
+    command_len: usize,
 
     pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
+        self.pending_resize = std.atomic.Value(u32).init(0);
         self.should_stop = std.atomic.Value(bool).init(false);
         self.config = config;
-        self.output_file = null;
-        self.frames_written = 0;
+        self.recorder = null;
 
-        // Session ID (random)
-        std.crypto.random.bytes(&self.session_id);
+        // Copy command string (config.command may point to stack)
+        if (config.command.len > self.command_buf.len) return error.CommandTooLong;
+        @memcpy(self.command_buf[0..config.command.len], config.command);
+        self.command_len = config.command.len;
 
-        // Share URL
-        self.share_url = std.fmt.bufPrint(&self.share_url_buf, "{s}/room/{s}", .{
-            config.base_url,
-            if (config.room_id) |id| id else &self.session_id,
-        }) catch "???";
+        var t = std.time.Timer.start() catch null;
+        const ts = struct {
+            fn elapsed(timer: *?std.time.Timer) u64 {
+                if (timer.*) |*tt| {
+                    const ms = tt.read() / std.time.ns_per_ms;
+                    tt.reset();
+                    return ms;
+                }
+                return 0;
+            }
+        };
 
-        // Create capture session
-        self.capture = c.sc_capture_create_display(0, config.fps) orelse {
+        // Launch app and get its window
+        const cmd = self.command_buf[0..self.command_len];
+        self.command_buf[self.command_len] = 0;
+        const cmd_z: [*:0]const u8 = self.command_buf[0..self.command_len :0];
+        var pid: i64 = -1;
+        self.window_id = c.sc_launch_app_offscreen(cmd_z, &pid);
+        if (self.window_id == 0) {
+            log.err("failed to launch app: {s}", .{cmd});
+            return error.AppLaunchFailed;
+        }
+        self.app_pid = pid;
+        const t_launch = ts.elapsed(&t);
+
+        // Create window-level capture
+        self.capture = c.sc_capture_create_window(self.window_id, config.fps) orelse {
             log.err("ScreenCaptureKit init failed — check Screen Recording permission", .{});
             return error.CaptureInitFailed;
         };
+        errdefer c.sc_capture_destroy(self.capture);
 
-        // Start capture to get initial frame dimensions
         if (c.sc_capture_start(self.capture) != 0) {
             log.err("ScreenCaptureKit start failed", .{});
-            c.sc_capture_destroy(self.capture);
             return error.CaptureStartFailed;
         }
+        const t_capture = ts.elapsed(&t);
 
         // Wait for the first frame (up to 2s)
         var frame: c.SCFrameResult = undefined;
@@ -77,94 +109,169 @@ pub const AppShare = struct {
         }
         if (attempts >= 200) {
             log.err("no frame received after 2s", .{});
-            c.sc_capture_destroy(self.capture);
             return error.NoFrameReceived;
         }
 
         const width = frame.width;
         const height = frame.height;
-        log.info("capture started: {d}x{d} @{d}fps", .{ width, height, config.fps });
+        if (frame.pixel_buffer) |pb| c.sc_capture_release_frame(pb);
+        const t_frame = ts.elapsed(&t);
 
-        // Create VideoToolbox encoder
-        self.vt_backend = VideoToolboxBackend.init(width, height, config.fps) catch |err| {
-            log.err("VideoToolbox init failed: {}", .{err});
-            c.sc_capture_destroy(self.capture);
-            return error.EncoderInitFailed;
-        };
+        log.info("capture started: {d}x{d} @{d}fps (window {d}, pid {d})", .{
+            width, height, config.fps, self.window_id, self.app_pid,
+        });
 
-        // Open output file (raw Annex B HEVC — .hevc extension)
-        if (config.record_dir) |dir| {
-            var path_buf: [512]u8 = undefined;
-            const path = std.fmt.bufPrint(&path_buf, "{s}/capture.hevc", .{dir}) catch return error.PathTooLong;
-            self.output_file = std.fs.cwd().createFile(path[0..path.len], .{}) catch |err| {
-                log.err("failed to create output file: {}", .{err});
-                return error.OutputFileFailed;
-            };
+        // Room ID
+        if (config.room_id) |id| {
+            self.room_id = id;
+        } else {
+            self.room_id_buf = generateRoomId();
+            self.room_id = &self.room_id_buf;
         }
 
-        // Initialize encoder orchestrator (PoC writes directly, not through FrameSink)
+        // Session ID
+        self.session_id = generateRoomId();
+
+        // Build URLs
+        const base_url = config.base_url;
+        const ws_scheme: []const u8 = if (std.mem.startsWith(u8, base_url, "https://")) "wss://" else "ws://";
+        const host_start: usize = if (std.mem.startsWith(u8, base_url, "https://"))
+            @as(usize, 8)
+        else if (std.mem.startsWith(u8, base_url, "http://"))
+            @as(usize, 7)
+        else
+            @as(usize, 0);
+
+        const signaling_url = std.fmt.bufPrint(&self.room_url_buf, "{s}{s}", .{
+            ws_scheme, base_url[host_start..],
+        }) catch return error.UrlTooLong;
+
+        self.share_url = std.fmt.bufPrint(&self.share_url_buf, "{s}/room/{s}", .{
+            base_url, self.room_id,
+        }) catch "???";
+
+        log.info("room: {s}", .{self.share_url});
+
+        // Viewer state
+        self.viewer_registry = ViewerRegistry.init();
+
+        // Broadcast session
+        self.session = BroadcastSession.init(signaling_url, self.room_id, &self.session_id, "app", .video) catch |err| {
+            log.err("session init failed: {}", .{err});
+            return error.SessionInitFailed;
+        };
+        self.session.viewer_registry = &self.viewer_registry;
+        self.session.meta_callback = appMetaCallback;
+        self.session.resize_callback = appResizeCallback;
+        const t_session = ts.elapsed(&t);
+
+        // VideoToolbox encoder
+        self.vt_backend = VideoToolboxBackend.init(width, height, config.fps) catch |err| {
+            log.err("VideoToolbox init failed: {}", .{err});
+            self.session.deinit();
+            return error.EncoderInitFailed;
+        };
         self.encoder = Encoder.init(
             self.vt_backend.backend(),
             width,
             height,
-            .none,
+            .{ .session = &self.session },
             config.fps,
         ) catch |err| {
             log.err("encoder init failed: {}", .{err});
-            c.sc_capture_destroy(self.capture);
+            self.vt_backend.backend().deinit();
+            self.session.deinit();
             return error.EncoderInitFailed;
         };
+        // Propagate codec to session (must happen before session.start())
+        self.session.codec = self.encoder.backend.codec;
+        const t_encoder = ts.elapsed(&t);
 
+        // Recording (optional — enabled by ZEROCAST_RECORD_DIR env)
+        self.recorder = if (config.record_dir) |dir|
+            SessionRecorder.init(dir, self.command_buf[0..self.command_len], config.fps, width, height, self.encoder.backend.codec)
+        else
+            null;
+        if (self.recorder != null) {
+            self.encoder.recorder = &self.recorder.?;
+            self.recorder.?.logFmt("session started: {s} {d}x{d} @{d}fps", .{
+                self.command_buf[0..self.command_len], width, height, config.fps,
+            });
+        }
+
+        log.info("startup: launch={d}ms capture={d}ms frame={d}ms session={d}ms encoder={d}ms total={d}ms", .{
+            t_launch, t_capture, t_frame, t_session, t_encoder,
+            t_launch + t_capture + t_frame + t_session + t_encoder,
+        });
+
+        self.last_fps = 0;
+        self.last_bitrate = 0;
         self.start_time = std.time.Timer.start() catch return error.TimerUnavailable;
     }
 
     pub fn start(self: *AppShare) void {
-        _ = self;
-        // No WebRTC session to start in PoC
+        self.session.start();
     }
 
     pub fn runLoop(self: *AppShare) void {
         const frame_interval_ns: u64 = std.time.ns_per_s / self.config.fps;
         var frame_timer = std.time.Timer.start() catch return;
 
+        const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
+        var ping_timer = std.time.Timer.start() catch return;
+
+        const meta_interval_ns: u64 = 5 * std.time.ns_per_s;
+        var meta_timer = std.time.Timer.start() catch return;
+        var prev_bytes: u64 = 0;
+        var prev_frames: u64 = 0;
+
+        self.sendAppMeta();
+
         while (!self.should_stop.load(.acquire)) {
-            var frame: c.SCFrameResult = undefined;
-            if (c.sc_capture_get_frame(self.capture, &frame) != 0) {
-                std.Thread.sleep(1 * std.time.ns_per_ms);
+            // Check if app is still running (macOS apps aren't child processes,
+            // so we use kill(pid, 0) to check existence)
+            if (std.c.kill(@intCast(self.app_pid), 0) != 0) {
+                log.info("app exited (pid {d})", .{self.app_pid});
+                break;
+            }
+
+            if (ping_timer.read() >= ping_interval_ns) {
+                ping_timer.reset();
+                if (!self.session.sendPing()) {
+                    self.session.reconnect();
+                }
+            }
+
+            if (meta_timer.read() >= meta_interval_ns) {
+                const elapsed_ns = meta_timer.read();
+                meta_timer.reset();
+
+                const cur_bytes = self.session.bytes_sent.load(.monotonic);
+                const cur_frames = self.session.frames_sent.load(.monotonic);
+
+                const delta_bytes = cur_bytes - prev_bytes;
+                const delta_frames = cur_frames - prev_frames;
+                prev_bytes = cur_bytes;
+                prev_frames = cur_frames;
+
+                const elapsed_s = elapsed_ns / std.time.ns_per_s;
+                if (elapsed_s > 0) {
+                    self.last_fps = @intCast(delta_frames / elapsed_s);
+                    self.last_bitrate = (delta_bytes * 8) / elapsed_s;
+                }
+
+                self.sendAppMeta();
+            }
+
+            // Check for pending resize (set by appResizeCallback on data channel thread)
+            const resize_val = self.pending_resize.swap(0, .acquire);
+            if (resize_val != 0) {
+                const new_w: u32 = resize_val >> 16;
+                const new_h: u32 = resize_val & 0xFFFF;
+                self.handleResize(new_w, new_h);
+                frame_timer.reset();
                 continue;
             }
-
-            // Set the pixel buffer on the backend for encoding
-            const pb = frame.pixel_buffer orelse continue;
-            self.vt_backend.setPixelBuffer(pb);
-
-            // Encode and write directly to file
-            const force_key = self.frames_written == 0;
-            const maybe_encoded = self.vt_backend.backend().encode(force_key) catch |err| {
-                log.err("encode error: {}", .{err});
-                c.sc_capture_release_frame(pb);
-                break;
-            };
-
-            if (maybe_encoded) |encoded| {
-                if (self.output_file) |file| {
-                    file.writeAll(encoded.data) catch |err| {
-                        log.err("write error: {}", .{err});
-                        break;
-                    };
-                }
-                self.frames_written += 1;
-
-                if (self.frames_written % self.config.fps == 0) {
-                    const elapsed_s = self.start_time.read() / std.time.ns_per_s;
-                    log.info("encoded {d} frames ({d}s elapsed)", .{
-                        self.frames_written, elapsed_s,
-                    });
-                }
-            }
-
-            // Release the retained pixel buffer now that encoding is done
-            c.sc_capture_release_frame(pb);
 
             // Frame pacing
             const elapsed_frame_ns = frame_timer.read();
@@ -172,14 +279,129 @@ pub const AppShare = struct {
                 std.Thread.sleep(frame_interval_ns - elapsed_frame_ns);
             }
             frame_timer.reset();
+
+            // Capture frame
+            var frame: c.SCFrameResult = undefined;
+            if (c.sc_capture_get_frame(self.capture, &frame) != 0) {
+                continue;
+            }
+
+            const pb = frame.pixel_buffer orelse continue;
+            defer c.sc_capture_release_frame(pb);
+
+            self.vt_backend.setPixelBuffer(pb);
+            self.encoder.processFrame(frame.is_new != 0) catch |err| {
+                log.err("encode error: {}", .{err});
+                break;
+            };
         }
 
-        log.info("capture stopped: {d} frames written", .{self.frames_written});
+        log.info("app share stopped", .{});
+    }
+
+    /// Rebuild the capture+encode pipeline at a new resolution.
+    /// On any failure, signals should_stop so the runLoop exits cleanly
+    /// rather than using deinitialized resources.
+    fn handleResize(self: *AppShare, new_w: u32, new_h: u32) void {
+        log.info("resize {d}x{d} — rebuilding pipeline", .{ new_w, new_h });
+
+        var t = std.time.Timer.start() catch null;
+        const ts = struct {
+            fn elapsed(timer: *?std.time.Timer) u64 {
+                if (timer.*) |*tt| {
+                    const us = tt.read() / std.time.ns_per_us;
+                    tt.reset();
+                    return us;
+                }
+                return 0;
+            }
+        };
+
+        // 1. Tear down encoder
+        self.encoder.deinit();
+        const t_encoder_deinit = ts.elapsed(&t);
+
+        // 2. Tear down capture
+        c.sc_capture_destroy(self.capture);
+        const t_capture_deinit = ts.elapsed(&t);
+
+        // 3. Resize the window
+        _ = c.sc_resize_window(self.app_pid, new_w, new_h);
+        const t_resize = ts.elapsed(&t);
+
+        // 4. Brief delay for window server to process resize
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+
+        // 5. Rebuild capture on the (now-resized) window
+        self.capture = c.sc_capture_create_window(self.window_id, self.config.fps) orelse {
+            log.err("capture reinit failed after resize — stopping", .{});
+            self.should_stop.store(true, .release);
+            return;
+        };
+        if (c.sc_capture_start(self.capture) != 0) {
+            log.err("capture restart failed after resize — stopping", .{});
+            c.sc_capture_destroy(self.capture);
+            self.should_stop.store(true, .release);
+            return;
+        }
+        const t_capture_init = ts.elapsed(&t);
+
+        // 6. Wait for first frame at new size
+        var frame: c.SCFrameResult = undefined;
+        var attempts: u32 = 0;
+        while (attempts < 200) : (attempts += 1) {
+            if (c.sc_capture_get_frame(self.capture, &frame) == 0) break;
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+        if (attempts >= 200) {
+            log.err("no frame after resize — stopping", .{});
+            self.should_stop.store(true, .release);
+            return;
+        }
+        if (frame.pixel_buffer) |pb| c.sc_capture_release_frame(pb);
+        const t_frame = ts.elapsed(&t);
+
+        // 7. Rebuild encoder
+        self.vt_backend = VideoToolboxBackend.init(frame.width, frame.height, self.config.fps) catch |err| {
+            log.err("encoder reinit failed: {} — stopping", .{err});
+            self.should_stop.store(true, .release);
+            return;
+        };
+        self.encoder = Encoder.init(
+            self.vt_backend.backend(),
+            frame.width,
+            frame.height,
+            .{ .session = &self.session },
+            self.config.fps,
+        ) catch |err| {
+            log.err("encoder reinit failed: {} — stopping", .{err});
+            self.should_stop.store(true, .release);
+            return;
+        };
+        self.session.codec = self.encoder.backend.codec;
+        if (self.recorder) |*rec| {
+            self.encoder.recorder = rec;
+            rec.updateResolution(frame.width, frame.height);
+            rec.logFmt("resize: {d}x{d}", .{ new_w, new_h });
+        }
+        const t_encoder_init = ts.elapsed(&t);
+
+        log.info("resize done: encoder_deinit={d}us capture_deinit={d}us resize={d}us capture_init={d}us frame={d}us encoder_init={d}us total={d}us", .{
+            t_encoder_deinit, t_capture_deinit, t_resize, t_capture_init, t_frame, t_encoder_init,
+            t_encoder_deinit + t_capture_deinit + t_resize + t_capture_init + t_frame + t_encoder_init,
+        });
+
+        self.sendAppMeta();
     }
 
     pub fn viewerCount(self: *AppShare) u32 {
-        _ = self;
-        return 0;
+        var count: u32 = 0;
+        for (&self.session.peers) |*peer| {
+            if (peer.state.load(.acquire) == .connected) {
+                count += 1;
+            }
+        }
+        return count;
     }
 
     pub fn uptimeSeconds(self: *AppShare) u64 {
@@ -187,8 +409,44 @@ pub const AppShare = struct {
     }
 
     pub fn deinit(self: *AppShare) void {
-        if (self.output_file) |file| file.close();
-        self.vt_backend.backend().deinit();
+        if (self.recorder) |*rec| {
+            rec.logEvent("session ended");
+            rec.deinit();
+            self.recorder = null;
+        }
+        self.encoder.recorder = null;
+        self.encoder.finish() catch {};
+        self.encoder.deinit();
+        self.session.deinit();
         c.sc_capture_destroy(self.capture);
+
+        // Terminate the app
+        _ = std.c.kill(@intCast(self.app_pid), std.c.SIG.TERM);
+    }
+
+    fn sendAppMeta(self: *AppShare) void {
+        const cmd = self.command_buf[0..self.command_len];
+        var buf: [512]u8 = undefined;
+        const meta = std.fmt.bufPrint(&buf, "{{\"type\":\"set-meta\",\"title\":\"{s}\",\"res\":\"{d}x{d}\",\"fps\":{d},\"bitrate\":{d}}}", .{
+            cmd,
+            self.encoder.width,
+            self.encoder.height,
+            self.last_fps,
+            self.last_bitrate,
+        }) catch return;
+        self.session.sendMeta(meta);
     }
 };
+
+fn appMetaCallback(session: *BroadcastSession) void {
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
+    self.sendAppMeta();
+}
+
+fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
+    if (width < 100 or height < 100) return;
+    if (@as(u32, width) == self.encoder.width and @as(u32, height) == self.encoder.height) return;
+    log.info("viewer resize requested: {d}x{d}", .{ width, height });
+    self.pending_resize.store((@as(u32, width) << 16) | @as(u32, height), .release);
+}

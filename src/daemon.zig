@@ -642,9 +642,9 @@ fn checkExistingDaemon(path: []const u8) DaemonCheck {
     return .alive;
 }
 
-fn toSockaddr(path: []const u8) ?std.os.linux.sockaddr.un {
-    if (path.len >= 108) return null; // sun_path limit
-    var addr = std.mem.zeroes(std.os.linux.sockaddr.un);
+fn toSockaddr(path: []const u8) ?std.posix.sockaddr.un {
+    if (path.len >= @as(usize, @typeInfo(@TypeOf(@as(std.posix.sockaddr.un, undefined).path)).array.len)) return null;
+    var addr = std.mem.zeroes(std.posix.sockaddr.un);
     addr.family = posix.AF.UNIX;
     @memcpy(addr.path[0..path.len], path);
     return addr;
@@ -675,7 +675,8 @@ test "toSockaddr valid" {
 }
 
 test "toSockaddr too long" {
-    const long_path = "a" ** 108;
+    const path_max = @typeInfo(@TypeOf(@as(std.posix.sockaddr.un, undefined).path)).array.len;
+    const long_path = "a" ** path_max;
     try std.testing.expect(toSockaddr(long_path) == null);
 }
 
