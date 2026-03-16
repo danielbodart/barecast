@@ -2,6 +2,7 @@ const std = @import("std");
 const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
+pub const Codec = @import("codec").Codec;
 
 const log = std.log.scoped(.encoder);
 
@@ -18,6 +19,8 @@ pub const EncodedFrame = struct {
 /// provides a struct that can be erased into this vtable.
 pub const EncodeBackend = struct {
     ptr: *anyopaque,
+    /// The video codec this backend produces.
+    codec: Codec,
     /// Prepare the next frame for encoding (e.g. GPU texture copy).
     /// Called once per frame before encodeFn.
     prepareFn: *const fn (*anyopaque) anyerror!void,

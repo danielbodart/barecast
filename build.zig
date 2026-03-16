@@ -103,6 +103,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ivf", .module = ivf_mod },
             .{ .name = "session", .module = session_mod },
             .{ .name = "session_recorder", .module = session_recorder_mod },
+            .{ .name = "codec", .module = codec_mod },
         },
     });
 

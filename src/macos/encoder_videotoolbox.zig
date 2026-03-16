@@ -35,6 +35,7 @@ pub const VideoToolboxBackend = struct {
     pub fn backend(self: *VideoToolboxBackend) encoder.EncodeBackend {
         return .{
             .ptr = @ptrCast(self),
+            .codec = .hevc,
             .prepareFn = @ptrCast(&prepareFn),
             .encodeFn = @ptrCast(&encodeFn),
             .unlockFn = @ptrCast(&unlockFn),

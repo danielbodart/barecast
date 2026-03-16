@@ -34,6 +34,7 @@ pub const NvencBackend = struct {
     pub fn backend(self: *NvencBackend) encoder.EncodeBackend {
         return .{
             .ptr = @ptrCast(self),
+            .codec = self.nvenc.codec,
             .prepareFn = @ptrCast(&prepareFn),
             .encodeFn = @ptrCast(&encodeFn),
             .unlockFn = @ptrCast(&unlockFn),
