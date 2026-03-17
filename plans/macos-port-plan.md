@@ -1,6 +1,6 @@
 # macOS Port Plan
 
-Status: **Phase 2 complete — virtual display + window-level capture working**
+Status: **All phases complete — end-to-end macOS pipeline implemented**
 Date: 2026-03-15
 Minimum macOS: 14.0 (Sonoma) — required for CGVirtualDisplay
 Minimum hardware: Apple Silicon M1 — required for VideoToolbox HEVC encode
@@ -241,26 +241,33 @@ Completed:
 - Verified: macOS clamps off-screen windows (e.g. -16000,0 → -158,25), so dynamic position
   query is essential. CGEventPostToPid confirmed working at clamped coordinates.
 
-### Phase 5: Resize + polish
+### Phase 5: Resize + polish — DONE
 
 Goal: Dynamic resize and permission UX.
 
-- Viewer resize → resize virtual display → resize app window → reinit capture + encoder
-- App self-resize detection via AXObserver geometry change notifications
-- Permission checking on startup (`permissions.zig`)
+Completed:
+- Viewer resize → resize window via AXUIElement → reinit capture + encoder (done in Phase 3)
+- Permission checking on startup:
   - Screen Recording: `CGPreflightScreenCaptureAccess()` / `CGRequestScreenCaptureAccess()`
-  - Accessibility: `AXIsProcessTrusted()`
-  - Clear error messages if denied
-- Encoder pipeline reinit (same teardown/rebuild pattern as Linux)
+    checked before ScreenCaptureKit init, with clear error message
+  - Accessibility: `AXIsProcessTrusted()` checked in CGEventInput.init (Phase 4)
+- Encoder pipeline reinit on resize (done in Phase 3)
 
-### Phase 6: Daemon + CLI
+Deferred:
+- App self-resize detection (AXObserver) — not implemented on Linux either, can add later
+
+### Phase 6: Daemon + CLI — DONE
 
 Goal: Background daemon with CLI control.
 
-- Port `daemon.zig` sockaddr to cross-platform
-- Port `cli.zig` sockaddr + remove systemctl on macOS
-- Port `control.zig` getuid
-- launchctl / LaunchAgent plist for daemon management (optional)
+Completed:
+- `daemon.zig` sockaddr ported to `std.posix.sockaddr.un` (done in Phase 3)
+- `cli.zig` sockaddr ported (done in Phase 3)
+- `cli.zig` start/stop: systemctl → launchctl on macOS (comptime platform switch)
+- `control.zig` getuid already uses `std.posix.getuid()` (cross-platform)
+
+Deferred:
+- LaunchAgent plist for daemon auto-start — can add when packaging
 
 ## Dependencies
 

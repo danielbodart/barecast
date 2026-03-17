@@ -89,9 +89,16 @@ pub const AppShare = struct {
         self.app_pid = pid;
         const t_launch = ts.elapsed(&t);
 
+        // Check Screen Recording permission before capture
+        if (c.sc_check_screen_recording_permission() == 0) {
+            log.err("Screen Recording permission not granted", .{});
+            log.err("Grant access in System Settings → Privacy & Security → Screen Recording", .{});
+            return error.ScreenRecordingDenied;
+        }
+
         // Create window-level capture
         self.capture = c.sc_capture_create_window(self.window_id, config.fps) orelse {
-            log.err("ScreenCaptureKit init failed — check Screen Recording permission", .{});
+            log.err("ScreenCaptureKit init failed", .{});
             return error.CaptureInitFailed;
         };
         errdefer c.sc_capture_destroy(self.capture);

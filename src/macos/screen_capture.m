@@ -118,6 +118,16 @@ static SCShareableContent *getShareableContent(void) {
 
 // ── Public C API ────────────────────────────────────────────────────────
 
+int sc_check_screen_recording_permission(void) {
+    if (CGPreflightScreenCaptureAccess()) {
+        return 1;
+    }
+    // Triggers the system permission dialog
+    CGRequestScreenCaptureAccess();
+    // Re-check after request (user may have pre-granted)
+    return CGPreflightScreenCaptureAccess() ? 1 : 0;
+}
+
 SCCapture *sc_capture_create_window(uint32_t window_id, uint32_t fps) {
     SCCapture *cap = calloc(1, sizeof(SCCapture));
     if (!cap) return NULL;

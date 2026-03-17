@@ -14,6 +14,11 @@ typedef struct {
     int is_new;             // 1 if content changed since last frame
 } SCFrameResult;
 
+/// Check and request Screen Recording permission.
+/// Returns 1 if access is granted, 0 if denied.
+/// On first call, triggers the system permission dialog.
+int sc_check_screen_recording_permission(void);
+
 /// Create a capture session for a specific window (by CGWindowID).
 /// Captures the window content only — no title bar, no desktop.
 /// Returns NULL on failure (e.g. no Screen Recording permission).

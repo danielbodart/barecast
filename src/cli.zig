@@ -25,9 +25,9 @@ pub fn dispatch() void {
     } else if (std.mem.eql(u8, subcmd, "leave")) {
         sendCommand("{\"cmd\":\"leave\"}\n", .{});
     } else if (std.mem.eql(u8, subcmd, "start")) {
-        execSystemctl("start");
+        execServiceCtl("start");
     } else if (std.mem.eql(u8, subcmd, "stop")) {
-        execSystemctl("stop");
+        execServiceCtl("stop");
     } else if (std.mem.eql(u8, subcmd, "attach")) {
         const session_id = args.next() orelse {
             std.debug.print("Usage: zerocast attach <session-id>\n", .{});
@@ -129,16 +129,38 @@ fn handleJoin(args: *std.process.ArgIterator) void {
     sendCommand(fbs.getWritten(), .{ .extract_room = true });
 }
 
-fn execSystemctl(action: []const u8) void {
-    const argv = [_]?[*:0]const u8{
-        "systemctl",
-        "--user",
-        if (std.mem.eql(u8, action, "start")) "start" else "stop",
-        "zerocast",
-        null,
-    };
-    const err = std.posix.execvpeZ("systemctl", @ptrCast(&argv), std.c.environ);
-    std.debug.print("Failed to exec systemctl: {}\n", .{err});
+const builtin = @import("builtin");
+
+fn execServiceCtl(action: []const u8) void {
+    const is_start = std.mem.eql(u8, action, "start");
+    switch (builtin.os.tag) {
+        .linux => {
+            const argv = [_]?[*:0]const u8{
+                "systemctl",
+                "--user",
+                if (is_start) "start" else "stop",
+                "zerocast",
+                null,
+            };
+            const err = std.posix.execvpeZ("systemctl", @ptrCast(&argv), std.c.environ);
+            std.debug.print("Failed to exec systemctl: {}\n", .{err});
+        },
+        .macos => {
+            const label = "com.zerocast.daemon";
+            if (is_start) {
+                const argv = [_]?[*:0]const u8{ "launchctl", "start", label, null };
+                const err = std.posix.execvpeZ("launchctl", @ptrCast(&argv), std.c.environ);
+                std.debug.print("Failed to exec launchctl: {}\n", .{err});
+            } else {
+                const argv = [_]?[*:0]const u8{ "launchctl", "stop", label, null };
+                const err = std.posix.execvpeZ("launchctl", @ptrCast(&argv), std.c.environ);
+                std.debug.print("Failed to exec launchctl: {}\n", .{err});
+            }
+        },
+        else => {
+            std.debug.print("Service management not supported on this platform\n", .{});
+        },
+    }
     std.process.exit(1);
 }
 
