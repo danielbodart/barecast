@@ -8,6 +8,7 @@ const FrameSink = encoder_mod.FrameSink;
 const VideoToolboxBackend = @import("encoder_videotoolbox").VideoToolboxBackend;
 const BroadcastSession = @import("session").BroadcastSession;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
+const CGEventInput = @import("cgevent_input").CGEventInput;
 const generateRoomId = @import("control").generateRoomId;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 
@@ -37,6 +38,7 @@ pub const AppShare = struct {
     app_pid: i64,
     window_id: u32,
     capture: *c.SCCapture,
+    cgevent: ?CGEventInput,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
     vt_backend: VideoToolboxBackend,
@@ -163,6 +165,15 @@ pub const AppShare = struct {
         self.session.viewer_registry = &self.viewer_registry;
         self.session.meta_callback = appMetaCallback;
         self.session.resize_callback = appResizeCallback;
+
+        // CGEvent input injection (requires Accessibility permission)
+        self.cgevent = CGEventInput.init(self.app_pid) catch |err| blk: {
+            log.warn("CGEvent input init failed (non-fatal): {}", .{err});
+            break :blk null;
+        };
+        if (self.cgevent) |*cge| {
+            self.session.input_handler = cge.inputHandler();
+        }
         const t_session = ts.elapsed(&t);
 
         // VideoToolbox encoder
@@ -390,6 +401,9 @@ pub const AppShare = struct {
             t_encoder_deinit, t_capture_deinit, t_resize, t_capture_init, t_frame, t_encoder_init,
             t_encoder_deinit + t_capture_deinit + t_resize + t_capture_init + t_frame + t_encoder_init,
         });
+
+        // Refresh cached window position for input coordinate mapping
+        if (self.cgevent) |*cge| cge.refreshWindowPosition();
 
         self.sendAppMeta();
     }

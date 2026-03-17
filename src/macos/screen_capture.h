@@ -41,4 +41,8 @@ uint32_t sc_launch_app_offscreen(const char *app_path, int64_t *out_pid);
 /// Returns 0 on success, non-zero on failure.
 int sc_resize_window(int64_t pid, uint32_t width, uint32_t height);
 
+/// Get the screen position of a window by PID using AXUIElement.
+/// Returns 0 on success (x/y written), non-zero on failure.
+int sc_get_window_position(int64_t pid, double *out_x, double *out_y);
+
 #endif

@@ -345,3 +345,44 @@ int sc_resize_window(int64_t pid, uint32_t width, uint32_t height) {
         return 0;
     }
 }
+
+// ── Window position query ───────────────────────────────────────────────
+
+int sc_get_window_position(int64_t pid, double *out_x, double *out_y) {
+    @autoreleasepool {
+        AXUIElementRef appElement = AXUIElementCreateApplication((pid_t)pid);
+        if (!appElement) return -1;
+
+        CFArrayRef windows = NULL;
+        AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute, (CFTypeRef *)&windows);
+        if (!windows || CFArrayGetCount(windows) == 0) {
+            if (windows) CFRelease(windows);
+            CFRelease(appElement);
+            return -1;
+        }
+
+        AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windows, 0);
+        AXValueRef posValue = NULL;
+        AXUIElementCopyAttributeValue(window, kAXPositionAttribute, (CFTypeRef *)&posValue);
+        if (!posValue) {
+            CFRelease(windows);
+            CFRelease(appElement);
+            return -1;
+        }
+
+        CGPoint pos;
+        Boolean ok = AXValueGetValue(posValue, kAXValueCGPointType, &pos);
+        CFRelease(posValue);
+        if (!ok) {
+            CFRelease(windows);
+            CFRelease(appElement);
+            return -1;
+        }
+        CFRelease(windows);
+        CFRelease(appElement);
+
+        if (out_x) *out_x = pos.x;
+        if (out_y) *out_y = pos.y;
+        return 0;
+    }
+}

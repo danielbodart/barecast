@@ -222,17 +222,24 @@ Completed:
 - Daemon portability: `daemon.zig` + `cli.zig` sockaddr fixed (`std.posix.sockaddr.un`)
 - HEVC WebRTC already on trunk (session.zig H.265 track + viewer.ts codec negotiation)
 
-### Phase 4: Input injection
+### Phase 4: Input injection — DONE
 
 Goal: Remote viewers can interact with the shared app.
 
-- Build CGEvent input handler (`src/macos/cgevent_input.zig`)
-  - Implement `InputHandler` interface (same vtable as XTestInput)
-  - Map input_protocol mouse/keyboard events to CGEvent calls
-  - Post events at virtual display coordinate space
-  - Map W3C KeyboardEvent.code to macOS virtual keycodes (new keymap needed)
-- Wire into session's input callback path
-- Test: viewer mouse/keyboard → data channel → CGEvent → app responds
+Completed:
+- `src/macos/cgevent_input.zig` — CGEvent input handler implementing InputHandler vtable
+  - Mouse: `CGEventCreateMouseEvent` + `CGEventPostToPid` for move/click/scroll
+  - Keyboard: `CGEventCreateKeyboardEvent` + `CGEventPostToPid`
+  - Coordinate mapping: window position queried via AXUIElement, viewer-relative coords
+    offset to absolute screen coords. Position refreshed after resize.
+  - `AXIsProcessTrusted()` check on init with clear error message
+- `src/macos/keymap_mac.zig` — W3C KeyboardEvent.code → macOS virtual keycodes (kVK_*)
+  - 84 entries covering letters, digits, F-keys, modifiers, punctuation, control, arrows,
+    numpad, audio. PrintScreen → F13. ScrollLock/Pause intentionally omitted (no Mac equiv).
+- `sc_get_window_position()` added to screen_capture.m — queries AXUIElement position
+- Wired into app_share.zig: `CGEventInput.init(pid)` → `session.input_handler`
+- Verified: macOS clamps off-screen windows (e.g. -16000,0 → -158,25), so dynamic position
+  query is essential. CGEventPostToPid confirmed working at clamped coordinates.
 
 ### Phase 5: Resize + polish
 

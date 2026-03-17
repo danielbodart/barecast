@@ -28,6 +28,28 @@ pub fn buildPlatform(
     encoder_vt_mod.linkFramework("CoreVideo", .{});
     encoder_vt_mod.linkSystemLibrary("objc", .{});
 
+    // --- macOS keymap (W3C KeyboardEvent.code → macOS virtual keycodes) ---
+    const keymap_mac_mod = b.createModule(.{
+        .root_source_file = b.path("src/macos/keymap_mac.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // --- CGEvent input handler (mouse + keyboard injection via CoreGraphics) ---
+    const cgevent_input_mod = b.createModule(.{
+        .root_source_file = b.path("src/macos/cgevent_input.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "keymap_mac", .module = keymap_mac_mod },
+            .{ .name = "session", .module = shared.session },
+        },
+    });
+    cgevent_input_mod.addIncludePath(b.path("src"));
+    cgevent_input_mod.linkFramework("CoreGraphics", .{});
+    cgevent_input_mod.linkFramework("ApplicationServices", .{});
+
     // --- App share module (ScreenCaptureKit capture + VideoToolbox encode + WebRTC) ---
     const app_share_mod = b.createModule(.{
         .root_source_file = b.path("src/macos/app_share.zig"),
@@ -39,6 +61,7 @@ pub fn buildPlatform(
             .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
+            .{ .name = "cgevent_input", .module = cgevent_input_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session_recorder", .module = shared.session_recorder },
         },
