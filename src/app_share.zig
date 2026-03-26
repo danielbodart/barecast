@@ -9,8 +9,10 @@ const Box = nvfbc.Box;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const NvencBackend = @import("encoder_nvenc").NvencBackend;
-const BroadcastSession = @import("session").BroadcastSession;
-const InputHandler = @import("session").InputHandler;
+const session_mod = @import("session");
+const BroadcastSession = session_mod.BroadcastSession;
+const InputHandler = session_mod.InputHandler;
+const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const XTestInput = @import("xtest_input").XTestInput;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
@@ -52,6 +54,7 @@ pub const AppShare = struct {
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
+    pending_resize_slot: std.atomic.Value(u8),
     should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
     last_fps: u32,
@@ -62,6 +65,7 @@ pub const AppShare = struct {
 
     pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
         self.pending_resize = std.atomic.Value(u32).init(0);
+        self.pending_resize_slot = std.atomic.Value(u8).init(0xFF);
         self.should_stop = std.atomic.Value(bool).init(false);
         self.config = config;
         self.app_pid = null;
@@ -399,6 +403,7 @@ pub const AppShare = struct {
                 });
 
                 self.sendAppMeta();
+                self.session.sendHostResizeToOthersSlot(self.pending_resize_slot.load(.acquire), @intCast(new_frame.width), @intCast(new_frame.height));
                 frame_timer.reset();
                 continue;
             }
@@ -544,11 +549,12 @@ fn appMetaCallback(session: *BroadcastSession) void {
     self.sendAppMeta();
 }
 
-fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
+fn appResizeCallback(session: *BroadcastSession, sender_peer_id: *const [PEER_ID_LEN]u8, width: u16, height: u16) void {
     const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     if (width < 100 or height < 100) return;
     // Skip no-op resizes (viewer often sends back the current video resolution)
     if (@as(u32, width) == self.display.width and @as(u32, height) == self.display.height) return;
     log.info("viewer resize requested: {d}x{d}", .{ width, height });
+    self.pending_resize_slot.store(session.peerSlotIndex(sender_peer_id), .release);
     self.pending_resize.store((@as(u32, width) << 16) | @as(u32, height), .release);
 }

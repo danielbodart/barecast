@@ -21,7 +21,7 @@ pub const SessionMode = enum {
 pub const TerminalDataCallback = struct {
     ptr: *anyopaque,
     onData: *const fn (*anyopaque, []const u8) void,
-    onResize: *const fn (*anyopaque, u16, u16) void,
+    onResize: *const fn (*anyopaque, *const [PEER_ID_LEN]u8, u16, u16) void,
     onPeerConnected: ?*const fn (*anyopaque, c_int) void = null,
 };
 
@@ -287,8 +287,9 @@ pub const Peer = struct {
             .draw_undo => reg.drawUndo(peer_id),
             .draw_clear => reg.drawClear(peer_id),
             .app_resize => |r| {
-                if (session.resize_callback) |cb| cb(session, r.width, r.height);
+                if (session.resize_callback) |cb| cb(session, peer_id, r.width, r.height);
             },
+            .host_resize => {}, // host→viewer only, ignore if received
             .color_assign, .viewer_left, .relay => {}, // host→viewer only, ignore if received
         }
 
@@ -335,7 +336,7 @@ pub const Peer = struct {
             // Check for resize escape: \x1b[R{cols};{rows}
             if (data.len > 3 and data[0] == 0x1b and data[1] == '[' and data[2] == 'R') {
                 if (parseResize(data[3..])) |r| {
-                    cb.onResize(cb.ptr, r.cols, r.rows);
+                    cb.onResize(cb.ptr, &self.peer_id, r.cols, r.rows);
                     return;
                 }
             }
@@ -432,7 +433,7 @@ pub const BroadcastSession = struct {
     bytes_sent: std.atomic.Value(u64),
     frames_sent: std.atomic.Value(u64),
     meta_callback: ?*const fn (*BroadcastSession) void,
-    resize_callback: ?*const fn (*BroadcastSession, u16, u16) void,
+    resize_callback: ?*const fn (*BroadcastSession, *const [PEER_ID_LEN]u8, u16, u16) void,
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8, share_id: []const u8, share_type: []const u8, mode: SessionMode) !BroadcastSession {
@@ -569,6 +570,44 @@ pub const BroadcastSession = struct {
             if (peer.dc < 0) continue;
             _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));
         }
+    }
+
+    /// Broadcast host_resize to all connected peers except sender (identified by peer_id).
+    pub fn sendHostResizeToOthers(self: *BroadcastSession, sender_peer_id: *const [PEER_ID_LEN]u8, width: u16, height: u16) void {
+        const msg = input_protocol.encodeHostResize(width, height);
+
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers) |*peer| {
+            if (peer.state.load(.acquire) != .connected) continue;
+            if (std.mem.eql(u8, &peer.peer_id, sender_peer_id)) continue;
+            if (peer.dc < 0) continue;
+            _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));
+        }
+    }
+
+    /// Broadcast host_resize to all connected peers except the given slot index.
+    pub fn sendHostResizeToOthersSlot(self: *BroadcastSession, sender_slot: u8, width: u16, height: u16) void {
+        const msg = input_protocol.encodeHostResize(width, height);
+
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers, 0..) |*peer, i| {
+            if (i == sender_slot) continue;
+            if (peer.state.load(.acquire) != .connected) continue;
+            if (peer.dc < 0) continue;
+            _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));
+        }
+    }
+
+    /// Find the slot index for a peer by ID. Returns 0xFF if not found.
+    pub fn peerSlotIndex(self: *BroadcastSession, peer_id: *const [PEER_ID_LEN]u8) u8 {
+        for (&self.peers, 0..) |*peer, i| {
+            if (peer.state.load(.acquire) != .empty and std.mem.eql(u8, &peer.peer_id, peer_id)) {
+                return @intCast(i);
+            }
+        }
+        return 0xFF;
     }
 
     /// Check and clear force-keyframe flags across all connected peers.

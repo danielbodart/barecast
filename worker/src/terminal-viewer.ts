@@ -7,6 +7,8 @@
 declare const Terminal: any;
 declare const FitAddon: any;
 
+const MSG_HOST_RESIZE = 0x21;
+
 const roomId = window.location.pathname.split("/")[2];
 const shareId = new URLSearchParams(window.location.search).get("share") || undefined;
 const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -28,6 +30,8 @@ let dc: RTCDataChannel | null = null;
 let ws: WebSocket | null = null;
 let term: any = null;
 let fitAddon: any = null;
+let ignoringRemoteResize = false;
+let hostResizeTimer: ReturnType<typeof setTimeout> | null = null;
 let iceServers: RTCIceServer[] = [
     { urls: "stun:stun.cloudflare.com:3478" },
 ];
@@ -54,6 +58,7 @@ function init() {
     }
 
     window.addEventListener("resize", () => {
+        if (ignoringRemoteResize) return;
         if (fitAddon) fitAddon.fit();
         sendResize();
     });
@@ -150,12 +155,18 @@ async function handleOffer(msg: { sdp: string; from?: string }) {
             };
 
             dc.onmessage = (e: MessageEvent) => {
-                if (term) {
-                    if (typeof e.data === "string") {
-                        term.write(e.data);
-                    } else {
-                        term.write(new Uint8Array(e.data));
+                if (e.data instanceof ArrayBuffer) {
+                    const bytes = new Uint8Array(e.data);
+                    if (bytes.length >= 5 && bytes[0] === MSG_HOST_RESIZE) {
+                        const view = new DataView(e.data);
+                        const cols = view.getUint16(1, true);
+                        const rows = view.getUint16(3, true);
+                        handleHostTerminalResize(cols, rows);
+                        return;
                     }
+                    if (term) term.write(bytes);
+                } else if (typeof e.data === "string") {
+                    if (term) term.write(e.data);
                 }
             };
 
@@ -196,6 +207,40 @@ function sendResize() {
         const msg = `\x1b[R${term.cols};${term.rows}`;
         dc.send(msg);
     }
+}
+
+function handleHostTerminalResize(cols: number, rows: number): void {
+    // Suppress echo: if already at this size, ignore
+    if (term && term.cols === cols && term.rows === rows) return;
+
+    if (hostResizeTimer) clearTimeout(hostResizeTimer);
+    hostResizeTimer = setTimeout(() => {
+        hostResizeTimer = null;
+        if (!term || (term.cols === cols && term.rows === rows)) return;
+
+        // Resize terminal buffer to the broadcast cols/rows
+        ignoringRemoteResize = true;
+        term.resize(cols, rows);
+
+        // Compute pixel size from the terminal element and resize window
+        const container = document.getElementById("terminal");
+        if (container) {
+            const screen = container.querySelector(".xterm-screen") as HTMLElement | null;
+            if (screen) {
+                requestAnimationFrame(() => {
+                    const rect = screen!.getBoundingClientRect();
+                    const chromW = window.outerWidth - window.innerWidth;
+                    const chromH = window.outerHeight - window.innerHeight;
+                    window.resizeTo(
+                        Math.round(rect.width) + chromW,
+                        Math.round(rect.height) + chromH,
+                    );
+                });
+            }
+        }
+        // Clear flag after resize settles (consistent timing for all paths)
+        setTimeout(() => { ignoringRemoteResize = false; }, 350);
+    }, 250);
 }
 
 if (document.readyState === "loading") {

@@ -189,9 +189,10 @@ pub const TerminalShare = struct {
         self.writeInput(data);
     }
 
-    fn termOnResize(ptr: *anyopaque, cols: u16, rows: u16) void {
+    fn termOnResize(ptr: *anyopaque, sender_peer_id: *const [session_mod.PEER_ID_LEN]u8, cols: u16, rows: u16) void {
         const self: *TerminalShare = @alignCast(@ptrCast(ptr));
         self.resize(cols, rows);
+        self.session.sendHostResizeToOthers(sender_peer_id, cols, rows);
     }
 
     fn termOnPeerConnected(ptr: *anyopaque, dc: c_int) void {

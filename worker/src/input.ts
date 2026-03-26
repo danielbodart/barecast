@@ -24,6 +24,7 @@ const MSG_DRAW_END = 0x12;
 const MSG_DRAW_UNDO = 0x13;
 const MSG_DRAW_CLEAR = 0x14;
 const MSG_APP_RESIZE = 0x20;
+const MSG_HOST_RESIZE = 0x21;
 const MSG_VIEWER_LEFT = 0xfd;
 const MSG_RELAY = 0xfe;
 const MSG_COLOR_ASSIGN = 0xff;
@@ -43,6 +44,7 @@ export class InputController {
     private overlay: OverlayRenderer | null = null;
     private resizeObserver: ResizeObserver | null = null;
     private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    private hostResizeTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Native video resolution (for coordinate mapping)
     private nativeW = 0;
@@ -112,6 +114,10 @@ export class InputController {
         if (this.resizeTimer) {
             clearTimeout(this.resizeTimer);
             this.resizeTimer = null;
+        }
+        if (this.hostResizeTimer) {
+            clearTimeout(this.hostResizeTimer);
+            this.hostResizeTimer = null;
         }
     }
 
@@ -321,6 +327,11 @@ export class InputController {
         } else if (data[0] === MSG_RELAY && data.length >= 3) {
             const colorIndex = data[1];
             this.overlay?.handleRelayedMessage(colorIndex, data.subarray(2));
+        } else if (data[0] === MSG_HOST_RESIZE && data.length >= 5) {
+            const view = new DataView(e.data as ArrayBuffer);
+            const w = view.getUint16(1, true);
+            const h = view.getUint16(3, true);
+            this.handleHostResize(w, h);
         } else if (data[0] === MSG_VIEWER_LEFT && data.length >= 2) {
             this.overlay?.removeViewer(data[1]);
         }
@@ -352,6 +363,40 @@ export class InputController {
     /** [0x20] [u16 width] [u16 height] = 5 bytes */
     private sendResize(width: number, height: number): void {
         this.sendXY(MSG_APP_RESIZE, Math.min(width, 65535), Math.min(height, 65535));
+    }
+
+    /** Handle host_resize broadcast — resize this viewer's window to match. */
+    private handleHostResize(width: number, height: number): void {
+        // Suppress echo: if this matches the current video resolution, ignore
+        if (width === this.video.videoWidth && height === this.video.videoHeight) return;
+
+        if (this.hostResizeTimer) clearTimeout(this.hostResizeTimer);
+        this.hostResizeTimer = setTimeout(() => {
+            this.hostResizeTimer = null;
+            // Re-check after debounce — stream may have caught up
+            if (width === this.video.videoWidth && height === this.video.videoHeight) return;
+
+            // Update CSS custom props for zoom mode
+            document.documentElement.style.setProperty("--video-w", width + "px");
+            document.documentElement.style.setProperty("--video-h", height + "px");
+
+            const chromW = window.outerWidth - window.innerWidth;
+            const chromH = window.outerHeight - window.innerHeight;
+            const ratio = width / height;
+            const maxW = screen.availWidth;
+            const maxH = screen.availHeight;
+            let fitW = width + chromW;
+            let fitH = height + chromH;
+            if (fitW > maxW) {
+                fitW = maxW;
+                fitH = Math.round((maxW - chromW) / ratio) + chromH;
+            }
+            if (fitH > maxH) {
+                fitH = maxH;
+                fitW = Math.round((maxH - chromH) * ratio) + chromW;
+            }
+            window.resizeTo(fitW, fitH);
+        }, 250);
     }
 
     /** [type] [u16 x] [u16 y] [u8 button] = 6 bytes */

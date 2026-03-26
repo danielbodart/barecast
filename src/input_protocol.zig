@@ -23,6 +23,9 @@ pub const MsgType = enum(u8) {
     // Viewer → host (app share)
     app_resize = 0x20,
 
+    // Host → viewer (resize broadcast)
+    host_resize = 0x21,
+
     // Host → viewer
     viewer_left = 0xFD,
     relay = 0xFE,
@@ -48,6 +51,7 @@ pub const Message = union(MsgType) {
     draw_undo: void,
     draw_clear: void,
     app_resize: struct { width: u16, height: u16 },
+    host_resize: struct { width: u16, height: u16 },
     viewer_left: struct { color_index: u8 },
     relay: struct { color_index: u8, payload: []const u8 },
     color_assign: struct { color_index: u8 },
@@ -137,6 +141,13 @@ pub fn decode(data: []const u8) DecodeError!Message {
                 .height = readU16(data[3..5]),
             } };
         },
+        .host_resize => {
+            if (data.len < 5) return error.Truncated;
+            return .{ .host_resize = .{
+                .width = readU16(data[1..3]),
+                .height = readU16(data[3..5]),
+            } };
+        },
         .viewer_left => {
             if (data.len < 2) return error.Truncated;
             return .{ .viewer_left = .{ .color_index = data[1] } };
@@ -171,6 +182,15 @@ pub fn encodeRelay(color_index: u8, original: []const u8, buf: []u8) ?usize {
     buf[1] = color_index;
     @memcpy(buf[2 .. 2 + original.len], original);
     return total;
+}
+
+/// Encode a host_resize message (host → viewer): [0x21][u16 w][u16 h].
+pub fn encodeHostResize(width: u16, height: u16) [5]u8 {
+    var buf: [5]u8 = undefined;
+    buf[0] = @intFromEnum(MsgType.host_resize);
+    std.mem.writeInt(u16, buf[1..3], width, .little);
+    std.mem.writeInt(u16, buf[3..5], height, .little);
+    return buf;
 }
 
 fn readU16(bytes: *const [2]u8) u16 {
@@ -327,4 +347,11 @@ test "encodeRelay too small returns null" {
     const original = [_]u8{ 0x01, 0x80, 0x07, 0x38, 0x04 };
     var buf: [3]u8 = undefined;
     try std.testing.expect(encodeRelay(0, &original, &buf) == null);
+}
+
+test "encodeHostResize roundtrip" {
+    const encoded = encodeHostResize(1920, 1080);
+    const msg = try decode(&encoded);
+    try std.testing.expectEqual(msg.host_resize.width, 1920);
+    try std.testing.expectEqual(msg.host_resize.height, 1080);
 }
