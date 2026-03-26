@@ -620,11 +620,15 @@ fn stopAllSessions() u32 {
 const DaemonCheck = enum { alive, stale, none };
 
 fn checkExistingDaemon(path: []const u8) DaemonCheck {
+    // First check if the socket file exists at all
+    std.fs.cwd().access(path, .{}) catch return .none;
+
     const addr = toSockaddr(path) orelse return .none;
     const sock = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch return .none;
     defer posix.close(sock);
 
-    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch return .none;
+    // Socket file exists — try to connect. If nobody is listening, it's stale.
+    posix.connect(sock, @ptrCast(&addr), @sizeOf(@TypeOf(addr))) catch return .stale;
 
     // Connected — but is it actually responding? Send a status request with a short timeout.
     const timeout = posix.timeval{ .sec = 2, .usec = 0 };
