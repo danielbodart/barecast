@@ -3,8 +3,8 @@
  * sends over WebRTC data channel.
  *
  * Two modes:
- * - Draw (default): left-drag draws, right-click undoes, long-press right clears
- * - Input: mouse moves host cursor, keyboard types
+ * - Input (default): mouse moves host cursor, keyboard types
+ * - Draw: left-drag draws, right-click undoes, long-press right clears
  */
 
 import type { OverlayRenderer } from "./overlay";
@@ -35,7 +35,7 @@ const LONG_PRESS_MS = 500;
 export class InputController {
     private dc: RTCDataChannel;
     private video: HTMLVideoElement;
-    private mode: ViewerMode = "draw";
+    private mode: ViewerMode = "input";
     private colorIndex: number = -1;
     private drawing = false;
     private rightPressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +179,8 @@ export class InputController {
     private _onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
     private _onKeyUp = (e: KeyboardEvent) => this.onKeyUp(e);
     private _onContextMenu = (e: Event) => e.preventDefault();
+    private _onMouseEnter = () => this.overlay?.fadeIn();
+    private _onMouseLeave = () => this.overlay?.fadeOut();
 
     private bindEvents(): void {
         const el = this.video;
@@ -187,6 +189,8 @@ export class InputController {
         el.addEventListener("mouseup", this._onMouseUp);
         el.addEventListener("wheel", this._onWheel, { passive: false });
         el.addEventListener("contextmenu", this._onContextMenu);
+        el.addEventListener("mouseenter", this._onMouseEnter);
+        el.addEventListener("mouseleave", this._onMouseLeave);
         // Keyboard events on document (video may not be focusable in all states)
         document.addEventListener("keydown", this._onKeyDown);
         document.addEventListener("keyup", this._onKeyUp);
@@ -199,6 +203,8 @@ export class InputController {
         el.removeEventListener("mouseup", this._onMouseUp);
         el.removeEventListener("wheel", this._onWheel);
         el.removeEventListener("contextmenu", this._onContextMenu);
+        el.removeEventListener("mouseenter", this._onMouseEnter);
+        el.removeEventListener("mouseleave", this._onMouseLeave);
         document.removeEventListener("keydown", this._onKeyDown);
         document.removeEventListener("keyup", this._onKeyUp);
     }
@@ -283,21 +289,6 @@ export class InputController {
     private onKeyDown(e: KeyboardEvent): void {
         if (e.repeat) return;
 
-        // Tab toggles mode (always, regardless of current mode)
-        if (e.code === "Tab") {
-            e.preventDefault();
-            this.toggleMode();
-            return;
-        }
-
-        // Escape returns to draw mode
-        if (e.code === "Escape" && this.mode === "input") {
-            e.preventDefault();
-            this.mode = "draw";
-            this.onModeChange?.(this.mode);
-            return;
-        }
-
         if (this.mode === "input") {
             e.preventDefault();
             this.sendKey(MSG_KEY_DOWN, e.code);
@@ -305,7 +296,7 @@ export class InputController {
     }
 
     private onKeyUp(e: KeyboardEvent): void {
-        if (e.code === "Tab" || e.code === "Escape") return;
+        if (e.code === "Escape") return;
 
         if (this.mode === "input") {
             e.preventDefault();

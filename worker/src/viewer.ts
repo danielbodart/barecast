@@ -509,7 +509,7 @@ if (!roomId) {
                 },
             });
             if (modeBtn) modeBtn.classList.add("visible");
-            updateModeUI("draw");
+            updateModeUI("input");
         };
 
         pc.onicecandidate = (event) => {

@@ -27,10 +27,17 @@ const MSG_DRAW_CLEAR = 0x14;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// Fade out a remote viewer's cursor after this many ms with no activity
+const CURSOR_FADE_MS = 5000;
+// Remove a stale remote viewer entirely after this many ms
+const CURSOR_REMOVE_MS = 30000;
+
 interface ViewerState {
     cursorX: number;
     cursorY: number;
     cursorVisible: boolean;
+    lastActivity: number;
+    faded: boolean;
     paths: Array<Array<[number, number]>>;
     currentPath: Array<[number, number]> | null;
     cursorEl: SVGGElement | null;
@@ -59,6 +66,7 @@ export class OverlayRenderer {
         this.svg.style.height = "100%";
         this.svg.style.pointerEvents = "none";
         this.svg.style.overflow = "hidden";
+        this.svg.style.transition = "opacity 0.3s ease";
 
         // viewBox will be set once we know the native resolution
         this.updateViewBox();
@@ -89,6 +97,14 @@ export class OverlayRenderer {
         this.localColorIndex = index;
     }
 
+    fadeOut(): void {
+        this.svg.style.opacity = "0";
+    }
+
+    fadeIn(): void {
+        this.svg.style.opacity = "1";
+    }
+
     private getOrCreateViewer(colorIndex: number): ViewerState {
         let state = this.viewers.get(colorIndex);
         if (!state) {
@@ -96,6 +112,8 @@ export class OverlayRenderer {
                 cursorX: 0,
                 cursorY: 0,
                 cursorVisible: false,
+                lastActivity: Date.now(),
+                faded: false,
                 paths: [],
                 currentPath: null,
                 cursorEl: null,
@@ -112,6 +130,11 @@ export class OverlayRenderer {
         const msgType = payload[0];
 
         const state = this.getOrCreateViewer(colorIndex);
+        state.lastActivity = Date.now();
+        if (state.faded) {
+            state.faded = false;
+            this.dirty = true;
+        }
 
         switch (msgType) {
             case MSG_MOUSE_MOVE: {
@@ -238,8 +261,30 @@ export class OverlayRenderer {
 
     start(): void {
         if (this.rafId !== null) return;
+        let lastStaleCheck = 0;
         const loop = () => {
             this.updateViewBox();
+            // Check for stale remote viewers once per second
+            const now = Date.now();
+            if (now - lastStaleCheck > 1000) {
+                lastStaleCheck = now;
+                const toRemove: number[] = [];
+                for (const [ci, state] of this.viewers) {
+                    if (ci === this.localColorIndex) continue;
+                    const shouldFade = now - state.lastActivity > CURSOR_FADE_MS;
+                    if (shouldFade !== state.faded) {
+                        state.faded = shouldFade;
+                        this.dirty = true;
+                    }
+                    if (now - state.lastActivity > CURSOR_REMOVE_MS) {
+                        toRemove.push(ci);
+                    }
+                }
+                for (const ci of toRemove) {
+                    this.removeViewer(ci);
+                    this.dirty = true;
+                }
+            }
             if (this.dirty) {
                 this.render();
                 this.dirty = false;
@@ -266,7 +311,7 @@ export class OverlayRenderer {
     private render(): void {
         for (const [colorIndex, state] of this.viewers) {
             const color = VIEWER_COLORS[colorIndex % VIEWER_COLORS.length];
-            const isLocal = colorIndex === this.localColorIndex;
+            const stale = state.faded;
 
             // Cursor
             if (state.cursorVisible) {
@@ -279,14 +324,15 @@ export class OverlayRenderer {
                     "transform",
                     `translate(${state.cursorX}, ${state.cursorY}) scale(${scale}) translate(${-CURSOR_TIP_X}, ${-CURSOR_TIP_Y})`,
                 );
+                state.cursorEl.style.opacity = stale ? "0" : "1";
             }
 
             // Draw paths — rebuild if count changed
-            this.renderPaths(state, color);
+            this.renderPaths(state, color, stale);
         }
     }
 
-    private renderPaths(state: ViewerState, color: string): void {
+    private renderPaths(state: ViewerState, color: string, stale = false): void {
         // Completed paths — sync DOM elements with state
         while (state.pathEls.length > state.paths.length) {
             const el = state.pathEls.pop()!;
@@ -302,6 +348,7 @@ export class OverlayRenderer {
             if (state.pathEls[i].getAttribute("d") !== d) {
                 state.pathEls[i].setAttribute("d", d);
             }
+            state.pathEls[i].style.opacity = stale ? "0" : "";
         }
 
         // Current in-progress path
@@ -311,6 +358,7 @@ export class OverlayRenderer {
                 this.svg.appendChild(state.currentPathEl);
             }
             state.currentPathEl.setAttribute("d", this.pointsToPathD(state.currentPath));
+            state.currentPathEl.style.opacity = stale ? "0" : "";
         } else if (state.currentPathEl) {
             state.currentPathEl.remove();
             state.currentPathEl = null;
@@ -319,6 +367,7 @@ export class OverlayRenderer {
 
     private createCursorElement(color: string): SVGGElement {
         const g = document.createElementNS(SVG_NS, "g");
+        g.style.transition = "opacity 0.3s ease";
         const path = document.createElementNS(SVG_NS, "path");
         path.setAttribute("d", CURSOR_PATH);
         path.setAttribute("fill", color);
@@ -336,6 +385,7 @@ export class OverlayRenderer {
         path.setAttribute("stroke-width", "2.5");
         path.setAttribute("stroke-linecap", "round");
         path.setAttribute("stroke-linejoin", "round");
+        path.style.transition = "opacity 0.3s ease";
         return path;
     }
 
