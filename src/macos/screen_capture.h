@@ -38,10 +38,6 @@ void sc_capture_release_frame(void *pixel_buffer);
 /// Stop capturing and release resources.
 void sc_capture_destroy(SCCapture *cap);
 
-/// Launch an app, move its window off-screen, and return its window ID.
-/// Returns 0 on failure.
-uint32_t sc_launch_app_offscreen(const char *app_path, int64_t *out_pid);
-
 /// Resize a window by PID using AXUIElement.
 /// Returns 0 on success, non-zero on failure.
 int sc_resize_window(int64_t pid, uint32_t width, uint32_t height);

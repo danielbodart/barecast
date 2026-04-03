@@ -1,125 +1,177 @@
-// CGVirtualDisplay management — spawns a helper process that creates
-// the virtual display and holds it alive.
+// CGVirtualDisplay management — creates and holds a virtual display alive
+// in-process using a dedicated CFRunLoop thread.
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <AppKit/AppKit.h>
 #import <stdint.h>
-#import <signal.h>
-#import <spawn.h>
+#import <pthread.h>
 
 #include "virtual_display.h"
 
-extern char **environ;
+// ── Private API declarations ────────────────────────────────────────────
+
+@interface CGVirtualDisplayMode : NSObject
+- (instancetype)initWithWidth:(unsigned int)width
+                       height:(unsigned int)height
+                  refreshRate:(double)refreshRate;
+@end
+
+@interface CGVirtualDisplaySettings : NSObject
+@property (nonatomic) unsigned int hiDPI;
+@property (retain, nonatomic) NSArray *modes;
+@end
+
+@interface CGVirtualDisplayDescriptor : NSObject
+@property (retain, nonatomic) NSString *name;
+@property (nonatomic) unsigned int vendorID;
+@property (nonatomic) unsigned int productID;
+@property (nonatomic) unsigned int serialNum;
+@property (nonatomic) unsigned int maxPixelsWide;
+@property (nonatomic) unsigned int maxPixelsHigh;
+@property (nonatomic) CGSize sizeInMillimeters;
+@property (nonatomic) CGPoint whitePoint;
+@property (nonatomic) CGPoint redPrimary;
+@property (nonatomic) CGPoint greenPrimary;
+@property (nonatomic) CGPoint bluePrimary;
+@property (retain, nonatomic) dispatch_queue_t queue;
+@property (copy, nonatomic) void (^terminationHandler)(id, id);
+- (void)setDispatchQueue:(dispatch_queue_t)queue;
+@end
+
+@interface CGVirtualDisplay : NSObject
+@property (readonly, nonatomic) unsigned int displayID;
+- (instancetype)initWithDescriptor:(CGVirtualDisplayDescriptor *)descriptor;
+- (BOOL)applySettings:(CGVirtualDisplaySettings *)settings;
+@end
+
+// ── Constants ───────────────────────────────────────────────────────────
+
+// Max pixel dimensions for the virtual display descriptor.
+// Set high to allow resize without recreating the display.
+static const uint32_t MAX_DISPLAY_PIXELS = 7680; // 8K
 
 // ── VirtualDisplay struct ───────────────────────────────────────────────
 
 struct VirtualDisplay {
-    pid_t helper_pid;
-    uint32_t display_id;
+    CGVirtualDisplay *display;
+    CGDirectDisplayID display_id;
     uint32_t width;
     uint32_t height;
     double refresh_rate;
+    CFRunLoopRef run_loop;
+    dispatch_semaphore_t run_loop_ready;
+    pthread_t thread;
 };
 
-// ── Helper path resolution ──────────────────────────────────────────────
+// ── RunLoop thread ──────────────────────────────────────────────────────
 
-static NSString *helperPath(void) {
-    // Look for zerocast-vd next to the current executable
-    NSString *execPath = [[NSProcessInfo processInfo] arguments][0];
-    NSString *execDir = [execPath stringByDeletingLastPathComponent];
-    NSString *path = [execDir stringByAppendingPathComponent:@"zerocast-vd"];
-    if ([[NSFileManager defaultManager] isExecutableFileAtPath:path]) return path;
+static void *runLoopThread(void *ctx) {
+    @autoreleasepool {
+        VirtualDisplay *vd = (VirtualDisplay *)ctx;
+        vd->run_loop = CFRunLoopGetCurrent();
+        dispatch_semaphore_signal(vd->run_loop_ready);
 
-    // Fallback: common install locations
-    for (NSString *p in @[@"/usr/local/bin/zerocast-vd", @"dist/bin/zerocast-vd"]) {
-        if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) return p;
+        // Keep the run loop alive — it exits when CFRunLoopStop is called from vd_destroy
+        CFRunLoopRun();
     }
-    return nil;
+    return NULL;
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────
+
+static BOOL applyMode(CGVirtualDisplay *display, uint32_t width, uint32_t height, double refresh_rate) {
+    CGVirtualDisplayMode *mode = [[NSClassFromString(@"CGVirtualDisplayMode") alloc]
+        initWithWidth:width height:height refreshRate:refresh_rate];
+    CGVirtualDisplaySettings *settings = [[NSClassFromString(@"CGVirtualDisplaySettings") alloc] init];
+    settings.hiDPI = 0;
+    settings.modes = @[mode];
+    return [display applySettings:settings];
+}
+
+/// Find a CGDisplayMode matching the given dimensions on the specified display.
+static CGDisplayModeRef findDisplayMode(CGDirectDisplayID displayID, uint32_t width, uint32_t height) {
+    CFArrayRef allModes = CGDisplayCopyAllDisplayModes(displayID, NULL);
+    if (!allModes) return NULL;
+
+    CGDisplayModeRef matched = NULL;
+    for (CFIndex i = 0; i < CFArrayGetCount(allModes); i++) {
+        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
+        if (CGDisplayModeGetWidth(m) == width && CGDisplayModeGetHeight(m) == height) {
+            matched = CGDisplayModeRetain(m);
+            break;
+        }
+    }
+    CFRelease(allModes);
+    return matched;
 }
 
 // ── Public C API ────────────────────────────────────────────────────────
 
 VirtualDisplay *vd_create(uint32_t width, uint32_t height, double refresh_rate) {
-    NSString *path = helperPath();
-    if (!path) {
-        NSLog(@"zerocast-vd helper not found");
+    // Ensure NSApplication is initialized (required for WindowServer registration)
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    });
+
+    Class cls = NSClassFromString(@"CGVirtualDisplay");
+    if (!cls) {
+        NSLog(@"CGVirtualDisplay not available (requires macOS 14+)");
         return NULL;
     }
 
-    // Create pipe for reading display ID from helper's stdout
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return NULL;
+    // Create descriptor with max pixels set high to allow resize headroom
+    CGVirtualDisplayDescriptor *desc = [[NSClassFromString(@"CGVirtualDisplayDescriptor") alloc] init];
+    desc.name = @"Zerocast Virtual Display";
+    desc.vendorID = 0x1234;
+    desc.productID = 0x5678;
+    desc.serialNum = 1;
+    desc.maxPixelsWide = MAX_DISPLAY_PIXELS;
+    desc.maxPixelsHigh = MAX_DISPLAY_PIXELS;
+    desc.sizeInMillimeters = CGSizeMake(597, 336); // 27" display
+    desc.whitePoint = CGPointMake(0.3125, 0.3291);
+    desc.redPrimary = CGPointMake(0.6797, 0.3203);
+    desc.greenPrimary = CGPointMake(0.2559, 0.6983);
+    desc.bluePrimary = CGPointMake(0.1494, 0.0557);
+    [desc setDispatchQueue:dispatch_get_main_queue()];
 
-    // Build argv
-    char widthStr[16], heightStr[16], rateStr[16];
-    snprintf(widthStr, sizeof(widthStr), "%u", width);
-    snprintf(heightStr, sizeof(heightStr), "%u", height);
-    snprintf(rateStr, sizeof(rateStr), "%.0f", refresh_rate);
-
-    const char *helperPathC = [path UTF8String];
-    char *argv[] = { (char *)helperPathC, widthStr, heightStr, rateStr, NULL };
-
-    // Set up file actions: redirect stdout to pipe write end
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addclose(&actions, pipefd[0]); // close read end in child
-    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
-    posix_spawn_file_actions_addclose(&actions, pipefd[1]); // close original write fd
-
-    pid_t pid = 0;
-    int err = posix_spawn(&pid, helperPathC, &actions, NULL, argv, environ);
-    posix_spawn_file_actions_destroy(&actions);
-    close(pipefd[1]); // close write end in parent
-
-    if (err != 0) {
-        NSLog(@"posix_spawn failed: %s", strerror(err));
-        close(pipefd[0]);
+    CGVirtualDisplay *display = [[cls alloc] initWithDescriptor:desc];
+    if (!display) {
+        NSLog(@"CGVirtualDisplay initWithDescriptor failed");
         return NULL;
     }
 
-    // Read display ID from helper's stdout (with timeout)
-    char buf[32] = {0};
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(pipefd[0], &readfds);
-    struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
-
-    ssize_t n = 0;
-    if (select(pipefd[0] + 1, &readfds, NULL, NULL, &timeout) > 0) {
-        n = read(pipefd[0], buf, sizeof(buf) - 1);
-    }
-    close(pipefd[0]);
-
-    if (n <= 0) {
-        NSLog(@"Failed to read display ID from helper (pid %d)", pid);
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
+    if (!applyMode(display, width, height, refresh_rate)) {
+        NSLog(@"CGVirtualDisplay applySettings failed");
         return NULL;
     }
 
-    uint32_t displayID = (uint32_t)atoi(buf);
-    if (displayID == 0) {
-        NSLog(@"Invalid display ID from helper: %s", buf);
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-        return NULL;
+    CGDirectDisplayID displayID = display.displayID;
+
+    // Un-mirror: macOS may auto-mirror new displays
+    CGDisplayConfigRef cgConfig;
+    if (CGBeginDisplayConfiguration(&cgConfig) == kCGErrorSuccess) {
+        CGConfigureDisplayMirrorOfDisplay(cgConfig, displayID, kCGNullDirectDisplay);
+        CGCompleteDisplayConfiguration(cgConfig, kCGConfigureForSession);
     }
 
     VirtualDisplay *vd = calloc(1, sizeof(VirtualDisplay));
-    if (!vd) {
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-        return NULL;
-    }
+    if (!vd) return NULL;
 
-    vd->helper_pid = pid;
+    vd->display = display;
     vd->display_id = displayID;
     vd->width = width;
     vd->height = height;
     vd->refresh_rate = refresh_rate;
+    vd->run_loop_ready = dispatch_semaphore_create(0);
 
-    NSLog(@"Virtual display %u created via helper (pid %d)", displayID, pid);
+    // Start the run loop thread to keep the display alive
+    pthread_create(&vd->thread, NULL, runLoopThread, vd);
+    dispatch_semaphore_wait(vd->run_loop_ready, DISPATCH_TIME_FOREVER);
+
+    NSLog(@"Virtual display %u created (%ux%u @%.0fHz)", displayID, width, height, refresh_rate);
     return vd;
 }
 
@@ -129,42 +181,58 @@ uint32_t vd_get_display_id(VirtualDisplay *vd) {
 }
 
 int vd_resize(VirtualDisplay *vd, uint32_t width, uint32_t height) {
-    if (!vd) return -1;
+    if (!vd || !vd->display) return -1;
+    if (vd->width == width && vd->height == height) return 0;
 
-    double rate = vd->refresh_rate;
-
-    // Kill old helper
-    if (vd->helper_pid > 0) {
-        kill(vd->helper_pid, SIGTERM);
-        waitpid(vd->helper_pid, NULL, 0);
-        vd->helper_pid = 0;
+    // Declare the new mode on the virtual display
+    if (!applyMode(vd->display, width, height, vd->refresh_rate)) {
+        NSLog(@"vd_resize: applySettings failed for %ux%u", width, height);
+        return -1;
     }
 
-    // Small delay for WindowServer cleanup
-    usleep(500000);
+    // Switch the active display mode via CoreGraphics
+    CGDisplayModeRef mode = findDisplayMode(vd->display_id, width, height);
+    if (!mode) {
+        NSLog(@"vd_resize: no matching display mode for %ux%u", width, height);
+        return -1;
+    }
 
-    // Recreate via new helper
-    VirtualDisplay *new_vd = vd_create(width, height, rate);
-    if (!new_vd) return -1;
+    CGDisplayConfigRef cfg;
+    CGError err = CGBeginDisplayConfiguration(&cfg);
+    if (err != kCGErrorSuccess) {
+        CGDisplayModeRelease(mode);
+        NSLog(@"vd_resize: CGBeginDisplayConfiguration failed: %d", err);
+        return -1;
+    }
+    CGConfigureDisplayWithDisplayMode(cfg, vd->display_id, mode, NULL);
+    err = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
+    CGDisplayModeRelease(mode);
 
-    vd->helper_pid = new_vd->helper_pid;
-    vd->display_id = new_vd->display_id;
+    if (err != kCGErrorSuccess) {
+        NSLog(@"vd_resize: CGCompleteDisplayConfiguration failed: %d", err);
+        return -1;
+    }
+
     vd->width = width;
     vd->height = height;
-    free(new_vd);
+
+    NSLog(@"Virtual display %u resized to %ux%u", vd->display_id, width, height);
     return 0;
 }
 
 void vd_destroy(VirtualDisplay *vd) {
     if (!vd) return;
-    if (vd->helper_pid > 0) {
-        kill(vd->helper_pid, SIGTERM);
-        waitpid(vd->helper_pid, NULL, 0);
-    }
+
+    // Stop the run loop — this causes the thread to exit
+    CFRunLoopStop(vd->run_loop);
+    pthread_join(vd->thread, NULL);
+
+    // Release the display (removes it from WindowServer)
+    vd->display = nil;
     free(vd);
 }
 
-int64_t vd_launch_app(uint32_t display_id, const char *app_path) {
+int64_t vd_launch_app(uint32_t display_id, const char *app_path, uint32_t *out_window_id) {
     @autoreleasepool {
         CGRect displayBounds = CGDisplayBounds(display_id);
         if (CGRectIsEmpty(displayBounds)) {
@@ -175,7 +243,7 @@ int64_t vd_launch_app(uint32_t display_id, const char *app_path) {
         // Launch the app
         NSURL *appURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:app_path]];
         NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
-        config.activates = YES;
+        config.activates = NO;
 
         __block pid_t appPID = -1;
         dispatch_semaphore_t sem = dispatch_semaphore_create(0);
@@ -197,15 +265,15 @@ int64_t vd_launch_app(uint32_t display_id, const char *app_path) {
         NSLog(@"Launched %s (pid %d), waiting for window...", app_path, appPID);
 
         // Poll for the app's window (up to 5 seconds)
+        CGWindowID windowID = 0;
         for (int attempt = 0; attempt < 50; attempt++) {
             usleep(100000);
 
             CFArrayRef windowList = CGWindowListCopyWindowInfo(
-                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements,
                 kCGNullWindowID);
             if (!windowList) continue;
 
-            BOOL found = NO;
             for (CFIndex i = 0; i < CFArrayGetCount(windowList); i++) {
                 NSDictionary *info = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
                 NSNumber *ownerPID = info[(NSString *)kCGWindowOwnerPID];
@@ -213,15 +281,22 @@ int64_t vd_launch_app(uint32_t display_id, const char *app_path) {
 
                 if (ownerPID && ownerPID.intValue == appPID &&
                     windowLayer && windowLayer.intValue == 0) {
-                    found = YES;
+                    NSNumber *wid = info[(NSString *)kCGWindowNumber];
+                    if (wid) windowID = wid.unsignedIntValue;
                     break;
                 }
             }
             CFRelease(windowList);
-            if (found) break;
+            if (windowID != 0) break;
         }
 
-        // Move window to virtual display using AXUIElement
+        if (windowID == 0) {
+            NSLog(@"No window found for pid %d after 5s", appPID);
+            return -1;
+        }
+        if (out_window_id) *out_window_id = windowID;
+
+        // Move and size window to fill the virtual display
         AXUIElementRef appElement = AXUIElementCreateApplication(appPID);
         if (appElement) {
             CFArrayRef windows = NULL;
@@ -239,7 +314,8 @@ int64_t vd_launch_app(uint32_t display_id, const char *app_path) {
                 AXUIElementSetAttributeValue(window, kAXSizeAttribute, sizeValue);
                 CFRelease(sizeValue);
 
-                NSLog(@"Window moved to virtual display at (%.0f, %.0f)", pos.x, pos.y);
+                NSLog(@"Window moved to virtual display at (%.0f, %.0f) size %.0fx%.0f",
+                      pos.x, pos.y, size.width, size.height);
 
                 CFRelease(windows);
             }

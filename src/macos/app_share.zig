@@ -14,6 +14,7 @@ const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const c = @cImport({
     @cInclude("screen_capture.h");
+    @cInclude("virtual_display.h");
 });
 
 const log = std.log.scoped(.app_share);
@@ -37,6 +38,7 @@ pub const AppShare = struct {
     share_url: []const u8,
     app_pid: i64,
     window_id: u32,
+    vd: *c.VirtualDisplay,
     capture: *c.SCCapture,
     cgevent: ?Input,
     viewer_registry: ViewerRegistry,
@@ -76,17 +78,25 @@ pub const AppShare = struct {
             }
         };
 
-        // Launch app and get its window
+        // Create virtual display for app isolation
         const cmd = self.command_buf[0..self.command_len];
         self.command_buf[self.command_len] = 0;
         const cmd_z: [*:0]const u8 = self.command_buf[0..self.command_len :0];
-        var pid: i64 = -1;
-        self.window_id = c.sc_launch_app_offscreen(cmd_z, &pid);
-        if (self.window_id == 0) {
-            log.err("failed to launch app: {s}", .{cmd});
+
+        self.vd = c.vd_create(config.width, config.height, @floatFromInt(config.fps)) orelse {
+            log.err("failed to create virtual display", .{});
+            return error.VirtualDisplayFailed;
+        };
+        errdefer c.vd_destroy(self.vd);
+
+        const display_id = c.vd_get_display_id(self.vd);
+        var window_id: u32 = 0;
+        self.app_pid = c.vd_launch_app(display_id, cmd_z, &window_id);
+        if (self.app_pid < 0) {
+            log.err("failed to launch app on virtual display: {s}", .{cmd});
             return error.AppLaunchFailed;
         }
-        self.app_pid = pid;
+        self.window_id = window_id;
         const t_launch = ts.elapsed(&t);
 
         // Check Screen Recording permission before capture
@@ -343,14 +353,19 @@ pub const AppShare = struct {
         c.sc_capture_destroy(self.capture);
         const t_capture_deinit = ts.elapsed(&t);
 
-        // 3. Resize the window
+        // 3. Resize the virtual display (in-place mode switch, no teardown)
+        if (c.vd_resize(self.vd, new_w, new_h) != 0) {
+            log.warn("virtual display resize failed, continuing with window resize only", .{});
+        }
+
+        // 4. Resize the app window to match
         _ = c.sc_resize_window(self.app_pid, new_w, new_h);
         const t_resize = ts.elapsed(&t);
 
-        // 4. Brief delay for window server to process resize
+        // 5. Brief delay for WindowServer to process resize
         std.Thread.sleep(100 * std.time.ns_per_ms);
 
-        // 5. Rebuild capture on the (now-resized) window
+        // 6. Rebuild capture on the (now-resized) window
         self.capture = c.sc_capture_create_window(self.window_id, self.config.fps) orelse {
             log.err("capture reinit failed after resize — stopping", .{});
             self.should_stop.store(true, .release);
@@ -364,7 +379,7 @@ pub const AppShare = struct {
         }
         const t_capture_init = ts.elapsed(&t);
 
-        // 6. Wait for first frame at new size
+        // 7. Wait for first frame at new size
         var frame: c.SCFrameResult = undefined;
         var attempts: u32 = 0;
         while (attempts < 200) : (attempts += 1) {
@@ -379,7 +394,7 @@ pub const AppShare = struct {
         if (frame.pixel_buffer) |pb| c.sc_capture_release_frame(pb);
         const t_frame = ts.elapsed(&t);
 
-        // 7. Rebuild encoder
+        // 8. Rebuild encoder
         self.vt_backend = EncoderBackend.init(frame.width, frame.height, self.config.fps) catch |err| {
             log.err("encoder reinit failed: {} — stopping", .{err});
             self.should_stop.store(true, .release);
@@ -441,8 +456,9 @@ pub const AppShare = struct {
         self.session.deinit();
         c.sc_capture_destroy(self.capture);
 
-        // Terminate the app
+        // Terminate the app and destroy the virtual display
         _ = std.c.kill(@intCast(self.app_pid), std.c.SIG.TERM);
+        c.vd_destroy(self.vd);
     }
 
     fn sendAppMeta(self: *AppShare) void {

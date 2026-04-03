@@ -71,6 +71,10 @@ pub fn buildPlatform(
         .file = b.path("src/macos/screen_capture.m"),
         .flags = &.{"-fobjc-arc"},
     });
+    app_share_mod.addCSourceFile(.{
+        .file = b.path("src/macos/virtual_display.m"),
+        .flags = &.{"-fobjc-arc"},
+    });
     app_share_mod.linkFramework("ScreenCaptureKit", .{});
     app_share_mod.linkFramework("CoreMedia", .{});
     app_share_mod.linkFramework("CoreVideo", .{});
@@ -90,24 +94,11 @@ pub fn buildExtraArtifacts(
     optimize: std.builtin.OptimizeMode,
     shared: shared_defs.SharedModules,
 ) void {
+    _ = b;
     _ = target;
     _ = optimize;
     _ = shared;
-
-    // --- zerocast-vd (CGVirtualDisplay helper process) ---
-    // Built as a plain C/ObjC executable via system command since it's
-    // a standalone process with its own main() in a .m file.
-    const vd_helper = b.addSystemCommand(&.{
-        "clang",
-        "-fobjc-arc",
-        "-framework", "Foundation",
-        "-framework", "CoreGraphics",
-        "-framework", "AppKit",
-        "-o",
-    });
-    const vd_output = vd_helper.addOutputFileArg("zerocast-vd");
-    vd_helper.addFileArg(b.path("src/macos/vd_helper.m"));
-    b.getInstallStep().dependOn(&b.addInstallBinFile(vd_output, "zerocast-vd").step);
+    // No extra binaries on macOS — virtual display runs in-process.
 }
 
 /// Create the cmake rebuild-libs step for libdatachannel on macOS.
