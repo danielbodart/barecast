@@ -69,33 +69,32 @@ src/
 │   ├── viewer_state.zig                  # Viewer color/state tracking
 │   ├── osc_parser.zig                    # Terminal OSC sequence parser
 │   └── prop_tests.zig                    # Property-based tests (minish)
-└── platform/
-    ├── linux/
-    │   ├── x11/
-    │   │   ├── app_share.zig             # AppShare session (headless Xorg + NvFBC)
-    │   │   ├── encoder_backend.zig       # EncodeBackend impl (CUDA + NVENC)
-    │   │   ├── input.zig                 # Input injection (XTEST)
-    │   │   ├── keymap.zig                # W3C code → evdev keycodes
-    │   │   ├── nvfbc.zig, cuda.zig       # NvFBC capture, CUDA texture copy
-    │   │   ├── nvenc.zig                 # NVENC hardware encoder
-    │   │   ├── headless_display.zig      # Headless Xorg lifecycle
-    │   │   ├── window_manager.zig        # Minimal X11 WM
-    │   │   └── xorg.zig                  # Setuid Xorg launcher helper
-    │   ├── kms/
-    │   │   ├── main.zig                  # zerocast-kms privileged helper entry
-    │   │   ├── drm.zig                   # KMS/DRM framebuffer capture
-    │   │   ├── ipc.zig                   # SCM_RIGHTS fd passing
-    │   │   └── protocol.zig              # Wire protocol (zerocast ↔ zerocast-kms)
-    │   └── fpscap.zig                    # LD_PRELOAD FPS cap for GL apps
-    └── macos/
-        ├── app_share.zig                 # AppShare session (ScreenCaptureKit)
-        ├── encoder_backend.zig           # EncodeBackend impl (VideoToolbox HEVC)
-        ├── input.zig                     # Input injection (CGEvent)
-        ├── keymap.zig                    # W3C code → macOS virtual keycodes
-        ├── screen_capture.{h,m}          # ScreenCaptureKit ObjC binding
-        ├── videotoolbox.{h,m}            # VTCompressionSession ObjC wrapper
-        ├── virtual_display.{h,m}         # CGVirtualDisplay ObjC binding
-        └── vd_helper.m                   # CGVirtualDisplay helper process
+├── linux/
+│   ├── x11/
+│   │   ├── app_share.zig                # AppShare session (headless Xorg + NvFBC)
+│   │   ├── encoder_backend.zig          # EncodeBackend impl (CUDA + NVENC)
+│   │   ├── input.zig                    # Input injection (XTEST)
+│   │   ├── keymap.zig                   # W3C code → evdev keycodes
+│   │   ├── nvfbc.zig, cuda.zig          # NvFBC capture, CUDA texture copy
+│   │   ├── nvenc.zig                    # NVENC hardware encoder
+│   │   ├── headless_display.zig         # Headless Xorg lifecycle
+│   │   ├── window_manager.zig           # Minimal X11 WM
+│   │   └── xorg.zig                     # Setuid Xorg launcher helper
+│   ├── kms/
+│   │   ├── main.zig                     # zerocast-kms privileged helper entry
+│   │   ├── drm.zig                      # KMS/DRM framebuffer capture
+│   │   ├── ipc.zig                      # SCM_RIGHTS fd passing
+│   │   └── protocol.zig                 # Wire protocol (zerocast ↔ zerocast-kms)
+│   └── fpscap.zig                       # LD_PRELOAD FPS cap for GL apps
+└── macos/
+    ├── app_share.zig                    # AppShare session (ScreenCaptureKit)
+    ├── encoder_backend.zig              # EncodeBackend impl (VideoToolbox HEVC)
+    ├── input.zig                        # Input injection (CGEvent)
+    ├── keymap.zig                       # W3C code → macOS virtual keycodes
+    ├── screen_capture.{h,m}             # ScreenCaptureKit ObjC binding
+    ├── videotoolbox.{h,m}               # VTCompressionSession ObjC wrapper
+    ├── virtual_display.{h,m}            # CGVirtualDisplay ObjC binding
+    └── vd_helper.m                      # CGVirtualDisplay helper process
 ```
 
 ### Worker source files

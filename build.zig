@@ -202,7 +202,7 @@ pub fn build(b: *std.Build) void {
     if (builtin.os.tag == .macos) {
         const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/platform/macos/keymap.zig"),
+                .root_source_file = b.path("src/macos/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -213,7 +213,7 @@ pub fn build(b: *std.Build) void {
     if (builtin.os.tag == .linux) {
         const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/platform/linux/x11/keymap.zig"),
+                .root_source_file = b.path("src/linux/x11/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -239,14 +239,14 @@ pub fn build(b: *std.Build) void {
     // KMS tests (Linux only — SCM_RIGHTS, DMA-BUF protocol)
     if (builtin.os.tag == .linux) {
         const protocol_mod = b.createModule(.{
-            .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+            .root_source_file = b.path("src/linux/kms/protocol.zig"),
             .target = target,
             .optimize = optimize,
         });
 
         const protocol_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+                .root_source_file = b.path("src/linux/kms/protocol.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -255,7 +255,7 @@ pub fn build(b: *std.Build) void {
 
         const ipc_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/platform/linux/kms/ipc.zig"),
+                .root_source_file = b.path("src/linux/kms/ipc.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -321,7 +321,7 @@ pub fn build(b: *std.Build) void {
 
     // protocol.zig is pure Zig structs (no platform deps) — safe to compile everywhere
     const protocol_mod_for_props = b.createModule(.{
-        .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+        .root_source_file = b.path("src/linux/kms/protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
