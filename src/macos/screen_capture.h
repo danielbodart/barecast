@@ -38,6 +38,10 @@ void sc_capture_release_frame(void *pixel_buffer);
 /// Stop capturing and release resources.
 void sc_capture_destroy(SCCapture *cap);
 
+/// Request Accessibility permission with a system prompt dialog.
+/// Returns 1 if already trusted, 0 if not (user needs to grant).
+int sc_request_accessibility_permission(void);
+
 /// Resize a window by PID using AXUIElement.
 /// Returns 0 on success, non-zero on failure.
 int sc_resize_window(int64_t pid, uint32_t width, uint32_t height);

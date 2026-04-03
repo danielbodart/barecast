@@ -29,10 +29,12 @@ pub const Input = struct {
     last_abs_y: f64,
 
     pub fn init(pid: i64) !Input {
-        // Check Accessibility permission
+        // Check Accessibility permission — show system prompt if not granted
         if (cg.AXIsProcessTrusted() == 0) {
-            log.err("Accessibility permission not granted — input injection disabled", .{});
-            log.err("Grant access in System Settings → Privacy & Security → Accessibility", .{});
+            log.info("Requesting Accessibility permission...", .{});
+            _ = cg.sc_request_accessibility_permission();
+            // Don't block — the prompt is shown, user can grant while share runs.
+            // Input injection will be disabled until they grant and reshare.
             return error.AccessibilityDenied;
         }
 

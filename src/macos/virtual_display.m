@@ -79,33 +79,17 @@ static BOOL applyMode(CGVirtualDisplay *display, uint32_t width, uint32_t height
     return [display applySettings:settings];
 }
 
-/// Find a CGDisplayMode matching the given dimensions on the specified display.
-static CGDisplayModeRef findDisplayMode(CGDirectDisplayID displayID, uint32_t width, uint32_t height) {
-    CFArrayRef allModes = CGDisplayCopyAllDisplayModes(displayID, NULL);
-    if (!allModes) return NULL;
-
-    CGDisplayModeRef matched = NULL;
-    for (CFIndex i = 0; i < CFArrayGetCount(allModes); i++) {
-        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
-        if (CGDisplayModeGetWidth(m) == width && CGDisplayModeGetHeight(m) == height) {
-            matched = CGDisplayModeRetain(m);
-            break;
-        }
-    }
-    CFRelease(allModes);
-    return matched;
-}
-
 // ── Display thread ─────────────────────────────────────────────────────
 
 static void *displayThread(void *ctx) {
     @autoreleasepool {
         VirtualDisplay *vd = (VirtualDisplay *)ctx;
 
-        // NOTE: We intentionally do NOT initialize NSApplication here.
-        // NSApplication registers a display-change notification handler that
-        // asserts [NSThread isMainThread], which crashes when CG display
-        // configuration triggers the notification on this thread.
+        // NOTE: We do NOT initialize NSApplication here. It registers a
+        // display-change notification handler that asserts [NSThread isMainThread],
+        // crashing when CGCompleteDisplayConfiguration fires on this thread.
+        // CGVirtualDisplay works without NSApplication — compositor support
+        // comes from WindowServer, not from NSApp registration.
 
         Class cls = NSClassFromString(@"CGVirtualDisplay");
         if (!cls) {
@@ -146,9 +130,7 @@ static void *displayThread(void *ctx) {
         vd->display_id = vd->display.displayID;
 
         // Un-mirror: macOS may auto-mirror new displays.
-        // Use kCGConfigureForAppOnly to avoid broadcasting a display
-        // reconfiguration notification that triggers AppKit's NSScreen
-        // assertion (must be on main thread).
+        // Use kCGConfigureForAppOnly to minimize notification broadcast.
         CGDisplayConfigRef cgConfig;
         if (CGBeginDisplayConfiguration(&cgConfig) == kCGErrorSuccess) {
             CGConfigureDisplayMirrorOfDisplay(cgConfig, vd->display_id, kCGNullDirectDisplay);
@@ -208,33 +190,10 @@ int vd_resize(VirtualDisplay *vd, uint32_t width, uint32_t height) {
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
 
     CFRunLoopPerformBlock(vd->run_loop, kCFRunLoopDefaultMode, ^{
+        // applySettings declares the new mode and switches to it in one step
+        // for virtual displays — no separate CGDisplaySetDisplayMode needed.
         if (!applyMode(vd->display, width, height, vd->refresh_rate)) {
             NSLog(@"vd_resize: applySettings failed for %ux%u", width, height);
-            dispatch_semaphore_signal(done);
-            return;
-        }
-
-        CGDisplayModeRef mode = findDisplayMode(vd->display_id, width, height);
-        if (!mode) {
-            NSLog(@"vd_resize: no matching display mode for %ux%u", width, height);
-            dispatch_semaphore_signal(done);
-            return;
-        }
-
-        CGDisplayConfigRef cfg;
-        CGError err = CGBeginDisplayConfiguration(&cfg);
-        if (err != kCGErrorSuccess) {
-            CGDisplayModeRelease(mode);
-            NSLog(@"vd_resize: CGBeginDisplayConfiguration failed: %d", err);
-            dispatch_semaphore_signal(done);
-            return;
-        }
-        CGConfigureDisplayWithDisplayMode(cfg, vd->display_id, mode, NULL);
-        err = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
-        CGDisplayModeRelease(mode);
-
-        if (err != kCGErrorSuccess) {
-            NSLog(@"vd_resize: CGCompleteDisplayConfiguration failed: %d", err);
             dispatch_semaphore_signal(done);
             return;
         }
@@ -261,9 +220,15 @@ void vd_destroy(VirtualDisplay *vd) {
 
 int64_t vd_launch_app(uint32_t display_id, const char *app_path, uint32_t *out_window_id) {
     @autoreleasepool {
-        CGRect displayBounds = CGDisplayBounds(display_id);
+        // Poll for display bounds — WindowServer may need a moment after creation
+        CGRect displayBounds = CGRectZero;
+        for (int attempt = 0; attempt < 20; attempt++) {
+            displayBounds = CGDisplayBounds(display_id);
+            if (!CGRectIsEmpty(displayBounds)) break;
+            usleep(100000); // 100ms
+        }
         if (CGRectIsEmpty(displayBounds)) {
-            NSLog(@"Failed to get bounds for display %u", display_id);
+            NSLog(@"Failed to get bounds for display %u after 2s", display_id);
             return -1;
         }
 

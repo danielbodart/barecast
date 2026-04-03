@@ -235,6 +235,18 @@ void sc_capture_destroy(SCCapture *cap) {
     free(cap);
 }
 
+// ── Accessibility permission ────────────────────────────────────────────
+
+int sc_request_accessibility_permission(void) {
+    const void *keys[] = { kAXTrustedCheckOptionPrompt };
+    const void *values[] = { kCFBooleanTrue };
+    CFDictionaryRef options = CFDictionaryCreate(NULL, keys, values, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    Boolean trusted = AXIsProcessTrustedWithOptions(options);
+    CFRelease(options);
+    return trusted ? 1 : 0;
+}
+
 // ── Window resize ───────────────────────────────────────────────────────
 
 int sc_resize_window(int64_t pid, uint32_t width, uint32_t height) {
