@@ -8,9 +8,16 @@ pub fn buildPlatform(
     optimize: std.builtin.OptimizeMode,
     shared: shared_defs.SharedModules,
 ) shared_defs.PlatformModules {
+    // --- Keymap module (evdev keycodes) ---
+    const keymap_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/x11/keymap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // --- NvFBC module (X11 + GL for GLX context) ---
     const nvfbc_mod = b.createModule(.{
-        .root_source_file = b.path("src/nvfbc.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/nvfbc.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -20,14 +27,14 @@ pub fn buildPlatform(
 
     // --- Encode pipeline modules ---
     const cuda_mod = b.createModule(.{
-        .root_source_file = b.path("src/cuda.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/cuda.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
 
     const nvenc_mod = b.createModule(.{
-        .root_source_file = b.path("src/nvenc.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/nvenc.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -37,9 +44,9 @@ pub fn buildPlatform(
         },
     });
 
-    // --- NVENC encoder backend (CUDA + NVENC, implements EncodeBackend) ---
-    const encoder_nvenc_mod = b.createModule(.{
-        .root_source_file = b.path("src/encoder_nvenc.zig"),
+    // --- Encoder backend (CUDA + NVENC, implements EncodeBackend) ---
+    const encoder_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/x11/encoder_backend.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -52,7 +59,7 @@ pub fn buildPlatform(
 
     // --- Headless display module (manages headless Xorg lifecycle) ---
     const headless_display_mod = b.createModule(.{
-        .root_source_file = b.path("src/headless_display.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/headless_display.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -60,41 +67,41 @@ pub fn buildPlatform(
 
     // --- Window manager module (minimal WM for headless app sharing) ---
     const window_manager_mod = b.createModule(.{
-        .root_source_file = b.path("src/window_manager.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/window_manager.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
     window_manager_mod.linkSystemLibrary("x11", .{});
 
-    // --- XTEST input module (input injection for headless app sharing) ---
-    const xtest_input_mod = b.createModule(.{
-        .root_source_file = b.path("src/xtest_input.zig"),
+    // --- Input module (XTEST input injection for headless app sharing) ---
+    const input_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/x11/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "keymap", .module = shared.keymap },
+            .{ .name = "keymap", .module = keymap_mod },
             .{ .name = "session", .module = shared.session },
         },
     });
-    xtest_input_mod.linkSystemLibrary("x11", .{});
-    xtest_input_mod.linkSystemLibrary("xtst", .{});
+    input_mod.linkSystemLibrary("x11", .{});
+    input_mod.linkSystemLibrary("xtst", .{});
 
     // --- App share module (headless display + NvFBC capture pipeline) ---
     const app_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/app_share.zig"),
+        .root_source_file = b.path("src/platform/linux/x11/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "nvfbc", .module = nvfbc_mod },
             .{ .name = "encoder", .module = shared.encoder },
-            .{ .name = "encoder_nvenc", .module = encoder_nvenc_mod },
+            .{ .name = "encoder_backend", .module = encoder_backend_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
-            .{ .name = "xtest_input", .module = xtest_input_mod },
+            .{ .name = "input", .module = input_mod },
             .{ .name = "headless_display", .module = headless_display_mod },
             .{ .name = "window_manager", .module = window_manager_mod },
             .{ .name = "session_recorder", .module = shared.session_recorder },
@@ -111,9 +118,27 @@ pub fn buildExtraArtifacts(
     optimize: std.builtin.OptimizeMode,
     shared: shared_defs.SharedModules,
 ) void {
+    _ = shared;
+
+    // --- KMS protocol and IPC modules (Linux-only) ---
+    const protocol_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ipc_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/kms/ipc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "protocol", .module = protocol_mod },
+        },
+    });
+
     // --- zerocast-kms (privileged helper, CAP_SYS_ADMIN) ---
     const drm_mod = b.createModule(.{
-        .root_source_file = b.path("src/drm.zig"),
+        .root_source_file = b.path("src/platform/linux/kms/drm.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -123,12 +148,12 @@ pub fn buildExtraArtifacts(
     const kms_exe = b.addExecutable(.{
         .name = "zerocast-kms",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/kms.zig"),
+            .root_source_file = b.path("src/platform/linux/kms/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "protocol", .module = shared.protocol },
-                .{ .name = "ipc", .module = shared.ipc },
+                .{ .name = "protocol", .module = protocol_mod },
+                .{ .name = "ipc", .module = ipc_mod },
                 .{ .name = "drm", .module = drm_mod },
             },
         }),
@@ -140,7 +165,7 @@ pub fn buildExtraArtifacts(
     const xorg_exe = b.addExecutable(.{
         .name = "zerocast-xorg",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/xorg.zig"),
+            .root_source_file = b.path("src/platform/linux/x11/xorg.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -153,7 +178,7 @@ pub fn buildExtraArtifacts(
         .linkage = .dynamic,
         .name = "fpscap",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/fpscap.zig"),
+            .root_source_file = b.path("src/platform/linux/fpscap.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,

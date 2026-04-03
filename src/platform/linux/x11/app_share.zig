@@ -8,13 +8,13 @@ const NvFbc = nvfbc.NvFbc;
 const Box = nvfbc.Box;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
-const NvencBackend = @import("encoder_nvenc").NvencBackend;
+const EncoderBackend = @import("encoder_backend").EncoderBackend;
 const session_mod = @import("session");
 const BroadcastSession = session_mod.BroadcastSession;
 const InputHandler = session_mod.InputHandler;
 const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
-const XTestInput = @import("xtest_input").XTestInput;
+const Input = @import("input").Input;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
 const WindowManager = @import("window_manager").WindowManager;
 const generateRoomId = @import("control").generateRoomId;
@@ -47,10 +47,10 @@ pub const AppShare = struct {
     wm: ?WindowManager,
     app_pid: ?posix.pid_t,
     fbc: NvFbc,
-    xinput: ?XTestInput,
+    xinput: ?Input,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
-    nvenc_backend: NvencBackend,
+    nvenc_backend: EncoderBackend,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -180,7 +180,7 @@ pub const AppShare = struct {
         self.viewer_registry = ViewerRegistry.init();
 
         // XTEST input on the headless display
-        self.xinput = XTestInput.init(
+        self.xinput = Input.init(
             @ptrCast(display_z[0..display_env.len :0]),
             config.width,
             config.height,
@@ -203,7 +203,7 @@ pub const AppShare = struct {
         const t_session = ts.elapsed(&t);
 
         // Encoder backend (CUDA + NVENC)
-        self.nvenc_backend = NvencBackend.init(first_frame.texture_id, first_frame.width, first_frame.height, config.fps) catch |err| {
+        self.nvenc_backend = EncoderBackend.init(first_frame.texture_id, first_frame.width, first_frame.height, config.fps) catch |err| {
             log.err("encoder backend init failed: {}", .{err});
             self.session.deinit();
             return error.EncoderInitFailed;
@@ -375,7 +375,7 @@ pub const AppShare = struct {
                 const t_grab = ts.elapsed(&t);
 
                 // 7. Rebuild encoder backend + encoder
-                self.nvenc_backend = NvencBackend.init(new_frame.texture_id, new_frame.width, new_frame.height, self.config.fps) catch |e| {
+                self.nvenc_backend = EncoderBackend.init(new_frame.texture_id, new_frame.width, new_frame.height, self.config.fps) catch |e| {
                     log.err("encoder backend reinit failed: {}", .{e});
                     break :loop;
                 };

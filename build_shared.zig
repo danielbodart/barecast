@@ -3,11 +3,8 @@ const std = @import("std");
 /// All shared (platform-independent) modules, passed into platform build functions.
 pub const SharedModules = struct {
     build_options: *std.Build.Module,
-    protocol: *std.Build.Module,
-    ipc: *std.Build.Module,
     input_protocol: *std.Build.Module,
     osc_parser: *std.Build.Module,
-    keymap: *std.Build.Module,
     viewer_state: *std.Build.Module,
     ivf: *std.Build.Module,
     session: *std.Build.Module,

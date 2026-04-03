@@ -9,8 +9,8 @@ pub fn buildPlatform(
     shared: shared_defs.SharedModules,
 ) shared_defs.PlatformModules {
     // --- VideoToolbox encoder backend (HEVC via VTCompressionSession) ---
-    const encoder_vt_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/encoder_videotoolbox.zig"),
+    const encoder_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/macos/encoder_backend.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -18,57 +18,57 @@ pub fn buildPlatform(
             .{ .name = "encoder", .module = shared.encoder },
         },
     });
-    encoder_vt_mod.addIncludePath(b.path("src"));
-    encoder_vt_mod.addCSourceFile(.{
-        .file = b.path("src/macos/videotoolbox.m"),
+    encoder_backend_mod.addIncludePath(b.path("src/platform/macos"));
+    encoder_backend_mod.addCSourceFile(.{
+        .file = b.path("src/platform/macos/videotoolbox.m"),
         .flags = &.{"-fobjc-arc"},
     });
-    encoder_vt_mod.linkFramework("VideoToolbox", .{});
-    encoder_vt_mod.linkFramework("CoreMedia", .{});
-    encoder_vt_mod.linkFramework("CoreVideo", .{});
-    encoder_vt_mod.linkSystemLibrary("objc", .{});
+    encoder_backend_mod.linkFramework("VideoToolbox", .{});
+    encoder_backend_mod.linkFramework("CoreMedia", .{});
+    encoder_backend_mod.linkFramework("CoreVideo", .{});
+    encoder_backend_mod.linkSystemLibrary("objc", .{});
 
     // --- macOS keymap (W3C KeyboardEvent.code → macOS virtual keycodes) ---
-    const keymap_mac_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/keymap_mac.zig"),
+    const keymap_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/macos/keymap.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // --- CGEvent input handler (mouse + keyboard injection via CoreGraphics) ---
-    const cgevent_input_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/cgevent_input.zig"),
+    // --- Input handler (mouse + keyboard injection via CoreGraphics) ---
+    const input_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/macos/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "keymap_mac", .module = keymap_mac_mod },
+            .{ .name = "keymap", .module = keymap_mod },
             .{ .name = "session", .module = shared.session },
         },
     });
-    cgevent_input_mod.addIncludePath(b.path("src"));
-    cgevent_input_mod.linkFramework("CoreGraphics", .{});
-    cgevent_input_mod.linkFramework("ApplicationServices", .{});
+    input_mod.addIncludePath(b.path("src/platform/macos"));
+    input_mod.linkFramework("CoreGraphics", .{});
+    input_mod.linkFramework("ApplicationServices", .{});
 
     // --- App share module (ScreenCaptureKit capture + VideoToolbox encode + WebRTC) ---
     const app_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/app_share.zig"),
+        .root_source_file = b.path("src/platform/macos/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "encoder", .module = shared.encoder },
-            .{ .name = "encoder_videotoolbox", .module = encoder_vt_mod },
+            .{ .name = "encoder_backend", .module = encoder_backend_mod },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
-            .{ .name = "cgevent_input", .module = cgevent_input_mod },
+            .{ .name = "input", .module = input_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session_recorder", .module = shared.session_recorder },
         },
     });
-    app_share_mod.addIncludePath(b.path("src"));
+    app_share_mod.addIncludePath(b.path("src/platform/macos"));
     app_share_mod.addCSourceFile(.{
-        .file = b.path("src/macos/screen_capture.m"),
+        .file = b.path("src/platform/macos/screen_capture.m"),
         .flags = &.{"-fobjc-arc"},
     });
     app_share_mod.linkFramework("ScreenCaptureKit", .{});
@@ -106,7 +106,7 @@ pub fn buildExtraArtifacts(
         "-o",
     });
     const vd_output = vd_helper.addOutputFileArg("zerocast-vd");
-    vd_helper.addFileArg(b.path("src/macos/vd_helper.m"));
+    vd_helper.addFileArg(b.path("src/platform/macos/vd_helper.m"));
     b.getInstallStep().dependOn(&b.addInstallBinFile(vd_output, "zerocast-vd").step);
 }
 

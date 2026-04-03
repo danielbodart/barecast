@@ -51,19 +51,55 @@ Two Zig binaries + one Cloudflare Worker:
 - **`zerocast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
 - **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
 
-### Key source files
+### Source layout
 
-- **`src/main.zig`** — Entry point. Dispatches to daemon or CLI.
-- **`src/daemon.zig`** — Daemon mode. Unix socket listener, session slot management, thread lifecycle.
-- **`src/cli.zig`** — CLI client. Subcommand parser, socket client, help text.
-- **`src/control.zig`** — Wire protocol for daemon ↔ CLI (JSON over Unix socket).
-- **`src/screen_share.zig`** — Self-contained screen share session (NvFbc → Encoder → BroadcastSession).
-- **`src/terminal_share.zig`** — Terminal share session (PTY + asciinema v2 recording).
-- **`src/session.zig`** — Multi-viewer WebRTC broadcast (libdatachannel peer management, signaling).
-- **`src/encoder.zig`** — Encode pipeline with FrameSink dispatch (recording or WebRTC).
-- **`src/kms.zig`** — Entry point for the privileged KMS helper.
-- **`src/protocol.zig`** — Wire protocol structs for IPC between zerocast and zerocast-kms.
-- **`src/prop_tests.zig`** — Property-based tests (minish).
+```
+src/
+├── main.zig                              # Entry point — dispatches to daemon or CLI
+├── shared/                               # Platform-agnostic code
+│   ├── daemon.zig                        # Daemon mode (Unix socket, session slots, threads)
+│   ├── cli.zig                           # CLI client (subcommands, socket client, help)
+│   ├── control.zig                       # Wire protocol for daemon ↔ CLI (JSON/Unix socket)
+│   ├── session.zig                       # Multi-viewer WebRTC broadcast (libdatachannel)
+│   ├── encoder.zig                       # Encode pipeline with FrameSink dispatch
+│   ├── terminal_share.zig                # Terminal share (PTY + asciinema v2)
+│   ├── codec.zig, ivf.zig               # Codec types, IVF container writer
+│   ├── session_recorder.zig              # IVF recording to disk
+│   ├── input_protocol.zig                # Binary input message protocol
+│   ├── viewer_state.zig                  # Viewer color/state tracking
+│   ├── osc_parser.zig                    # Terminal OSC sequence parser
+│   └── prop_tests.zig                    # Property-based tests (minish)
+└── platform/
+    ├── linux/
+    │   ├── x11/
+    │   │   ├── app_share.zig             # AppShare session (headless Xorg + NvFBC)
+    │   │   ├── encoder_backend.zig       # EncodeBackend impl (CUDA + NVENC)
+    │   │   ├── input.zig                 # Input injection (XTEST)
+    │   │   ├── keymap.zig                # W3C code → evdev keycodes
+    │   │   ├── nvfbc.zig, cuda.zig       # NvFBC capture, CUDA texture copy
+    │   │   ├── nvenc.zig                 # NVENC hardware encoder
+    │   │   ├── headless_display.zig      # Headless Xorg lifecycle
+    │   │   ├── window_manager.zig        # Minimal X11 WM
+    │   │   └── xorg.zig                  # Setuid Xorg launcher helper
+    │   ├── kms/
+    │   │   ├── main.zig                  # zerocast-kms privileged helper entry
+    │   │   ├── drm.zig                   # KMS/DRM framebuffer capture
+    │   │   ├── ipc.zig                   # SCM_RIGHTS fd passing
+    │   │   └── protocol.zig              # Wire protocol (zerocast ↔ zerocast-kms)
+    │   └── fpscap.zig                    # LD_PRELOAD FPS cap for GL apps
+    └── macos/
+        ├── app_share.zig                 # AppShare session (ScreenCaptureKit)
+        ├── encoder_backend.zig           # EncodeBackend impl (VideoToolbox HEVC)
+        ├── input.zig                     # Input injection (CGEvent)
+        ├── keymap.zig                    # W3C code → macOS virtual keycodes
+        ├── screen_capture.{h,m}          # ScreenCaptureKit ObjC binding
+        ├── videotoolbox.{h,m}            # VTCompressionSession ObjC wrapper
+        ├── virtual_display.{h,m}         # CGVirtualDisplay ObjC binding
+        └── vd_helper.m                   # CGVirtualDisplay helper process
+```
+
+### Worker source files
+
 - **`worker/src/index.ts`** — Cloudflare Worker + routing.
 - **`worker/src/viewer.ts`** — WebRTC browser viewer (screen share).
 - **`worker/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).

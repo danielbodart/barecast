@@ -1,19 +1,19 @@
 // macOS app share — captures a window via ScreenCaptureKit, encodes HEVC via
-// VideoToolbox, and streams over WebRTC. Mirrors src/app_share.zig (Linux).
+// VideoToolbox, and streams over WebRTC. Mirrors platform/linux/x11/app_share.zig.
 
 const std = @import("std");
 const encoder_mod = @import("encoder");
 const Encoder = encoder_mod.Encoder;
 const FrameSink = encoder_mod.FrameSink;
-const VideoToolboxBackend = @import("encoder_videotoolbox").VideoToolboxBackend;
+const EncoderBackend = @import("encoder_backend").EncoderBackend;
 const BroadcastSession = @import("session").BroadcastSession;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
-const CGEventInput = @import("cgevent_input").CGEventInput;
+const Input = @import("input").Input;
 const generateRoomId = @import("control").generateRoomId;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const c = @cImport({
-    @cInclude("macos/screen_capture.h");
+    @cInclude("screen_capture.h");
 });
 
 const log = std.log.scoped(.app_share);
@@ -38,10 +38,10 @@ pub const AppShare = struct {
     app_pid: i64,
     window_id: u32,
     capture: *c.SCCapture,
-    cgevent: ?CGEventInput,
+    cgevent: ?Input,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
-    vt_backend: VideoToolboxBackend,
+    vt_backend: EncoderBackend,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -174,7 +174,7 @@ pub const AppShare = struct {
         self.session.resize_callback = appResizeCallback;
 
         // CGEvent input injection (requires Accessibility permission)
-        self.cgevent = CGEventInput.init(self.app_pid) catch |err| blk: {
+        self.cgevent = Input.init(self.app_pid) catch |err| blk: {
             log.warn("CGEvent input init failed (non-fatal): {}", .{err});
             break :blk null;
         };
@@ -184,7 +184,7 @@ pub const AppShare = struct {
         const t_session = ts.elapsed(&t);
 
         // VideoToolbox encoder
-        self.vt_backend = VideoToolboxBackend.init(width, height, config.fps) catch |err| {
+        self.vt_backend = EncoderBackend.init(width, height, config.fps) catch |err| {
             log.err("VideoToolbox init failed: {}", .{err});
             self.session.deinit();
             return error.EncoderInitFailed;
@@ -380,7 +380,7 @@ pub const AppShare = struct {
         const t_frame = ts.elapsed(&t);
 
         // 7. Rebuild encoder
-        self.vt_backend = VideoToolboxBackend.init(frame.width, frame.height, self.config.fps) catch |err| {
+        self.vt_backend = EncoderBackend.init(frame.width, frame.height, self.config.fps) catch |err| {
             log.err("encoder reinit failed: {} — stopping", .{err});
             self.should_stop.store(true, .release);
             return;
@@ -464,7 +464,7 @@ fn appMetaCallback(session: *BroadcastSession) void {
     self.sendAppMeta();
 }
 
-fn appResizeCallback(session: *BroadcastSession, width: u16, height: u16) void {
+fn appResizeCallback(session: *BroadcastSession, _: *const [16]u8, width: u16, height: u16) void {
     const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     if (width < 100 or height < 100) return;
     if (@as(u32, width) == self.encoder.width and @as(u32, height) == self.encoder.height) return;

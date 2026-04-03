@@ -1,5 +1,5 @@
 const std = @import("std");
-const keymap = @import("keymap_mac");
+const keymap = @import("keymap");
 const InputHandler = @import("session").InputHandler;
 
 const log = std.log.scoped(.cgevent);
@@ -7,13 +7,15 @@ const log = std.log.scoped(.cgevent);
 const cg = @cImport({
     @cInclude("CoreGraphics/CoreGraphics.h");
     @cInclude("ApplicationServices/ApplicationServices.h");
-    @cInclude("macos/screen_capture.h");
+    @cInclude("screen_capture.h");
 });
 
 /// Input injection via CGEvent on macOS.
 /// Posts mouse and keyboard events to a specific app process.
 /// Requires Accessibility permission (AXIsProcessTrusted).
-pub const CGEventInput = struct {
+pub const CGEventInput = Input;
+
+pub const Input = struct {
     pid: i64,
     /// Window origin in screen coordinates (queried from AXUIElement).
     /// Mouse events are offset by this to convert from window-relative
@@ -26,7 +28,7 @@ pub const CGEventInput = struct {
     last_abs_x: f64,
     last_abs_y: f64,
 
-    pub fn init(pid: i64) !CGEventInput {
+    pub fn init(pid: i64) !Input {
         // Check Accessibility permission
         if (cg.AXIsProcessTrusted() == 0) {
             log.err("Accessibility permission not granted — input injection disabled", .{});
@@ -53,7 +55,7 @@ pub const CGEventInput = struct {
     }
 
     /// Refresh the cached window position (call after resize/move).
-    pub fn refreshWindowPosition(self: *CGEventInput) void {
+    pub fn refreshWindowPosition(self: *Input) void {
         var x: f64 = 0;
         var y: f64 = 0;
         if (cg.sc_get_window_position(self.pid, &x, &y) == 0) {
@@ -63,7 +65,7 @@ pub const CGEventInput = struct {
     }
 
     /// Move the pointer to absolute coordinates (window-relative input).
-    pub fn moveMouse(self: *CGEventInput, abs_x: u16, abs_y: u16) void {
+    pub fn moveMouse(self: *Input, abs_x: u16, abs_y: u16) void {
         const screen_x = self.win_x + @as(f64, @floatFromInt(abs_x));
         const screen_y = self.win_y + @as(f64, @floatFromInt(abs_y));
         self.last_abs_x = screen_x;
@@ -79,7 +81,7 @@ pub const CGEventInput = struct {
 
     /// Inject a mouse button press (value=1) or release (value=0).
     /// button: 0=left, 1=right, 2=middle (matches input_protocol.MouseButton)
-    pub fn injectMouseButton(self: *CGEventInput, button: u8, value: i32) void {
+    pub fn injectMouseButton(self: *Input, button: u8, value: i32) void {
         const point = cg.CGPointMake(self.last_abs_x, self.last_abs_y);
         const is_down = value != 0;
 
@@ -105,7 +107,7 @@ pub const CGEventInput = struct {
     }
 
     /// Inject scroll events. delta uses the 120-units-per-click convention.
-    pub fn injectScroll(self: *CGEventInput, delta: i16) void {
+    pub fn injectScroll(self: *Input, delta: i16) void {
         // CGEventCreateScrollWheelEvent uses "line" units (1 line ≈ 1 notch).
         // Input protocol sends ±120 per notch, so divide.
         const lines: i32 = @divTrunc(@as(i32, delta), 120);
@@ -120,7 +122,7 @@ pub const CGEventInput = struct {
 
     /// Inject a key press (value=1) or release (value=0).
     /// code: KeyboardEvent.code string (e.g. "KeyA", "Space")
-    pub fn injectKeyCode(self: *CGEventInput, code: []const u8, value: i32) void {
+    pub fn injectKeyCode(self: *Input, code: []const u8, value: i32) void {
         const mac_keycode = keymap.lookup(code) orelse {
             log.debug("unmapped key: {s}", .{code});
             return;
@@ -134,30 +136,30 @@ pub const CGEventInput = struct {
     }
 
     /// Return an InputHandler interface compatible with session.zig.
-    pub fn inputHandler(self: *CGEventInput) InputHandler {
+    pub fn inputHandler(self: *Input) InputHandler {
         return .{
             .ptr = @ptrCast(self),
             .moveFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, abs_x: u16, abs_y: u16) void {
-                    const s: *CGEventInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.moveMouse(abs_x, abs_y);
                 }
             }.f),
             .mouseButtonFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, button: u8, value: i32) void {
-                    const s: *CGEventInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectMouseButton(button, value);
                 }
             }.f),
             .scrollFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, delta: i16) void {
-                    const s: *CGEventInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectScroll(delta);
                 }
             }.f),
             .keyCodeFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, code: []const u8, value: i32) void {
-                    const s: *CGEventInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectKeyCode(code, value);
                 }
             }.f),

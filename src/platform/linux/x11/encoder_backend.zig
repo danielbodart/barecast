@@ -7,11 +7,13 @@ const encoder = @import("encoder");
 
 /// NVIDIA CUDA + NVENC encoder backend.
 /// Manages the CUDA GL-texture copy and NVENC hardware encoder.
-pub const NvencBackend = struct {
+pub const NvencBackend = EncoderBackend;
+
+pub const EncoderBackend = struct {
     cuda_ctx: Cuda,
     nvenc: NvencEncoder,
 
-    pub fn init(texture_id: u32, width: u32, height: u32, fps: u32) !NvencBackend {
+    pub fn init(texture_id: u32, width: u32, height: u32, fps: u32) !EncoderBackend {
         var cu = try Cuda.init(texture_id, width, height);
         errdefer cu.deinit();
 
@@ -25,13 +27,13 @@ pub const NvencBackend = struct {
     }
 
     /// Return the codec detected by NVENC (AV1 or HEVC).
-    pub fn codec(self: *const NvencBackend) Codec {
+    pub fn codec(self: *const EncoderBackend) Codec {
         return self.nvenc.codec;
     }
 
     /// Return an EncodeBackend vtable pointing to this instance.
     /// The NvencBackend must be at a stable memory address.
-    pub fn backend(self: *NvencBackend) encoder.EncodeBackend {
+    pub fn backend(self: *EncoderBackend) encoder.EncodeBackend {
         return .{
             .ptr = @ptrCast(self),
             .codec = self.nvenc.codec,
@@ -42,11 +44,11 @@ pub const NvencBackend = struct {
         };
     }
 
-    fn prepareFn(self: *NvencBackend) !void {
+    fn prepareFn(self: *EncoderBackend) !void {
         try self.cuda_ctx.copyGlTexture();
     }
 
-    fn encodeFn(self: *NvencBackend, force_key: bool) !?encoder.EncodedFrame {
+    fn encodeFn(self: *EncoderBackend, force_key: bool) !?encoder.EncodedFrame {
         const result = try self.nvenc.encodeFrame(force_key);
         if (result) |frame| {
             return .{
@@ -58,11 +60,11 @@ pub const NvencBackend = struct {
         return null;
     }
 
-    fn unlockFn(self: *NvencBackend) void {
+    fn unlockFn(self: *EncoderBackend) void {
         self.nvenc.unlockBitstream();
     }
 
-    fn deinitFn(self: *NvencBackend) void {
+    fn deinitFn(self: *EncoderBackend) void {
         self.nvenc.deinit();
         self.cuda_ctx.deinit();
     }

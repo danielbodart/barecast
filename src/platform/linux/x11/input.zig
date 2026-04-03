@@ -12,14 +12,16 @@ const x = @cImport({
 /// Input injection via XTEST extension on a specific X11 display.
 /// Used for app sharing where input targets the headless Xorg display.
 /// On modern X.org with evdev, X11 keycode = evdev keycode + 8.
-pub const XTestInput = struct {
+pub const XTestInput = Input;
+
+pub const Input = struct {
     display: *x.Display,
     screen_width: u32,
     screen_height: u32,
 
     const evdev_offset: u32 = 8;
 
-    pub fn init(display_name: [*:0]const u8, width: u32, height: u32) !XTestInput {
+    pub fn init(display_name: [*:0]const u8, width: u32, height: u32) !Input {
         const dpy = x.XOpenDisplay(display_name) orelse {
             log.err("cannot open display {s}", .{display_name});
             return error.DisplayFailed;
@@ -47,12 +49,12 @@ pub const XTestInput = struct {
         };
     }
 
-    pub fn deinit(self: *XTestInput) void {
+    pub fn deinit(self: *Input) void {
         _ = x.XCloseDisplay(self.display);
     }
 
     /// Move the pointer to absolute coordinates.
-    pub fn moveMouse(self: *XTestInput, abs_x: u16, abs_y: u16) void {
+    pub fn moveMouse(self: *Input, abs_x: u16, abs_y: u16) void {
         _ = x.XTestFakeMotionEvent(
             self.display,
             0, // screen number
@@ -65,7 +67,7 @@ pub const XTestInput = struct {
 
     /// Inject a mouse button press (value=1) or release (value=0).
     /// button: 0=left, 1=right, 2=middle (matches input_protocol.MouseButton)
-    pub fn injectMouseButton(self: *XTestInput, button: u8, value: i32) void {
+    pub fn injectMouseButton(self: *Input, button: u8, value: i32) void {
         // X11 buttons: 1=left, 2=middle, 3=right
         const x_button: c_uint = switch (button) {
             0 => 1, // left
@@ -83,7 +85,7 @@ pub const XTestInput = struct {
     }
 
     /// Inject scroll events. X11 uses button 4 (up) and 5 (down).
-    pub fn injectScroll(self: *XTestInput, delta: i16) void {
+    pub fn injectScroll(self: *Input, delta: i16) void {
         const button: c_uint = if (delta > 0) 4 else 5; // 4=up, 5=down
         const clicks = @abs(delta) / 120;
         for (0..if (clicks == 0) 1 else clicks) |_| {
@@ -95,7 +97,7 @@ pub const XTestInput = struct {
 
     /// Inject a key press (value=1) or release (value=0).
     /// code: KeyboardEvent.code string (e.g. "KeyA", "Space")
-    pub fn injectKeyCode(self: *XTestInput, code: []const u8, value: i32) void {
+    pub fn injectKeyCode(self: *Input, code: []const u8, value: i32) void {
         // Reuse the evdev keymap, then add the X11 offset
         const evdev_code = keymap.lookup(code) orelse {
             log.debug("unmapped key: {s}", .{code});
@@ -113,30 +115,30 @@ pub const XTestInput = struct {
     }
 
     /// Return an InputHandler interface compatible with session.zig.
-    pub fn inputHandler(self: *XTestInput) InputHandler {
+    pub fn inputHandler(self: *Input) InputHandler {
         return .{
             .ptr = @ptrCast(self),
             .moveFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, abs_x: u16, abs_y: u16) void {
-                    const s: *XTestInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.moveMouse(abs_x, abs_y);
                 }
             }.f),
             .mouseButtonFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, button: u8, value: i32) void {
-                    const s: *XTestInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectMouseButton(button, value);
                 }
             }.f),
             .scrollFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, delta: i16) void {
-                    const s: *XTestInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectScroll(delta);
                 }
             }.f),
             .keyCodeFn = @ptrCast(&struct {
                 fn f(ptr: *anyopaque, code: []const u8, value: i32) void {
-                    const s: *XTestInput = @alignCast(@ptrCast(ptr));
+                    const s: *Input = @alignCast(@ptrCast(ptr));
                     s.injectKeyCode(code, value);
                 }
             }.f),

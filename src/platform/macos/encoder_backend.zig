@@ -2,18 +2,20 @@ const std = @import("std");
 const encoder = @import("encoder");
 
 const c = @cImport({
-    @cInclude("macos/videotoolbox.h");
+    @cInclude("videotoolbox.h");
 });
 
 const log = std.log.scoped(.videotoolbox);
 
 /// VideoToolbox HEVC encoder backend for macOS.
 /// Wraps the ObjC VTCompressionSession via C API.
-pub const VideoToolboxBackend = struct {
+pub const VideoToolboxBackend = EncoderBackend;
+
+pub const EncoderBackend = struct {
     vt: *c.VTEncoder,
     pixel_buffer: ?*anyopaque,
 
-    pub fn init(width: u32, height: u32, fps: u32) !VideoToolboxBackend {
+    pub fn init(width: u32, height: u32, fps: u32) !EncoderBackend {
         const vt = c.vt_encoder_create(width, height, fps) orelse {
             log.err("VTCompressionSession creation failed", .{});
             return error.VideoToolboxInitFailed;
@@ -27,12 +29,12 @@ pub const VideoToolboxBackend = struct {
     /// Set the pixel buffer to encode on the next prepare+encode cycle.
     /// The caller retains ownership; the buffer must remain valid until
     /// after encode() returns.
-    pub fn setPixelBuffer(self: *VideoToolboxBackend, pb: *anyopaque) void {
+    pub fn setPixelBuffer(self: *EncoderBackend, pb: *anyopaque) void {
         self.pixel_buffer = pb;
     }
 
     /// Return an EncodeBackend vtable pointing to this instance.
-    pub fn backend(self: *VideoToolboxBackend) encoder.EncodeBackend {
+    pub fn backend(self: *EncoderBackend) encoder.EncodeBackend {
         return .{
             .ptr = @ptrCast(self),
             .codec = .hevc,
@@ -43,12 +45,12 @@ pub const VideoToolboxBackend = struct {
         };
     }
 
-    fn prepareFn(_: *VideoToolboxBackend) !void {
+    fn prepareFn(_: *EncoderBackend) !void {
         // No-op: pixel buffer is set by the capture layer via setPixelBuffer.
         // On Linux, this is where CUDA copies the GL texture.
     }
 
-    fn encodeFn(self: *VideoToolboxBackend, force_key: bool) !?encoder.EncodedFrame {
+    fn encodeFn(self: *EncoderBackend, force_key: bool) !?encoder.EncodedFrame {
         const pb = self.pixel_buffer orelse return error.NoPixelBuffer;
 
         const result = c.vt_encoder_encode(self.vt, pb, @intFromBool(force_key));
@@ -69,12 +71,12 @@ pub const VideoToolboxBackend = struct {
         };
     }
 
-    fn unlockFn(_: *VideoToolboxBackend) void {
+    fn unlockFn(_: *EncoderBackend) void {
         // No-op: the output buffer is a global in videotoolbox.m,
         // valid until the next encode call.
     }
 
-    fn deinitFn(self: *VideoToolboxBackend) void {
+    fn deinitFn(self: *EncoderBackend) void {
         c.vt_encoder_destroy(self.vt);
         c.vt_encoder_cleanup_globals();
     }

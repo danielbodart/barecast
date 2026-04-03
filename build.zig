@@ -19,59 +19,38 @@ pub fn build(b: *std.Build) void {
     const build_options_mod = options.createModule();
 
     // ── Shared modules (platform-independent) ────────────────────────────
-    const protocol_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ipc_mod = b.createModule(.{
-        .root_source_file = b.path("src/ipc.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "protocol", .module = protocol_mod },
-        },
-    });
-
     const input_protocol_mod = b.createModule(.{
-        .root_source_file = b.path("src/input_protocol.zig"),
+        .root_source_file = b.path("src/shared/input_protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const osc_parser_mod = b.createModule(.{
-        .root_source_file = b.path("src/osc_parser.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const keymap_mod = b.createModule(.{
-        .root_source_file = b.path("src/keymap.zig"),
+        .root_source_file = b.path("src/shared/osc_parser.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const viewer_state_mod = b.createModule(.{
-        .root_source_file = b.path("src/viewer_state.zig"),
+        .root_source_file = b.path("src/shared/viewer_state.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const codec_mod = b.createModule(.{
-        .root_source_file = b.path("src/codec.zig"),
+        .root_source_file = b.path("src/shared/codec.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const ivf_mod = b.createModule(.{
-        .root_source_file = b.path("src/ivf.zig"),
+        .root_source_file = b.path("src/shared/ivf.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const session_mod = b.createModule(.{
-        .root_source_file = b.path("src/session.zig"),
+        .root_source_file = b.path("src/shared/session.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -84,7 +63,7 @@ pub fn build(b: *std.Build) void {
     session_mod.addIncludePath(b.path("libdatachannel/include"));
 
     const session_recorder_mod = b.createModule(.{
-        .root_source_file = b.path("src/session_recorder.zig"),
+        .root_source_file = b.path("src/shared/session_recorder.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -96,7 +75,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const encoder_mod = b.createModule(.{
-        .root_source_file = b.path("src/encoder.zig"),
+        .root_source_file = b.path("src/shared/encoder.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -108,14 +87,14 @@ pub fn build(b: *std.Build) void {
     });
 
     const control_mod = b.createModule(.{
-        .root_source_file = b.path("src/control.zig"),
+        .root_source_file = b.path("src/shared/control.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
 
     const terminal_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/terminal_share.zig"),
+        .root_source_file = b.path("src/shared/terminal_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -127,11 +106,8 @@ pub fn build(b: *std.Build) void {
 
     const shared = shared_defs.SharedModules{
         .build_options = build_options_mod,
-        .protocol = protocol_mod,
-        .ipc = ipc_mod,
         .input_protocol = input_protocol_mod,
         .osc_parser = osc_parser_mod,
-        .keymap = keymap_mod,
         .viewer_state = viewer_state_mod,
         .ivf = ivf_mod,
         .session = session_mod,
@@ -147,7 +123,7 @@ pub fn build(b: *std.Build) void {
 
     // ── Daemon module (socket listener, session manager) ─────────────────
     const daemon_mod = b.createModule(.{
-        .root_source_file = b.path("src/daemon.zig"),
+        .root_source_file = b.path("src/shared/daemon.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -161,7 +137,7 @@ pub fn build(b: *std.Build) void {
 
     // ── CLI module (subcommand parser, socket client) ────────────────────
     const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli.zig"),
+        .root_source_file = b.path("src/shared/cli.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -205,13 +181,11 @@ pub fn build(b: *std.Build) void {
 
     // Pure shared tests (no libdatachannel dependency)
     inline for (.{
-        .{ "src/control.zig", true, &[_]std.Build.Module.Import{} },
-        .{ "src/osc_parser.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/protocol.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/ivf.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/keymap.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/control.zig", true, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/osc_parser.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/ivf.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
     }) |entry| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{
@@ -224,22 +198,33 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(t).step);
     }
 
-    // Platform-specific pure tests (no framework dependencies)
+    // Platform-specific pure tests
     if (builtin.os.tag == .macos) {
-        const keymap_mac_test = b.addTest(.{
+        const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/macos/keymap_mac.zig"),
+                .root_source_file = b.path("src/platform/macos/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
         });
-        test_step.dependOn(&b.addRunArtifact(keymap_mac_test).step);
+        test_step.dependOn(&b.addRunArtifact(keymap_test).step);
+    }
+
+    if (builtin.os.tag == .linux) {
+        const keymap_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/platform/linux/x11/keymap.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(keymap_test).step);
     }
 
     // CLI tests (needs imports)
     const cli_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli.zig"),
+            .root_source_file = b.path("src/shared/cli.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -251,11 +236,26 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 
-    // IPC tests (Linux only — SCM_RIGHTS is Linux-specific)
+    // KMS tests (Linux only — SCM_RIGHTS, DMA-BUF protocol)
     if (builtin.os.tag == .linux) {
+        const protocol_mod = b.createModule(.{
+            .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const protocol_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(protocol_tests).step);
+
         const ipc_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/ipc.zig"),
+                .root_source_file = b.path("src/platform/linux/kms/ipc.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -270,7 +270,7 @@ pub fn build(b: *std.Build) void {
     // Tests that need libdatachannel linked
     const session_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/session.zig"),
+            .root_source_file = b.path("src/shared/session.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -282,7 +282,7 @@ pub fn build(b: *std.Build) void {
 
     const daemon_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/daemon.zig"),
+            .root_source_file = b.path("src/shared/daemon.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -299,7 +299,7 @@ pub fn build(b: *std.Build) void {
 
     const terminal_share_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/terminal_share.zig"),
+            .root_source_file = b.path("src/shared/terminal_share.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -319,16 +319,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // protocol.zig is pure Zig structs (no platform deps) — safe to compile everywhere
+    const protocol_mod_for_props = b.createModule(.{
+        .root_source_file = b.path("src/platform/linux/kms/protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const prop_exe = b.addExecutable(.{
         .name = "prop-tests",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/prop_tests.zig"),
+            .root_source_file = b.path("src/shared/prop_tests.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "minish", .module = minish_dep.module("minish") },
-                .{ .name = "protocol", .module = protocol_mod },
                 .{ .name = "input_protocol", .module = input_protocol_mod },
+                .{ .name = "protocol", .module = protocol_mod_for_props },
             },
         }),
     });
