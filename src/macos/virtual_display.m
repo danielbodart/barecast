@@ -1,5 +1,8 @@
 // CGVirtualDisplay management — creates and holds a virtual display alive
-// in-process using a dedicated CFRunLoop thread.
+// in-process using a dedicated thread with its own NSApplication and CFRunLoop.
+//
+// All WindowServer interactions happen on the display thread to avoid
+// conflicts with the main thread (which runs the Zig daemon event loop).
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -60,23 +63,10 @@ struct VirtualDisplay {
     uint32_t height;
     double refresh_rate;
     CFRunLoopRef run_loop;
-    dispatch_semaphore_t run_loop_ready;
+    dispatch_semaphore_t ready;
     pthread_t thread;
+    BOOL create_ok;
 };
-
-// ── RunLoop thread ──────────────────────────────────────────────────────
-
-static void *runLoopThread(void *ctx) {
-    @autoreleasepool {
-        VirtualDisplay *vd = (VirtualDisplay *)ctx;
-        vd->run_loop = CFRunLoopGetCurrent();
-        dispatch_semaphore_signal(vd->run_loop_ready);
-
-        // Keep the run loop alive — it exits when CFRunLoopStop is called from vd_destroy
-        CFRunLoopRun();
-    }
-    return NULL;
-}
 
 // ── Internal helpers ────────────────────────────────────────────────────
 
@@ -106,72 +96,101 @@ static CGDisplayModeRef findDisplayMode(CGDirectDisplayID displayID, uint32_t wi
     return matched;
 }
 
+// ── Display thread ─────────────────────────────────────────────────────
+
+static void *displayThread(void *ctx) {
+    @autoreleasepool {
+        VirtualDisplay *vd = (VirtualDisplay *)ctx;
+
+        // NOTE: We intentionally do NOT initialize NSApplication here.
+        // NSApplication registers a display-change notification handler that
+        // asserts [NSThread isMainThread], which crashes when CG display
+        // configuration triggers the notification on this thread.
+
+        Class cls = NSClassFromString(@"CGVirtualDisplay");
+        if (!cls) {
+            NSLog(@"CGVirtualDisplay not available (requires macOS 14+)");
+            dispatch_semaphore_signal(vd->ready);
+            return NULL;
+        }
+
+        // Create descriptor
+        CGVirtualDisplayDescriptor *desc = [[NSClassFromString(@"CGVirtualDisplayDescriptor") alloc] init];
+        desc.name = @"Zerocast Virtual Display";
+        desc.vendorID = 0x1234;
+        desc.productID = 0x5678;
+        desc.serialNum = 1;
+        desc.maxPixelsWide = MAX_DISPLAY_PIXELS;
+        desc.maxPixelsHigh = MAX_DISPLAY_PIXELS;
+        desc.sizeInMillimeters = CGSizeMake(597, 336); // 27" display
+        desc.whitePoint = CGPointMake(0.3125, 0.3291);
+        desc.redPrimary = CGPointMake(0.6797, 0.3203);
+        desc.greenPrimary = CGPointMake(0.2559, 0.6983);
+        desc.bluePrimary = CGPointMake(0.1494, 0.0557);
+        [desc setDispatchQueue:dispatch_get_main_queue()];
+
+        vd->display = [[cls alloc] initWithDescriptor:desc];
+        if (!vd->display) {
+            NSLog(@"CGVirtualDisplay initWithDescriptor failed");
+            dispatch_semaphore_signal(vd->ready);
+            return NULL;
+        }
+
+        if (!applyMode(vd->display, vd->width, vd->height, vd->refresh_rate)) {
+            NSLog(@"CGVirtualDisplay applySettings failed");
+            vd->display = nil;
+            dispatch_semaphore_signal(vd->ready);
+            return NULL;
+        }
+
+        vd->display_id = vd->display.displayID;
+
+        // Un-mirror: macOS may auto-mirror new displays.
+        // Use kCGConfigureForAppOnly to avoid broadcasting a display
+        // reconfiguration notification that triggers AppKit's NSScreen
+        // assertion (must be on main thread).
+        CGDisplayConfigRef cgConfig;
+        if (CGBeginDisplayConfiguration(&cgConfig) == kCGErrorSuccess) {
+            CGConfigureDisplayMirrorOfDisplay(cgConfig, vd->display_id, kCGNullDirectDisplay);
+            CGCompleteDisplayConfiguration(cgConfig, kCGConfigureForAppOnly);
+        }
+
+        vd->run_loop = CFRunLoopGetCurrent();
+        vd->create_ok = YES;
+        dispatch_semaphore_signal(vd->ready);
+
+        // Run until stopped — display lives as long as this thread runs
+        CFRunLoopRun();
+
+        // Thread is ending — release the display
+        vd->display = nil;
+    }
+    return NULL;
+}
+
 // ── Public C API ────────────────────────────────────────────────────────
 
 VirtualDisplay *vd_create(uint32_t width, uint32_t height, double refresh_rate) {
-    // Ensure NSApplication is initialized (required for WindowServer registration)
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
-    });
-
-    Class cls = NSClassFromString(@"CGVirtualDisplay");
-    if (!cls) {
-        NSLog(@"CGVirtualDisplay not available (requires macOS 14+)");
-        return NULL;
-    }
-
-    // Create descriptor with max pixels set high to allow resize headroom
-    CGVirtualDisplayDescriptor *desc = [[NSClassFromString(@"CGVirtualDisplayDescriptor") alloc] init];
-    desc.name = @"Zerocast Virtual Display";
-    desc.vendorID = 0x1234;
-    desc.productID = 0x5678;
-    desc.serialNum = 1;
-    desc.maxPixelsWide = MAX_DISPLAY_PIXELS;
-    desc.maxPixelsHigh = MAX_DISPLAY_PIXELS;
-    desc.sizeInMillimeters = CGSizeMake(597, 336); // 27" display
-    desc.whitePoint = CGPointMake(0.3125, 0.3291);
-    desc.redPrimary = CGPointMake(0.6797, 0.3203);
-    desc.greenPrimary = CGPointMake(0.2559, 0.6983);
-    desc.bluePrimary = CGPointMake(0.1494, 0.0557);
-    [desc setDispatchQueue:dispatch_get_main_queue()];
-
-    CGVirtualDisplay *display = [[cls alloc] initWithDescriptor:desc];
-    if (!display) {
-        NSLog(@"CGVirtualDisplay initWithDescriptor failed");
-        return NULL;
-    }
-
-    if (!applyMode(display, width, height, refresh_rate)) {
-        NSLog(@"CGVirtualDisplay applySettings failed");
-        return NULL;
-    }
-
-    CGDirectDisplayID displayID = display.displayID;
-
-    // Un-mirror: macOS may auto-mirror new displays
-    CGDisplayConfigRef cgConfig;
-    if (CGBeginDisplayConfiguration(&cgConfig) == kCGErrorSuccess) {
-        CGConfigureDisplayMirrorOfDisplay(cgConfig, displayID, kCGNullDirectDisplay);
-        CGCompleteDisplayConfiguration(cgConfig, kCGConfigureForSession);
-    }
-
     VirtualDisplay *vd = calloc(1, sizeof(VirtualDisplay));
     if (!vd) return NULL;
 
-    vd->display = display;
-    vd->display_id = displayID;
     vd->width = width;
     vd->height = height;
     vd->refresh_rate = refresh_rate;
-    vd->run_loop_ready = dispatch_semaphore_create(0);
+    vd->ready = dispatch_semaphore_create(0);
+    vd->create_ok = NO;
 
-    // Start the run loop thread to keep the display alive
-    pthread_create(&vd->thread, NULL, runLoopThread, vd);
-    dispatch_semaphore_wait(vd->run_loop_ready, DISPATCH_TIME_FOREVER);
+    // Create the display on a dedicated thread with its own run loop
+    pthread_create(&vd->thread, NULL, displayThread, vd);
+    dispatch_semaphore_wait(vd->ready, DISPATCH_TIME_FOREVER);
 
-    NSLog(@"Virtual display %u created (%ux%u @%.0fHz)", displayID, width, height, refresh_rate);
+    if (!vd->create_ok) {
+        pthread_join(vd->thread, NULL);
+        free(vd);
+        return NULL;
+    }
+
+    NSLog(@"Virtual display %u created (%ux%u @%.0fHz)", vd->display_id, width, height, refresh_rate);
     return vd;
 }
 
@@ -184,51 +203,59 @@ int vd_resize(VirtualDisplay *vd, uint32_t width, uint32_t height) {
     if (!vd || !vd->display) return -1;
     if (vd->width == width && vd->height == height) return 0;
 
-    // Declare the new mode on the virtual display
-    if (!applyMode(vd->display, width, height, vd->refresh_rate)) {
-        NSLog(@"vd_resize: applySettings failed for %ux%u", width, height);
-        return -1;
-    }
+    // Dispatch resize onto the display thread's run loop
+    __block int result = -1;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
 
-    // Switch the active display mode via CoreGraphics
-    CGDisplayModeRef mode = findDisplayMode(vd->display_id, width, height);
-    if (!mode) {
-        NSLog(@"vd_resize: no matching display mode for %ux%u", width, height);
-        return -1;
-    }
+    CFRunLoopPerformBlock(vd->run_loop, kCFRunLoopDefaultMode, ^{
+        if (!applyMode(vd->display, width, height, vd->refresh_rate)) {
+            NSLog(@"vd_resize: applySettings failed for %ux%u", width, height);
+            dispatch_semaphore_signal(done);
+            return;
+        }
 
-    CGDisplayConfigRef cfg;
-    CGError err = CGBeginDisplayConfiguration(&cfg);
-    if (err != kCGErrorSuccess) {
+        CGDisplayModeRef mode = findDisplayMode(vd->display_id, width, height);
+        if (!mode) {
+            NSLog(@"vd_resize: no matching display mode for %ux%u", width, height);
+            dispatch_semaphore_signal(done);
+            return;
+        }
+
+        CGDisplayConfigRef cfg;
+        CGError err = CGBeginDisplayConfiguration(&cfg);
+        if (err != kCGErrorSuccess) {
+            CGDisplayModeRelease(mode);
+            NSLog(@"vd_resize: CGBeginDisplayConfiguration failed: %d", err);
+            dispatch_semaphore_signal(done);
+            return;
+        }
+        CGConfigureDisplayWithDisplayMode(cfg, vd->display_id, mode, NULL);
+        err = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
         CGDisplayModeRelease(mode);
-        NSLog(@"vd_resize: CGBeginDisplayConfiguration failed: %d", err);
-        return -1;
-    }
-    CGConfigureDisplayWithDisplayMode(cfg, vd->display_id, mode, NULL);
-    err = CGCompleteDisplayConfiguration(cfg, kCGConfigureForSession);
-    CGDisplayModeRelease(mode);
 
-    if (err != kCGErrorSuccess) {
-        NSLog(@"vd_resize: CGCompleteDisplayConfiguration failed: %d", err);
-        return -1;
-    }
+        if (err != kCGErrorSuccess) {
+            NSLog(@"vd_resize: CGCompleteDisplayConfiguration failed: %d", err);
+            dispatch_semaphore_signal(done);
+            return;
+        }
 
-    vd->width = width;
-    vd->height = height;
-
-    NSLog(@"Virtual display %u resized to %ux%u", vd->display_id, width, height);
-    return 0;
+        vd->width = width;
+        vd->height = height;
+        result = 0;
+        NSLog(@"Virtual display %u resized to %ux%u", vd->display_id, width, height);
+        dispatch_semaphore_signal(done);
+    });
+    CFRunLoopWakeUp(vd->run_loop);
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return result;
 }
 
 void vd_destroy(VirtualDisplay *vd) {
     if (!vd) return;
 
-    // Stop the run loop — this causes the thread to exit
+    // Stop the run loop — this causes the thread to release the display and exit
     CFRunLoopStop(vd->run_loop);
     pthread_join(vd->thread, NULL);
-
-    // Release the display (removes it from WindowServer)
-    vd->display = nil;
     free(vd);
 }
 
