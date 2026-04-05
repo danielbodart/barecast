@@ -108,6 +108,96 @@ pub fn buildPlatform(
         },
     });
 
+    // --- VA-API encoder backend (Intel QSV / AMD VCN) ---
+    const vaapi_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/vaapi/vaapi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "codec", .module = shared.codec },
+        },
+    });
+    vaapi_mod.linkSystemLibrary("libva", .{});
+    vaapi_mod.linkSystemLibrary("libva-drm", .{});
+    vaapi_mod.addIncludePath(b.path("src/linux/vaapi"));
+    vaapi_mod.addCSourceFile(.{ .file = b.path("src/linux/vaapi/hevc_params.c") });
+
+    const vaapi_encoder_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/vaapi/encoder_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "vaapi", .module = vaapi_mod },
+            .{ .name = "codec", .module = shared.codec },
+            .{ .name = "encoder", .module = shared.encoder },
+        },
+    });
+
+    _ = vaapi_encoder_backend_mod;
+
+    // --- VA-API integration test binary ---
+    const vaapi_test_exe = b.addExecutable(.{
+        .name = "test-vaapi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/test_vaapi.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "vaapi", .module = vaapi_mod },
+            },
+        }),
+    });
+    vaapi_test_exe.linkSystemLibrary("libva");
+    vaapi_test_exe.linkSystemLibrary("libva-drm");
+    b.installArtifact(vaapi_test_exe);
+
+    // --- Embedded Wayland compositor (wlroots headless) ---
+    const compositor_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/compositor.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    compositor_mod.addIncludePath(b.path("wlroots/include"));
+    compositor_mod.addIncludePath(b.path(".zig-cache/wlroots-build/include"));
+    compositor_mod.addIncludePath(b.path(".zig-cache/wlroots-build/protocol"));
+    compositor_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
+    compositor_mod.addObjectFile(b.path(".zig-cache/wlroots-build/libwlroots.a"));
+    compositor_mod.linkSystemLibrary("wayland-server", .{});
+    compositor_mod.linkSystemLibrary("wayland-client", .{});
+    compositor_mod.linkSystemLibrary("pixman-1", .{});
+    compositor_mod.linkSystemLibrary("egl", .{});
+    compositor_mod.linkSystemLibrary("glesv2", .{});
+    compositor_mod.linkSystemLibrary("gbm", .{});
+    compositor_mod.linkSystemLibrary("libdrm", .{});
+    compositor_mod.linkSystemLibrary("xkbcommon", .{});
+
+    // --- Compositor integration test binary ---
+    const compositor_test_exe = b.addExecutable(.{
+        .name = "test-compositor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/test_compositor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "compositor", .module = compositor_mod },
+            },
+        }),
+    });
+    compositor_test_exe.root_module.addObjectFile(b.path(".zig-cache/wlroots-build/libwlroots.a"));
+    compositor_test_exe.linkSystemLibrary("wayland-server");
+    compositor_test_exe.linkSystemLibrary("wayland-client");
+    compositor_test_exe.linkSystemLibrary("pixman-1");
+    compositor_test_exe.linkSystemLibrary("egl");
+    compositor_test_exe.linkSystemLibrary("glesv2");
+    compositor_test_exe.linkSystemLibrary("gbm");
+    compositor_test_exe.linkSystemLibrary("libdrm");
+    compositor_test_exe.linkSystemLibrary("xkbcommon");
+    b.installArtifact(compositor_test_exe);
+
     return .{ .app_share = app_share_mod };
 }
 
