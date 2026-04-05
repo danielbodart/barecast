@@ -149,7 +149,10 @@ pub fn buildPlatform(
     });
     vaapi_test_exe.linkSystemLibrary("libva");
     vaapi_test_exe.linkSystemLibrary("libva-drm");
-    b.installArtifact(vaapi_test_exe);
+    // Not in default install — build with: zig build test-tools
+    const vaapi_install = b.addInstallArtifact(vaapi_test_exe, .{});
+    const test_tools_step = b.step("test-tools", "Build VA-API and compositor test binaries");
+    test_tools_step.dependOn(&vaapi_install.step);
 
     // --- Embedded Wayland compositor (wlroots headless) ---
     const compositor_mod = b.createModule(.{
@@ -194,7 +197,9 @@ pub fn buildPlatform(
     compositor_test_exe.linkSystemLibrary("gbm");
     compositor_test_exe.linkSystemLibrary("libdrm");
     compositor_test_exe.linkSystemLibrary("xkbcommon");
-    b.installArtifact(compositor_test_exe);
+    // Not in default install — build with: zig build test-tools
+    const compositor_install = b.addInstallArtifact(compositor_test_exe, .{});
+    test_tools_step.dependOn(&compositor_install.step);
 
     // --- Wayland app share (compositor + VA-API encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
