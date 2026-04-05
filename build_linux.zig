@@ -134,26 +134,6 @@ pub fn buildPlatform(
         },
     });
 
-    // --- VA-API integration test binary ---
-    const vaapi_test_exe = b.addExecutable(.{
-        .name = "test-vaapi",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/test_vaapi.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "vaapi", .module = vaapi_mod },
-            },
-        }),
-    });
-    vaapi_test_exe.linkSystemLibrary("libva");
-    vaapi_test_exe.linkSystemLibrary("libva-drm");
-    // Not in default install — build with: zig build test-tools
-    const vaapi_install = b.addInstallArtifact(vaapi_test_exe, .{});
-    const test_tools_step = b.step("test-tools", "Build VA-API and compositor test binaries");
-    test_tools_step.dependOn(&vaapi_install.step);
-
     // --- Embedded Wayland compositor (wlroots headless) ---
     const compositor_mod = b.createModule(.{
         .root_source_file = b.path("src/linux/wayland/compositor.zig"),
@@ -174,32 +154,6 @@ pub fn buildPlatform(
     compositor_mod.linkSystemLibrary("gbm", .{});
     compositor_mod.linkSystemLibrary("libdrm", .{});
     compositor_mod.linkSystemLibrary("xkbcommon", .{});
-
-    // --- Compositor integration test binary ---
-    const compositor_test_exe = b.addExecutable(.{
-        .name = "test-compositor",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/test_compositor.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "compositor", .module = compositor_mod },
-            },
-        }),
-    });
-    compositor_test_exe.root_module.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
-    compositor_test_exe.linkSystemLibrary("wayland-server");
-    compositor_test_exe.linkSystemLibrary("wayland-client");
-    compositor_test_exe.linkSystemLibrary("pixman-1");
-    compositor_test_exe.linkSystemLibrary("egl");
-    compositor_test_exe.linkSystemLibrary("glesv2");
-    compositor_test_exe.linkSystemLibrary("gbm");
-    compositor_test_exe.linkSystemLibrary("libdrm");
-    compositor_test_exe.linkSystemLibrary("xkbcommon");
-    // Not in default install — build with: zig build test-tools
-    const compositor_install = b.addInstallArtifact(compositor_test_exe, .{});
-    test_tools_step.dependOn(&compositor_install.step);
 
     // --- Wayland app share (compositor + VA-API encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
