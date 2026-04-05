@@ -120,7 +120,6 @@ pub fn build(b: *std.Build) void {
 
     // ── Platform-specific modules ────────────────────────────────────────
     const platform_mods = platform.buildPlatform(b, target, optimize, shared);
-    options.addOption(bool, "has_vaapi", platform_mods.app_share_vaapi != null);
 
     // ── Daemon module (socket listener, session manager) ─────────────────
     const daemon_mod = b.createModule(.{

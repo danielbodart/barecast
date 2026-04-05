@@ -68,6 +68,22 @@ async function ensureLinuxDeps() {
     const { exitCode: xtstCheck } = await $`pkg-config --exists xtst`.quiet().nothrow();
     if (xtstCheck !== 0) missing.push("libxtst-dev");
 
+    // Wayland + wlroots deps (needed by compositor module)
+    const { exitCode: waylandCheck } = await $`pkg-config --exists wayland-server`.quiet().nothrow();
+    if (waylandCheck !== 0) missing.push("libwayland-dev");
+    const { exitCode: gbmCheck } = await $`pkg-config --exists gbm`.quiet().nothrow();
+    if (gbmCheck !== 0) missing.push("libgbm-dev");
+    const { exitCode: xkbCheck } = await $`pkg-config --exists xkbcommon`.quiet().nothrow();
+    if (xkbCheck !== 0) missing.push("libxkbcommon-dev");
+    const { exitCode: pixmanCheck } = await $`pkg-config --exists pixman-1`.quiet().nothrow();
+    if (pixmanCheck !== 0) missing.push("libpixman-1-dev");
+
+    // VA-API (needed by vaapi encoder)
+    const { exitCode: vaCheck } = await $`pkg-config --exists libva`.quiet().nothrow();
+    if (vaCheck !== 0) missing.push("libva-dev");
+    const { exitCode: vaDrmCheck } = await $`pkg-config --exists libva-drm`.quiet().nothrow();
+    if (vaDrmCheck !== 0) missing.push("libva-dev");
+
     // cmake (needed to build libdatachannel)
     if (!await which("cmake")) missing.push("cmake");
 

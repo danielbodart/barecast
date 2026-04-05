@@ -159,10 +159,10 @@ pub fn buildPlatform(
         .link_libc = true,
     });
     compositor_mod.addIncludePath(b.path("wlroots/include"));
-    compositor_mod.addIncludePath(b.path(".zig-cache/wlroots-build/include"));
-    compositor_mod.addIncludePath(b.path(".zig-cache/wlroots-build/protocol"));
+    compositor_mod.addIncludePath(b.path("libs/wlroots/include"));
+    compositor_mod.addIncludePath(b.path("libs/wlroots/protocol"));
     compositor_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
-    compositor_mod.addObjectFile(b.path(".zig-cache/wlroots-build/libwlroots.a"));
+    compositor_mod.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
     compositor_mod.linkSystemLibrary("wayland-server", .{});
     compositor_mod.linkSystemLibrary("wayland-client", .{});
     compositor_mod.linkSystemLibrary("pixman-1", .{});
@@ -185,7 +185,7 @@ pub fn buildPlatform(
             },
         }),
     });
-    compositor_test_exe.root_module.addObjectFile(b.path(".zig-cache/wlroots-build/libwlroots.a"));
+    compositor_test_exe.root_module.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
     compositor_test_exe.linkSystemLibrary("wayland-server");
     compositor_test_exe.linkSystemLibrary("wayland-client");
     compositor_test_exe.linkSystemLibrary("pixman-1");

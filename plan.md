@@ -108,12 +108,15 @@ Create `src/linux/wayland/app_share.zig` (parallel to `src/linux/x11/app_share.z
 ## Build Commands
 
 ```bash
-# Build wlroots static lib (one-time, or after submodule update)
+# Rebuild wlroots static lib (only after submodule update)
 meson setup .zig-cache/wlroots-build wlroots \
   --default-library=static \
   -Dbackends=[] -Drenderers=gles2 -Dallocators=gbm \
   -Dxwayland=disabled -Dexamples=false -Dsession=disabled -Dxcb-errors=disabled
 ninja -C .zig-cache/wlroots-build
+cp .zig-cache/wlroots-build/libwlroots.a libs/wlroots/
+cp -r .zig-cache/wlroots-build/include libs/wlroots/
+cp .zig-cache/wlroots-build/protocol/*.h libs/wlroots/protocol/
 
 # Build everything
 ./run.ts build

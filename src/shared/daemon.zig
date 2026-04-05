@@ -3,17 +3,8 @@ const posix = std.posix;
 const control = @import("control");
 const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
-const has_vaapi = build_options.has_vaapi;
-const vaapi_imports = if (has_vaapi) struct {
-    const mod = @import("app_share_vaapi");
-    const WaylandAppShare = mod.WaylandAppShare;
-    const AppShareConfig = mod.AppShareConfig;
-} else struct {
-    const WaylandAppShare = void;
-    const AppShareConfig = void;
-};
-const WaylandAppShare = vaapi_imports.WaylandAppShare;
-const WaylandAppShareConfig = vaapi_imports.AppShareConfig;
+const WaylandAppShare = @import("app_share_vaapi").WaylandAppShare;
+const WaylandAppShareConfig = @import("app_share_vaapi").AppShareConfig;
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
 const build_options = @import("build_options");
@@ -33,7 +24,7 @@ const MAX_SESSIONS = 8;
 const SharePayload = union(enum) {
     terminal: *TerminalShare,
     app: *AppShare,
-    wayland_app: if (has_vaapi) *WaylandAppShare else void,
+    wayland_app: *WaylandAppShare,
 };
 
 const SessionSlot = struct {
@@ -275,7 +266,7 @@ const AppInitResult = struct {
 };
 
 fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
-    if (has_vaapi and req.gpu == .intel) {
+    if (req.gpu == .intel) {
         return handleShareAppWayland(req, buf);
     }
     return handleShareAppNvidia(req, buf);
@@ -344,8 +335,6 @@ fn handleShareAppNvidia(req: control.ShareRequest, buf: []u8) []const u8 {
 }
 
 fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
-    if (!has_vaapi) return control.writeErrorResponse(buf, "VA-API not available") orelse "";
-
     const allocator = std.heap.c_allocator;
 
     const command = req.command orelse
