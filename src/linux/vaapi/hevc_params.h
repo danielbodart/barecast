@@ -11,6 +11,12 @@ int vaapi_generate_packed_headers(
     unsigned char *sps_buf, int sps_capacity, int *sps_size,
     unsigned char *pps_buf, int pps_capacity, int *pps_size);
 
+/// Generate a packed HEVC slice segment header NAL unit.
+int vaapi_generate_packed_slice_header(
+    unsigned int width, unsigned int height,
+    unsigned int poc, int is_idr,
+    unsigned char *buf, int capacity, int *out_size);
+
 /// Submit a packed header (VPS/SPS/PPS NAL unit) to the encoder.
 VAStatus vaapi_submit_packed_header(
     VADisplay display, VAContextID context,

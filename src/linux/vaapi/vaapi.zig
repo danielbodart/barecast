@@ -266,10 +266,45 @@ pub const Vaapi = struct {
                 }
             }
 
-            // PPS: recon_surface receives decoded reconstruction, ref_recon is the reference
             var st = c.vaapi_submit_hevc_pic(self.display, self.context, recon, ref_recon, self.coded_buf, poc, is_idr_int);
             if (st != c.VA_STATUS_SUCCESS) {
                 log.err("hevc pic failed: {d}", .{st});
+                return error.VaapiEncodeFailed;
+            }
+
+            // Packed VPS/SPS/PPS (IDR only)
+            if (is_idr) {
+                var vps_buf: [256]u8 = undefined;
+                var sps_buf: [256]u8 = undefined;
+                var pps_buf: [256]u8 = undefined;
+                var vps_size: c_int = 0;
+                var sps_size: c_int = 0;
+                var pps_size: c_int = 0;
+
+                _ = c.vaapi_generate_packed_headers(
+                    self.width, self.height, self.fps, self.idr_period,
+                    &vps_buf, 256, &vps_size,
+                    &sps_buf, 256, &sps_size,
+                    &pps_buf, 256, &pps_size,
+                );
+
+                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &vps_buf, vps_size);
+                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &sps_buf, sps_size);
+                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &pps_buf, pps_size);
+                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+            }
+
+            // Packed slice header (every frame)
+            var slice_hdr_buf: [256]u8 = undefined;
+            var slice_hdr_size: c_int = 0;
+            _ = c.vaapi_generate_packed_slice_header(
+                self.width, self.height, poc, is_idr_int,
+                &slice_hdr_buf, 256, &slice_hdr_size,
+            );
+            if (c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSlice, &slice_hdr_buf, slice_hdr_size) != c.VA_STATUS_SUCCESS) {
+                log.err("packed slice header failed", .{});
                 return error.VaapiEncodeFailed;
             }
 

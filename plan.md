@@ -13,16 +13,12 @@ We're adding a second encoder backend (Intel VA-API HEVC) alongside the existing
 - Build system integration in `build_linux.zig` (links libva, libva-drm)
 - `tools/test_vaapi.zig` — integration test binary
 
-**Known issue:** Encoder produces 0-byte output. Extensively investigated (2026-04-05):
-- Surface separation (input/recon), reference flags, SPS timing — all fixed, params verified byte-identical to ffmpeg
-- Root cause: Intel iHD HEVC EncSliceLP has undocumented requirements beyond H.264:
-  1. Per-frame coded buffers (not reusable between frames like H.264)
-  2. Packed SLICE headers required on every frame (ffmpeg provides via VAEncPackedHeaderHEVC_Slice)
-  3. 1-frame readback delay (read frame N-1 output after frame N submitted)
-- H.264 EncSliceLP works perfectly with minimal params — HEVC does not
-- Test with per-frame coded buffers showed `vaSyncBuffer(cod[1])` succeeded — encode IS producing output
-- See memory/vaapi_hevc_investigation.md for full details
-- **Next step**: Fix per-frame coded buffer test (segfaulted before reading data) OR use ffmpeg libavcodec as HEVC backend
+**FIXED (2026-04-05):** Encoder now produces valid HEVC bitstream (90 frames, 1920x1080, ffprobe validates).
+Root cause: Intel iHD HEVC EncSliceLP requires GPB (Generalized P→B) encoding:
+  1. Non-IDR frames must use B-slices (slice_type=0), NOT P-slices — L0=L1 (both ref lists same picture)
+  2. Packed slice header (VAEncPackedHeaderSlice) required on every frame
+  3. Packed VPS/SPS/PPS (VAEncPackedHeaderSequence) with start codes + emulation prevention bytes
+  4. SPS dimensions must be CTU-aligned (64px), with conformance window for cropping
 
 ### 2. Embedded Wayland compositor
 - `src/linux/wayland/compositor.zig` — wlroots-based headless compositor in Zig
