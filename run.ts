@@ -77,6 +77,8 @@ async function ensureLinuxDeps() {
     if (xkbCheck !== 0) missing.push("libxkbcommon-dev");
     const { exitCode: pixmanCheck } = await $`pkg-config --exists pixman-1`.quiet().nothrow();
     if (pixmanCheck !== 0) missing.push("libpixman-1-dev");
+    const { exitCode: glesCheck } = await $`pkg-config --exists glesv2`.quiet().nothrow();
+    if (glesCheck !== 0) missing.push("libgles-dev");
 
     // VA-API (needed by vaapi encoder)
     const { exitCode: vaCheck } = await $`pkg-config --exists libva`.quiet().nothrow();
