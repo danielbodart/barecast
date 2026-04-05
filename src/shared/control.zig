@@ -18,11 +18,14 @@ pub const Request = union(enum) {
     shutdown,
 };
 
+pub const GpuBackend = enum { auto, nvidia, intel };
+
 pub const ShareRequest = struct {
     type: ShareType = .app,
     fps: u32 = 30,
     record: bool = false,
-    command: ?[]const u8 = null, // terminal mode only
+    command: ?[]const u8 = null,
+    gpu: GpuBackend = .auto,
 };
 
 pub const JoinRequest = struct {
@@ -87,6 +90,14 @@ pub fn parseRequest(msg: []const u8) ?Request {
         }
 
         req.record = jsonExtractBool(msg, "record");
+
+        if (jsonExtract(msg, "gpu")) |g| {
+            if (std.mem.eql(u8, g, "nvidia")) {
+                req.gpu = .nvidia;
+            } else if (std.mem.eql(u8, g, "intel")) {
+                req.gpu = .intel;
+            }
+        }
 
         return .{ .share = req };
     } else if (std.mem.eql(u8, cmd, "join")) {

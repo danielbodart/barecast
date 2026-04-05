@@ -120,6 +120,7 @@ pub fn build(b: *std.Build) void {
 
     // ── Platform-specific modules ────────────────────────────────────────
     const platform_mods = platform.buildPlatform(b, target, optimize, shared);
+    options.addOption(bool, "has_vaapi", platform_mods.app_share_vaapi != null);
 
     // ── Daemon module (socket listener, session manager) ─────────────────
     const daemon_mod = b.createModule(.{
@@ -134,6 +135,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    if (platform_mods.app_share_vaapi) |vaapi_mod| {
+        daemon_mod.addImport("app_share_vaapi", vaapi_mod);
+    }
 
     // ── CLI module (subcommand parser, socket client) ────────────────────
     const cli_mod = b.createModule(.{
@@ -294,6 +298,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    if (platform_mods.app_share_vaapi) |vaapi_mod| {
+        daemon_tests.root_module.addImport("app_share_vaapi", vaapi_mod);
+    }
     shared_defs.linkDatachannel(b, daemon_tests);
     test_step.dependOn(&b.addRunArtifact(daemon_tests).step);
 

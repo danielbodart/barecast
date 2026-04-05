@@ -71,6 +71,12 @@ fn handleShare(args: *std.process.ArgIterator) void {
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--record")) {
             w.writeAll(",\"record\":true") catch return;
+        } else if (std.mem.eql(u8, arg, "--gpu")) {
+            if (args.next()) |gpu| {
+                w.writeAll(",\"gpu\":\"") catch return;
+                w.writeAll(gpu) catch return;
+                w.writeByte('"') catch return;
+            }
         } else {
             // Positional arg in terminal/app mode = command
             w.writeAll(",\"command\":\"") catch return;

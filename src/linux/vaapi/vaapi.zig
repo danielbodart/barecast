@@ -121,13 +121,11 @@ pub const Vaapi = struct {
         }
         errdefer _ = c.vaDestroySurfaces(display, &recon_surfaces, NUM_RECON_SURFACES);
 
-        // Context needs all surfaces that will be used (input + reconstruction)
-        var all_surfaces: [NUM_INPUT_SURFACES + NUM_RECON_SURFACES]VASurfaceID = undefined;
-        @memcpy(all_surfaces[0..NUM_INPUT_SURFACES], &input_surfaces);
-        @memcpy(all_surfaces[NUM_INPUT_SURFACES..], &recon_surfaces);
-
+        // Context only needs reconstruction surfaces (not input surfaces).
+        // Input surfaces can come from any source (pre-allocated, DMA-BUF import, etc.)
+        // and are passed to vaBeginPicture independently — matching FFmpeg's pattern.
         var context: c.VAContextID = undefined;
-        if (c.vaCreateContext(display, config, @intCast(width), @intCast(height), c.VA_PROGRESSIVE, &all_surfaces, all_surfaces.len, &context) != c.VA_STATUS_SUCCESS) {
+        if (c.vaCreateContext(display, config, @intCast(width), @intCast(height), c.VA_PROGRESSIVE, &recon_surfaces, NUM_RECON_SURFACES, &context) != c.VA_STATUS_SUCCESS) {
             log.err("vaCreateContext failed", .{});
             return error.VaapiContextFailed;
         }
@@ -231,11 +229,106 @@ pub const Vaapi = struct {
         return self.input_surfaces[self.cur_input];
     }
 
-    /// Encode one frame. The current input surface must already contain RGB data.
-    /// Surface roles:
-    ///   input_surfaces[cur_input]  — raw frame (written by compositor or writeTestPattern)
-    ///   recon_surfaces[cur_recon]  — driver writes decoded reconstruction here (DPB)
-    ///   recon_surfaces[cur_recon^1] — previous frame's reconstruction (reference for P-frames)
+    /// Import a DMA-BUF as a VA-API surface for use as encode input.
+    /// The returned surface ID can be passed to encodeImported().
+    /// Caller is responsible for destroying the surface via destroyImportedSurface().
+    pub fn importDmaBuf(self: *Vaapi, fd: i32, format: u32, modifier: u64, stride: u32, offset: u32, width: u32, height: u32) !VASurfaceID {
+        var attrib_list: [2]c.VASurfaceAttrib = undefined;
+
+        // Memory type: DRM PRIME 2
+        attrib_list[0] = .{
+            .type = c.VASurfaceAttribMemoryType,
+            .flags = c.VA_SURFACE_ATTRIB_SETTABLE,
+            .value = .{ .type = c.VAGenericValueTypeInteger, .value = .{ .i = c.VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 } },
+        };
+
+        // Surface descriptor
+        var desc: c.VADRMPRIMESurfaceDescriptor = std.mem.zeroes(c.VADRMPRIMESurfaceDescriptor);
+        desc.fourcc = format;
+        desc.width = width;
+        desc.height = height;
+        desc.num_objects = 1;
+        desc.objects[0] = .{
+            .fd = fd,
+            .size = stride * height,
+            .drm_format_modifier = modifier,
+        };
+        desc.num_layers = 1;
+        desc.layers[0].drm_format = format;
+        desc.layers[0].num_planes = 1;
+        desc.layers[0].object_index[0] = 0;
+        desc.layers[0].offset[0] = offset;
+        desc.layers[0].pitch[0] = stride;
+
+        attrib_list[1] = .{
+            .type = c.VASurfaceAttribExternalBufferDescriptor,
+            .flags = c.VA_SURFACE_ATTRIB_SETTABLE,
+            .value = .{ .type = c.VAGenericValueTypePointer, .value = .{ .p = @ptrCast(&desc) } },
+        };
+
+        var surface: VASurfaceID = undefined;
+        const status = c.vaCreateSurfaces(
+            self.display,
+            c.VA_RT_FORMAT_RGB32,
+            width,
+            height,
+            &surface,
+            1,
+            &attrib_list,
+            attrib_list.len,
+        );
+        if (status != c.VA_STATUS_SUCCESS) {
+            log.err("vaCreateSurfaces (DMA-BUF import) failed: {d}", .{status});
+            return error.VaapiImportFailed;
+        }
+
+        log.debug("imported DMA-BUF fd={d} as surface {d} ({d}x{d})", .{ fd, surface, width, height });
+        return surface;
+    }
+
+    /// Destroy a surface previously created by importDmaBuf().
+    pub fn destroyImportedSurface(self: *Vaapi, surface: *VASurfaceID) void {
+        _ = c.vaDestroySurfaces(self.display, surface, 1);
+    }
+
+    /// Encode one frame from an externally-provided input surface (e.g. DMA-BUF import).
+    /// The surface must contain RGB data compatible with the encoder.
+    pub fn encodeImported(self: *Vaapi, input_surface: VASurfaceID, force_key: bool) !?EncodedFrame {
+        const is_idr = isIdr(self.frame_count, self.idr_period, force_key);
+        const poc: u32 = picOrderCount(self.frame_count);
+
+        const recon = self.recon_surfaces[self.cur_recon];
+        const ref_recon = self.recon_surfaces[self.cur_recon ^ 1];
+        const ref_poc: u32 = if (self.frame_count > 0) picOrderCount(self.frame_count - 1) else 0;
+
+        _ = c.vaSyncSurface(self.display, input_surface);
+
+        if (c.vaBeginPicture(self.display, self.context, input_surface) != c.VA_STATUS_SUCCESS) {
+            log.err("vaBeginPicture failed", .{});
+            return error.VaapiEncodeFailed;
+        }
+
+        if (self.codec == .hevc) {
+            try self.submitHevcParams(is_idr, poc, recon, ref_recon, ref_poc);
+        }
+
+        const end_status = c.vaEndPicture(self.display, self.context);
+        if (end_status != c.VA_STATUS_SUCCESS) {
+            log.err("vaEndPicture failed: status={d}", .{end_status});
+            return error.VaapiEncodeFailed;
+        }
+
+        if (c.vaSyncSurface(self.display, input_surface) != c.VA_STATUS_SUCCESS) {
+            log.err("vaSyncSurface failed", .{});
+            return error.VaapiEncodeFailed;
+        }
+
+        return self.extractBitstream(is_idr);
+    }
+
+    /// Encode one frame. The current input surface must already contain RGB data
+    /// (written by writeTestPattern or via exportSurface EGL interop).
+    /// For DMA-BUF input from a compositor, use encodeImported() instead.
     pub fn encodeFrame(self: *Vaapi, force_key: bool) !?EncodedFrame {
         const is_idr = isIdr(self.frame_count, self.idr_period, force_key);
         const poc: u32 = picOrderCount(self.frame_count);
@@ -247,72 +340,13 @@ pub const Vaapi = struct {
 
         _ = c.vaSyncSurface(self.display, input);
 
-        // vaBeginPicture takes the INPUT surface (raw frame data)
         if (c.vaBeginPicture(self.display, self.context, input) != c.VA_STATUS_SUCCESS) {
             log.err("vaBeginPicture failed", .{});
             return error.VaapiEncodeFailed;
         }
 
         if (self.codec == .hevc) {
-            const is_idr_int: c_int = @intFromBool(is_idr);
-
-            // SPS only on IDR frames
-            if (is_idr) {
-                const bitrate = targetBitrate(self.width, self.height, self.fps);
-                const st = c.vaapi_submit_hevc_seq(self.display, self.context, self.width, self.height, self.fps, bitrate, self.idr_period);
-                if (st != c.VA_STATUS_SUCCESS) {
-                    log.err("hevc seq failed: {d}", .{st});
-                    return error.VaapiEncodeFailed;
-                }
-            }
-
-            var st = c.vaapi_submit_hevc_pic(self.display, self.context, recon, ref_recon, self.coded_buf, poc, is_idr_int);
-            if (st != c.VA_STATUS_SUCCESS) {
-                log.err("hevc pic failed: {d}", .{st});
-                return error.VaapiEncodeFailed;
-            }
-
-            // Packed VPS/SPS/PPS (IDR only)
-            if (is_idr) {
-                var vps_buf: [256]u8 = undefined;
-                var sps_buf: [256]u8 = undefined;
-                var pps_buf: [256]u8 = undefined;
-                var vps_size: c_int = 0;
-                var sps_size: c_int = 0;
-                var pps_size: c_int = 0;
-
-                _ = c.vaapi_generate_packed_headers(
-                    self.width, self.height, self.fps, self.idr_period,
-                    &vps_buf, 256, &vps_size,
-                    &sps_buf, 256, &sps_size,
-                    &pps_buf, 256, &pps_size,
-                );
-
-                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &vps_buf, vps_size);
-                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
-                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &sps_buf, sps_size);
-                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
-                st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &pps_buf, pps_size);
-                if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
-            }
-
-            // Packed slice header (every frame)
-            var slice_hdr_buf: [256]u8 = undefined;
-            var slice_hdr_size: c_int = 0;
-            _ = c.vaapi_generate_packed_slice_header(
-                self.width, self.height, poc, is_idr_int,
-                &slice_hdr_buf, 256, &slice_hdr_size,
-            );
-            if (c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSlice, &slice_hdr_buf, slice_hdr_size) != c.VA_STATUS_SUCCESS) {
-                log.err("packed slice header failed", .{});
-                return error.VaapiEncodeFailed;
-            }
-
-            st = c.vaapi_submit_hevc_slice(self.display, self.context, ref_recon, ref_poc, self.width, self.height, is_idr_int);
-            if (st != c.VA_STATUS_SUCCESS) {
-                log.err("hevc slice failed: {d}", .{st});
-                return error.VaapiEncodeFailed;
-            }
+            try self.submitHevcParams(is_idr, poc, recon, ref_recon, ref_poc);
         }
 
         const end_status = c.vaEndPicture(self.display, self.context);
@@ -321,13 +355,79 @@ pub const Vaapi = struct {
             return error.VaapiEncodeFailed;
         }
 
-        // Wait for encode to complete on the input surface
         if (c.vaSyncSurface(self.display, input) != c.VA_STATUS_SUCCESS) {
             log.err("vaSyncSurface failed", .{});
             return error.VaapiEncodeFailed;
         }
 
-        // Map coded buffer
+        self.cur_input ^= 1;
+        return self.extractBitstream(is_idr);
+    }
+
+    // ── Shared encode helpers ───────────────────────────────────────────
+
+    /// Submit all HEVC encode parameters (seq/pic/packed headers/slice).
+    fn submitHevcParams(self: *Vaapi, is_idr: bool, poc: u32, recon: VASurfaceID, ref_recon: VASurfaceID, ref_poc: u32) !void {
+        const is_idr_int: c_int = @intFromBool(is_idr);
+
+        if (is_idr) {
+            const bitrate = targetBitrate(self.width, self.height, self.fps);
+            const st = c.vaapi_submit_hevc_seq(self.display, self.context, self.width, self.height, self.fps, bitrate, self.idr_period);
+            if (st != c.VA_STATUS_SUCCESS) {
+                log.err("hevc seq failed: {d}", .{st});
+                return error.VaapiEncodeFailed;
+            }
+        }
+
+        var st = c.vaapi_submit_hevc_pic(self.display, self.context, recon, ref_recon, self.coded_buf, poc, is_idr_int);
+        if (st != c.VA_STATUS_SUCCESS) {
+            log.err("hevc pic failed: {d}", .{st});
+            return error.VaapiEncodeFailed;
+        }
+
+        if (is_idr) {
+            var vps_buf: [256]u8 = undefined;
+            var sps_buf: [256]u8 = undefined;
+            var pps_buf: [256]u8 = undefined;
+            var vps_size: c_int = 0;
+            var sps_size: c_int = 0;
+            var pps_size: c_int = 0;
+
+            _ = c.vaapi_generate_packed_headers(
+                self.width, self.height, self.fps, self.idr_period,
+                &vps_buf, 256, &vps_size,
+                &sps_buf, 256, &sps_size,
+                &pps_buf, 256, &pps_size,
+            );
+
+            st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &vps_buf, vps_size);
+            if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+            st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &sps_buf, sps_size);
+            if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+            st = c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSequence, &pps_buf, pps_size);
+            if (st != c.VA_STATUS_SUCCESS) return error.VaapiEncodeFailed;
+        }
+
+        var slice_hdr_buf: [256]u8 = undefined;
+        var slice_hdr_size: c_int = 0;
+        _ = c.vaapi_generate_packed_slice_header(
+            self.width, self.height, poc, is_idr_int,
+            &slice_hdr_buf, 256, &slice_hdr_size,
+        );
+        if (c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSlice, &slice_hdr_buf, slice_hdr_size) != c.VA_STATUS_SUCCESS) {
+            log.err("packed slice header failed", .{});
+            return error.VaapiEncodeFailed;
+        }
+
+        st = c.vaapi_submit_hevc_slice(self.display, self.context, ref_recon, ref_poc, self.width, self.height, is_idr_int);
+        if (st != c.VA_STATUS_SUCCESS) {
+            log.err("hevc slice failed: {d}", .{st});
+            return error.VaapiEncodeFailed;
+        }
+    }
+
+    /// Map the coded buffer, extract bitstream, advance frame counters.
+    fn extractBitstream(self: *Vaapi, is_idr: bool) !?EncodedFrame {
         var buf_ptr: ?*anyopaque = null;
         if (c.vaMapBuffer(self.display, self.coded_buf, &buf_ptr) != c.VA_STATUS_SUCCESS) {
             log.err("vaMapBuffer failed", .{});
@@ -338,7 +438,6 @@ pub const Vaapi = struct {
         if (segment.buf == null or segment.size == 0) {
             _ = c.vaUnmapBuffer(self.display, self.coded_buf);
             self.frame_count += 1;
-            self.cur_input ^= 1;
             self.cur_recon ^= 1;
             return null;
         }
@@ -346,7 +445,6 @@ pub const Vaapi = struct {
         self.bitstream_ptr = @ptrCast(segment.buf);
         self.bitstream_len = @intCast(segment.size);
         self.frame_count += 1;
-        self.cur_input ^= 1;
         self.cur_recon ^= 1;
 
         return .{

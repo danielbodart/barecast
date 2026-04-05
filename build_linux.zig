@@ -134,8 +134,6 @@ pub fn buildPlatform(
         },
     });
 
-    _ = vaapi_encoder_backend_mod;
-
     // --- VA-API integration test binary ---
     const vaapi_test_exe = b.addExecutable(.{
         .name = "test-vaapi",
@@ -198,7 +196,24 @@ pub fn buildPlatform(
     compositor_test_exe.linkSystemLibrary("xkbcommon");
     b.installArtifact(compositor_test_exe);
 
-    return .{ .app_share = app_share_mod };
+    // --- Wayland app share (compositor + VA-API encoder pipeline) ---
+    const wayland_app_share_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/app_share.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "compositor", .module = compositor_mod },
+            .{ .name = "encoder", .module = shared.encoder },
+            .{ .name = "encoder_backend", .module = vaapi_encoder_backend_mod },
+            .{ .name = "control", .module = shared.control },
+            .{ .name = "session", .module = shared.session },
+            .{ .name = "viewer_state", .module = shared.viewer_state },
+            .{ .name = "session_recorder", .module = shared.session_recorder },
+        },
+    });
+
+    return .{ .app_share = app_share_mod, .app_share_vaapi = wayland_app_share_mod };
 }
 
 /// Install Linux-specific extra binaries (zerocast-kms, zerocast-xorg, fpscap.so).

@@ -3,6 +3,17 @@ const posix = std.posix;
 const control = @import("control");
 const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
+const has_vaapi = build_options.has_vaapi;
+const vaapi_imports = if (has_vaapi) struct {
+    const mod = @import("app_share_vaapi");
+    const WaylandAppShare = mod.WaylandAppShare;
+    const AppShareConfig = mod.AppShareConfig;
+} else struct {
+    const WaylandAppShare = void;
+    const AppShareConfig = void;
+};
+const WaylandAppShare = vaapi_imports.WaylandAppShare;
+const WaylandAppShareConfig = vaapi_imports.AppShareConfig;
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
 const build_options = @import("build_options");
@@ -22,6 +33,7 @@ const MAX_SESSIONS = 8;
 const SharePayload = union(enum) {
     terminal: *TerminalShare,
     app: *AppShare,
+    wayland_app: if (has_vaapi) *WaylandAppShare else void,
 };
 
 const SessionSlot = struct {
@@ -225,6 +237,16 @@ fn handleStatus(buf: []u8) []const u8 {
                         .uptime_s = share.uptimeSeconds(),
                     };
                 },
+                .wayland_app => |share| {
+                    infos[count] = .{
+                        .id = &share.session_id,
+                        .type = .app,
+                        .room = share.share_url,
+                        .viewers = share.viewerCount(),
+                        .recording = false,
+                        .uptime_s = share.uptimeSeconds(),
+                    };
+                },
             }
             count += 1;
         }
@@ -253,6 +275,13 @@ const AppInitResult = struct {
 };
 
 fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
+    if (has_vaapi and req.gpu == .intel) {
+        return handleShareAppWayland(req, buf);
+    }
+    return handleShareAppNvidia(req, buf);
+}
+
+fn handleShareAppNvidia(req: control.ShareRequest, buf: []u8) []const u8 {
     const allocator = std.heap.c_allocator;
 
     const command = req.command orelse
@@ -270,7 +299,6 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
         log.info("auto-joined room: {s}", .{currentRoom().?});
     }
 
-    // Recording dir from env (set by systemd service or dev mode)
     const record_dir = std.process.getEnvVarOwned(allocator, "ZEROCAST_RECORD_DIR") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => null,
@@ -296,6 +324,70 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
     const thread = std.Thread.spawn(.{}, appThreadEntry, .{ result, config, slot_idx }) catch |err| {
         log.err("app thread spawn failed: {}", .{err});
         return control.writeErrorResponse(buf, "failed to start app thread") orelse "";
+    };
+
+    result.done.wait();
+
+    if (result.err_msg) |err_msg| {
+        thread.join();
+        return control.writeErrorResponse(buf, err_msg) orelse "";
+    }
+
+    const share = result.share.?;
+
+    sessions_mutex.lock();
+    sessions[slot_idx].thread = thread;
+    sessions_mutex.unlock();
+
+    return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
+        control.writeErrorResponse(buf, "internal error") orelse "";
+}
+
+fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
+    if (!has_vaapi) return control.writeErrorResponse(buf, "VA-API not available") orelse "";
+
+    const allocator = std.heap.c_allocator;
+
+    const command = req.command orelse
+        return control.writeErrorResponse(buf, "app share requires a command") orelse "";
+
+    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
+            return control.writeErrorResponse(buf, "internal error") orelse "",
+        else => return control.writeErrorResponse(buf, "internal error") orelse "",
+    };
+
+    if (currentRoom() == null) {
+        const id_buf = control.generateRoomId();
+        setRoom(&id_buf);
+        log.info("auto-joined room: {s}", .{currentRoom().?});
+    }
+
+    const record_dir = std.process.getEnvVarOwned(allocator, "ZEROCAST_RECORD_DIR") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => null,
+    };
+
+    const config = WaylandAppShareConfig{
+        .command = command,
+        .fps = req.fps,
+        .base_url = base_url,
+        .room_id = currentRoom(),
+        .record_dir = if (record_dir) |d| d else null,
+    };
+
+    const slot_idx = findEmptySlot() orelse {
+        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
+    };
+
+    const result = allocator.create(WaylandInitResult) catch
+        return control.writeErrorResponse(buf, "out of memory") orelse "";
+    defer allocator.destroy(result);
+    result.* = .{};
+
+    const thread = std.Thread.spawn(.{}, waylandAppThreadEntry, .{ result, config, slot_idx }) catch |err| {
+        log.err("wayland app thread spawn failed: {}", .{err});
+        return control.writeErrorResponse(buf, "failed to start wayland app thread") orelse "";
     };
 
     result.done.wait();
@@ -348,6 +440,50 @@ fn appThreadEntry(result: *AppInitResult, config: AppShareConfig, slot_idx: usiz
     // Clear the session slot. If stopAllSessions/stopSessionById already
     // cleared it (leave/unshare), the daemon owns the free after thread.join().
     // Otherwise we're exiting naturally and must free here.
+    sessions_mutex.lock();
+    const daemon_owns_free = sessions[slot_idx].payload == null;
+    sessions[slot_idx] = .{};
+    sessions_mutex.unlock();
+
+    if (!daemon_owns_free) allocator.destroy(share);
+}
+
+const WaylandInitResult = struct {
+    share: ?*WaylandAppShare = null,
+    err_msg: ?[]const u8 = null,
+    done: std.Thread.ResetEvent = .{},
+};
+
+fn waylandAppThreadEntry(result: *WaylandInitResult, config: WaylandAppShareConfig, slot_idx: usize) void {
+    const allocator = std.heap.c_allocator;
+
+    const share = allocator.create(WaylandAppShare) catch {
+        result.err_msg = "out of memory";
+        result.done.set();
+        return;
+    };
+
+    share.initInPlace(config) catch {
+        allocator.destroy(share);
+        result.err_msg = "wayland app share init failed";
+        result.done.set();
+        return;
+    };
+
+    sessions_mutex.lock();
+    sessions[slot_idx].payload = .{ .wayland_app = share };
+    sessions_mutex.unlock();
+
+    share.start();
+
+    result.share = share;
+    result.done.set();
+
+    share.runLoop();
+
+    // Clean up on the same thread (GPU contexts are thread-local)
+    share.deinit();
+
     sessions_mutex.lock();
     const daemon_owns_free = sessions[slot_idx].payload == null;
     sessions[slot_idx] = .{};
@@ -509,13 +645,14 @@ fn getSessionId(payload: SharePayload) *const [16]u8 {
     return switch (payload) {
         .terminal => |t| &t.session_id,
         .app => |a| &a.session_id,
+        .wayland_app => |a| &a.session_id,
     };
 }
 
 fn getSessionType(payload: SharePayload) control.ShareType {
     return switch (payload) {
         .terminal => .terminal,
-        .app => .app,
+        .app, .wayland_app => .app,
     };
 }
 
@@ -523,15 +660,17 @@ fn signalStop(payload: SharePayload) void {
     switch (payload) {
         .terminal => |t| t.should_stop.store(true, .release),
         .app => |a| a.should_stop.store(true, .release),
+        .wayland_app => |a| a.should_stop.store(true, .release),
     }
 }
 
 fn deinitAndFree(payload: SharePayload) void {
     const allocator = std.heap.c_allocator;
     switch (payload) {
-        // App shares deinit on their capture thread (GL contexts are thread-local).
+        // App shares deinit on their capture thread (GPU contexts are thread-local).
         // We only free the heap allocation here after thread.join().
         .app => |a| allocator.destroy(a),
+        .wayland_app => |a| allocator.destroy(a),
         .terminal => |t| {
             t.deinit();
             allocator.destroy(t);
