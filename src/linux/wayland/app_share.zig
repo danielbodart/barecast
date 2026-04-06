@@ -7,13 +7,16 @@ const Compositor = @import("compositor").Compositor;
 const CapturedFrame = @import("compositor").CapturedFrame;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
-const EncoderBackend = @import("encoder_backend").EncoderBackend;
-const DmaBufAttrs = @import("encoder_backend").DmaBufAttrs;
+const EncodeBackend = @import("encoder").EncodeBackend;
+const VaapiEncoderBackend = @import("vaapi_encoder_backend").EncoderBackend;
+const DmaBufAttrs = @import("vaapi_encoder_backend").DmaBufAttrs;
+const NvencBackend = @import("nvenc_backend").NvencBackend;
 const session_mod = @import("session");
 const BroadcastSession = session_mod.BroadcastSession;
 const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const generateRoomId = @import("control").generateRoomId;
+const GpuBackend = @import("control").GpuBackend;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const log = std.log.scoped(.wayland_app_share);
@@ -27,11 +30,35 @@ pub const AppShareConfig = struct {
     base_url: []const u8 = "https://zerocast.bodar.com",
     record_dir: ?[]const u8 = null,
     render_device: [*:0]const u8 = "/dev/dri/renderD128",
+    gpu: GpuBackend = .intel,
+};
+
+/// Encoder backend — either VA-API (Intel/AMD) or NVENC (NVIDIA).
+const BackendState = union(enum) {
+    vaapi: VaapiEncoderBackend,
+    nvenc: NvencBackend,
+
+    fn encodeBackend(self: *BackendState) EncodeBackend {
+        return switch (self.*) {
+            .vaapi => |*v| v.backend(),
+            .nvenc => |*n| n.backend(),
+        };
+    }
+
+    fn deinitInner(self: *BackendState) void {
+        switch (self.*) {
+            .vaapi => |*v| v.vaapi.deinit(),
+            .nvenc => |*n| {
+                n.nvenc.deinit();
+                n.cuda_ctx.deinit();
+            },
+        }
+    }
 };
 
 /// Wayland app share session. Starts an embedded compositor (wlroots headless),
-/// launches the app as a Wayland client, captures frames via DMA-BUF,
-/// and encodes with VA-API (Intel/AMD) for WebRTC streaming.
+/// launches the app as a Wayland client, captures frames from the compositor's
+/// GL renderbuffer (NVIDIA) or DMA-BUF (Intel/AMD), and encodes for WebRTC.
 pub const WaylandAppShare = struct {
     session_id: [16]u8,
     room_id_buf: [16]u8,
@@ -43,7 +70,7 @@ pub const WaylandAppShare = struct {
     app_pid: ?posix.pid_t,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
-    vaapi_backend: EncoderBackend,
+    backend_state: BackendState,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -60,6 +87,8 @@ pub const WaylandAppShare = struct {
     // NOT a race: compositor.dispatch() is called from the encode loop thread,
     // and the frame callback fires synchronously inside dispatch().
     latest_dmabuf: ?DmaBufAttrs,
+    latest_rbo: u32,
+    latest_fbo: u32,
     has_new_frame: bool,
 
     pub fn initInPlace(self: *WaylandAppShare, config: AppShareConfig) !void {
@@ -69,11 +98,20 @@ pub const WaylandAppShare = struct {
         self.config = config;
         self.app_pid = null;
         self.latest_dmabuf = null;
+        self.latest_rbo = 0;
+        self.latest_fbo = 0;
         self.has_new_frame = false;
 
         if (config.command.len > self.command_buf.len) return error.CommandTooLong;
         @memcpy(self.command_buf[0..config.command.len], config.command);
         self.command_len = config.command.len;
+
+        const setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+
+        // NVIDIA CUDA+GL interop requires this (gpu-screen-recorder confirmed)
+        if (config.gpu == .nvidia) {
+            _ = setenv("__GL_THREADED_OPTIMIZATIONS", "0", 1);
+        }
 
         var t = std.time.Timer.start() catch null;
         const ts = struct {
@@ -151,12 +189,26 @@ pub const WaylandAppShare = struct {
 
         self.viewer_registry = ViewerRegistry.init();
 
-        // VA-API encoder backend
-        self.vaapi_backend = EncoderBackend.init(config.render_device, config.width, config.height, config.fps) catch |err| {
-            log.err("VA-API encoder init failed: {}", .{err});
-            return error.EncoderInitFailed;
+        // Initialize encoder backend based on GPU type
+        self.backend_state = switch (config.gpu) {
+            .nvidia => blk: {
+                const nvenc = NvencBackend.init(config.width, config.height, config.fps) catch |err| {
+                    log.err("NVENC encoder init failed: {}", .{err});
+                    return error.EncoderInitFailed;
+                };
+                log.info("using NVIDIA NVENC encoder (GL renderbuffer → CUDA → NVENC)", .{});
+                break :blk .{ .nvenc = nvenc };
+            },
+            .intel, .auto => blk: {
+                const vaapi = VaapiEncoderBackend.init(config.render_device, config.width, config.height, config.fps) catch |err| {
+                    log.err("VA-API encoder init failed: {}", .{err});
+                    return error.EncoderInitFailed;
+                };
+                log.info("using VA-API encoder (DMA-BUF import)", .{});
+                break :blk .{ .vaapi = vaapi };
+            },
         };
-        errdefer self.vaapi_backend.vaapi.deinit();
+        errdefer self.backend_state.deinitInner();
         const t_encoder = ts.elapsed(&t);
 
         // Broadcast session
@@ -171,7 +223,7 @@ pub const WaylandAppShare = struct {
 
         // Encoder
         self.encoder = Encoder.init(
-            self.vaapi_backend.backend(),
+            self.backend_state.encodeBackend(),
             config.width,
             config.height,
             .{ .session = &self.session },
@@ -277,14 +329,21 @@ pub const WaylandAppShare = struct {
             }
             frame_timer.reset();
 
-            // Dispatch Wayland events (triggers handleFrame callback → updates latest_dmabuf)
+            // Dispatch Wayland events (triggers handleFrame callback → updates frame state)
             self.compositor.dispatch();
 
-            // Encode the latest frame
+            // Feed the latest frame to the encoder backend
             const is_new = self.has_new_frame;
             if (is_new) {
-                if (self.latest_dmabuf) |dmabuf| {
-                    self.vaapi_backend.pending_dmabuf = dmabuf;
+                switch (self.backend_state) {
+                    .vaapi => |*v| {
+                        if (self.latest_dmabuf) |dmabuf| {
+                            v.pending_dmabuf = dmabuf;
+                        }
+                    },
+                    .nvenc => |*n| {
+                        n.pending_fbo = self.latest_fbo;
+                    },
                 }
                 self.has_new_frame = false;
             }
@@ -351,24 +410,37 @@ pub const WaylandAppShare = struct {
     fn handleResize(self: *WaylandAppShare, new_w: u32, new_h: u32) void {
         log.info("resize {d}x{d} — rebuilding pipeline", .{ new_w, new_h });
 
-        // encoder.deinit() calls backend.deinit() which calls vaapi.deinit()
         self.encoder.deinit();
         self.compositor.resize(new_w, new_h);
 
-        self.vaapi_backend = EncoderBackend.init(self.config.render_device, new_w, new_h, self.config.fps) catch |e| {
-            log.err("encoder reinit failed, stopping: {}", .{e});
-            self.should_stop.store(true, .release);
-            return;
+        self.backend_state = switch (self.config.gpu) {
+            .nvidia => blk: {
+                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps) catch |e| {
+                    log.err("NVENC reinit failed, stopping: {}", .{e});
+                    self.should_stop.store(true, .release);
+                    return;
+                };
+                break :blk .{ .nvenc = nvenc };
+            },
+            .intel, .auto => blk: {
+                const vaapi = VaapiEncoderBackend.init(self.config.render_device, new_w, new_h, self.config.fps) catch |e| {
+                    log.err("VA-API reinit failed, stopping: {}", .{e});
+                    self.should_stop.store(true, .release);
+                    return;
+                };
+                break :blk .{ .vaapi = vaapi };
+            },
         };
+
         self.encoder = Encoder.init(
-            self.vaapi_backend.backend(),
+            self.backend_state.encodeBackend(),
             new_w,
             new_h,
             .{ .session = &self.session },
             self.config.fps,
         ) catch |e| {
             log.err("encoder reinit failed, stopping: {}", .{e});
-            self.vaapi_backend.vaapi.deinit();
+            self.backend_state.deinitInner();
             self.should_stop.store(true, .release);
             return;
         };
@@ -435,15 +507,15 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
 
     {
         const fmt: [4]u8 = @bitCast(dmabuf.format);
-        log.debug("DMA-BUF: {d}x{d} format={s}(0x{x}) modifier=0x{x} planes={d} fd={d} stride={d} offset={d}", .{
+        log.debug("frame: {d}x{d} format={s}(0x{x}) modifier=0x{x} planes={d} fd={d} rbo={d}", .{
             frame.width,           frame.height,
             &fmt,                  dmabuf.format,
             dmabuf.modifier,       dmabuf.n_planes,
-            dmabuf.fd[0],          dmabuf.stride[0],
-            dmabuf.offset[0],
+            dmabuf.fd[0],          frame.rbo,
         });
     }
 
+    // Save DMA-BUF attrs (used by VA-API path)
     self.latest_dmabuf = .{
         .format = dmabuf.format,
         .modifier = dmabuf.modifier,
@@ -454,6 +526,11 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
         .stride = dmabuf.stride,
         .offset = dmabuf.offset,
     };
+
+    // Save GL object ids (used by NVIDIA CUDA path)
+    self.latest_rbo = frame.rbo;
+    self.latest_fbo = frame.fbo;
+
     self.has_new_frame = true;
 }
 

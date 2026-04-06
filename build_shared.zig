@@ -19,6 +19,7 @@ pub const SharedModules = struct {
 pub const PlatformModules = struct {
     app_share: *std.Build.Module,
     app_share_vaapi: ?*std.Build.Module = null,
+    gpu_detect: ?*std.Build.Module = null,
 };
 
 /// Link libdatachannel and its static dependencies into an artifact.

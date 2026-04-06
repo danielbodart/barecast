@@ -137,6 +137,9 @@ pub fn build(b: *std.Build) void {
     if (platform_mods.app_share_vaapi) |vaapi_mod| {
         daemon_mod.addImport("app_share_vaapi", vaapi_mod);
     }
+    if (platform_mods.gpu_detect) |gd_mod| {
+        daemon_mod.addImport("gpu_detect", gd_mod);
+    }
 
     // ── CLI module (subcommand parser, socket client) ────────────────────
     const cli_mod = b.createModule(.{
@@ -299,6 +302,9 @@ pub fn build(b: *std.Build) void {
     });
     if (platform_mods.app_share_vaapi) |vaapi_mod| {
         daemon_tests.root_module.addImport("app_share_vaapi", vaapi_mod);
+    }
+    if (platform_mods.gpu_detect) |gd_mod| {
+        daemon_tests.root_module.addImport("gpu_detect", gd_mod);
     }
     shared_defs.linkDatachannel(b, daemon_tests);
     test_step.dependOn(&b.addRunArtifact(daemon_tests).step);

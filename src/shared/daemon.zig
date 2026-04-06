@@ -5,6 +5,7 @@ const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
 const WaylandAppShare = @import("app_share_vaapi").WaylandAppShare;
 const WaylandAppShareConfig = @import("app_share_vaapi").AppShareConfig;
+const gpu_detect = @import("gpu_detect");
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
 const build_options = @import("build_options");
@@ -266,9 +267,28 @@ const AppInitResult = struct {
 };
 
 fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
-    if (req.gpu == .intel) {
+    if (req.gpu == .intel or req.gpu == .nvidia) {
         return handleShareAppWayland(req, buf);
     }
+
+    // auto → detect best GPU with hardware encode
+    const result = gpu_detect.detectGpus();
+    if (result.best()) |gpu| {
+        if (gpu.best_codec != null) {
+            // Route to Wayland path with detected GPU
+            var auto_req = req;
+            auto_req.gpu = switch (gpu.vendor) {
+                .nvidia => .nvidia,
+                .intel => .intel,
+                .amd => .intel, // AMD uses VA-API path (same as intel)
+                .unknown => .intel,
+            };
+            return handleShareAppWayland(auto_req, buf);
+        }
+    }
+
+    // Fallback: X11+NvFBC pipeline
+    log.info("auto-detect: no Wayland-capable encoder found, falling back to X11+NvFBC", .{});
     return handleShareAppNvidia(req, buf);
 }
 
@@ -357,12 +377,29 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
         else => null,
     };
 
+    // Detect render device for the requested GPU vendor
+    const render_device: [*:0]const u8 = blk: {
+        const detected = gpu_detect.detectGpus();
+        const target_vendor: gpu_detect.GpuVendor = switch (req.gpu) {
+            .nvidia => .nvidia,
+            .intel => .intel,
+            .auto => if (detected.best()) |b| b.vendor else .intel,
+        };
+        for (detected.candidates[0..detected.count]) |*c2| {
+            if (c2.vendor == target_vendor) break :blk c2.renderPath();
+        }
+        // Fallback defaults
+        break :blk if (req.gpu == .nvidia) "/dev/dri/renderD129" else "/dev/dri/renderD128";
+    };
+
     const config = WaylandAppShareConfig{
         .command = command,
         .fps = req.fps,
         .base_url = base_url,
         .room_id = currentRoom(),
         .record_dir = if (record_dir) |d| d else null,
+        .gpu = req.gpu,
+        .render_device = render_device,
     };
 
     const slot_idx = findEmptySlot() orelse {

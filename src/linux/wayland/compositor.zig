@@ -9,6 +9,8 @@ const c = @cImport({
     @cInclude("wlr/backend/headless.h");
     @cInclude("wlr/render/allocator.h");
     @cInclude("wlr/render/wlr_renderer.h");
+    @cInclude("wlr/render/gles2.h");
+    @cInclude("wlr/render/egl.h");
     @cInclude("wlr/types/wlr_compositor.h");
     @cInclude("wlr/types/wlr_output.h");
     @cInclude("wlr/types/wlr_output_layout.h");
@@ -19,6 +21,7 @@ const c = @cImport({
     @cInclude("wlr/types/wlr_data_device.h");
     @cInclude("wlr/render/dmabuf.h");
     @cInclude("wlr/util/log.h");
+    @cInclude("gles2_helper.h");
     @cInclude("time.h");
 });
 
@@ -29,6 +32,10 @@ pub const CapturedFrame = struct {
     width: u32,
     height: u32,
     is_new: bool,
+    /// GL renderbuffer ID (from wlroots GLES2 renderer). 0 if unavailable.
+    rbo: u32 = 0,
+    /// GL framebuffer object ID (from wlroots GLES2 renderer). 0 if unavailable.
+    fbo: u32 = 0,
 };
 
 /// Minimal embedded Wayland compositor for headless app sharing.
@@ -302,6 +309,8 @@ pub const Compositor = struct {
                         .width = self.width,
                         .height = self.height,
                         .is_new = true,
+                        .rbo = c.gles2_get_buffer_rbo(self.renderer, buf),
+                        .fbo = c.gles2_get_buffer_fbo(self.renderer, buf),
                     };
                     cb(&frame, self.frame_userdata);
                 }

@@ -144,8 +144,11 @@ pub fn buildPlatform(
     compositor_mod.addIncludePath(b.path("wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/protocol"));
+    compositor_mod.addIncludePath(b.path("src/linux/wayland"));
     compositor_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
     compositor_mod.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
+    // C helper to extract GL RBO from wlroots internal structs (NVIDIA path)
+    compositor_mod.addCSourceFile(.{ .file = b.path("src/linux/wayland/gles2_helper.c"), .flags = &.{} });
     compositor_mod.linkSystemLibrary("wayland-server", .{});
     compositor_mod.linkSystemLibrary("wayland-client", .{});
     compositor_mod.linkSystemLibrary("pixman-1", .{});
@@ -155,7 +158,41 @@ pub fn buildPlatform(
     compositor_mod.linkSystemLibrary("libdrm", .{});
     compositor_mod.linkSystemLibrary("xkbcommon", .{});
 
-    // --- Wayland app share (compositor + VA-API encoder pipeline) ---
+    // --- NVIDIA CUDA module for Wayland (GL renderbuffer interop) ---
+    const wayland_cuda_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/cuda.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    // --- NVENC module for Wayland (duplicate of x11/nvenc.zig — same file
+    //     can't be root of two Zig modules, will refactor to shared later) ---
+    const wayland_nvenc_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/nvenc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "cuda", .module = wayland_cuda_mod },
+            .{ .name = "codec", .module = shared.codec },
+        },
+    });
+
+    // --- NVENC encoder backend for Wayland (CUDA GL interop + NVENC) ---
+    const wayland_nvenc_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/nvenc_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cuda", .module = wayland_cuda_mod },
+            .{ .name = "nvenc", .module = wayland_nvenc_mod },
+            .{ .name = "codec", .module = shared.codec },
+            .{ .name = "encoder", .module = shared.encoder },
+        },
+    });
+
+    // --- Wayland app share (compositor + VA-API or NVENC encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
         .root_source_file = b.path("src/linux/wayland/app_share.zig"),
         .target = target,
@@ -164,7 +201,8 @@ pub fn buildPlatform(
         .imports = &.{
             .{ .name = "compositor", .module = compositor_mod },
             .{ .name = "encoder", .module = shared.encoder },
-            .{ .name = "encoder_backend", .module = vaapi_encoder_backend_mod },
+            .{ .name = "vaapi_encoder_backend", .module = vaapi_encoder_backend_mod },
+            .{ .name = "nvenc_backend", .module = wayland_nvenc_backend_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
@@ -172,7 +210,23 @@ pub fn buildPlatform(
         },
     });
 
-    return .{ .app_share = app_share_mod, .app_share_vaapi = wayland_app_share_mod };
+    // --- GPU auto-detection module (sysfs + CUDA/VA-API probing) ---
+    const gpu_detect_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/gpu_detect.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "codec", .module = shared.codec },
+            .{ .name = "nvenc", .module = wayland_nvenc_mod },
+        },
+    });
+
+    return .{
+        .app_share = app_share_mod,
+        .app_share_vaapi = wayland_app_share_mod,
+        .gpu_detect = gpu_detect_mod,
+    };
 }
 
 /// Install Linux-specific extra binaries (zerocast-kms, zerocast-xorg, fpscap.so).
