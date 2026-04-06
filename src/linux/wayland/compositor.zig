@@ -72,6 +72,12 @@ pub const Compositor = struct {
             return error.CompositorInitFailed;
         };
 
+        // Disable direct scanout so the scene graph always composites into the
+        // swapchain buffer. Without this, wlroots passes the client's buffer through
+        // directly — which may use CCS compression that VA-API cannot import.
+        const setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+        _ = setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 1);
+
         // Create headless backend (no physical display needed)
         self.backend = c.wlr_headless_backend_create(self.display) orelse {
             log.err("headless backend creation failed", .{});

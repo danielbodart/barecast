@@ -232,7 +232,7 @@ pub const Vaapi = struct {
     /// Import a DMA-BUF as a VA-API surface for use as encode input.
     /// The returned surface ID can be passed to encodeImported().
     /// Caller is responsible for destroying the surface via destroyImportedSurface().
-    pub fn importDmaBuf(self: *Vaapi, fd: i32, format: u32, modifier: u64, stride: u32, offset: u32, width: u32, height: u32) !VASurfaceID {
+    pub fn importDmaBuf(self: *Vaapi, fds: [4]i32, format: u32, modifier: u64, strides: [4]u32, offsets: [4]u32, n_planes: u32, width: u32, height: u32) !VASurfaceID {
         var attrib_list: [2]c.VASurfaceAttrib = undefined;
 
         // Memory type: DRM PRIME 2
@@ -242,29 +242,56 @@ pub const Vaapi = struct {
             .value = .{ .type = c.VAGenericValueTypeInteger, .value = .{ .i = c.VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 } },
         };
 
-        // Surface descriptor
+        // Build descriptor with per-plane objects
+        // Each plane may share the same fd (common for tiled/CCS formats)
         var desc: c.VADRMPRIMESurfaceDescriptor = std.mem.zeroes(c.VADRMPRIMESurfaceDescriptor);
         desc.fourcc = format;
         desc.width = width;
         desc.height = height;
-        desc.num_objects = 1;
-        desc.objects[0] = .{
-            .fd = fd,
-            .size = stride * height,
-            .drm_format_modifier = modifier,
-        };
+
+        // Deduplicate fds into objects
+        var num_objects: u32 = 0;
+        var fd_to_obj: [4]u32 = .{ 0, 0, 0, 0 };
+        for (0..n_planes) |i| {
+            var found = false;
+            for (0..num_objects) |j| {
+                if (desc.objects[j].fd == fds[i]) {
+                    fd_to_obj[i] = @intCast(j);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                fd_to_obj[i] = num_objects;
+                desc.objects[num_objects] = .{
+                    .fd = fds[i],
+                    .size = strides[i] * height, // approximate
+                    .drm_format_modifier = modifier,
+                };
+                num_objects += 1;
+            }
+        }
+        desc.num_objects = num_objects;
+
+        // Single layer with all planes
         desc.num_layers = 1;
         desc.layers[0].drm_format = format;
-        desc.layers[0].num_planes = 1;
-        desc.layers[0].object_index[0] = 0;
-        desc.layers[0].offset[0] = offset;
-        desc.layers[0].pitch[0] = stride;
+        desc.layers[0].num_planes = n_planes;
+        for (0..n_planes) |i| {
+            desc.layers[0].object_index[i] = fd_to_obj[i];
+            desc.layers[0].offset[i] = offsets[i];
+            desc.layers[0].pitch[i] = strides[i];
+        }
 
         attrib_list[1] = .{
             .type = c.VASurfaceAttribExternalBufferDescriptor,
             .flags = c.VA_SURFACE_ATTRIB_SETTABLE,
             .value = .{ .type = c.VAGenericValueTypePointer, .value = .{ .p = @ptrCast(&desc) } },
         };
+
+        log.debug("importDmaBuf: fd={d} format=0x{x} modifier=0x{x} planes={d} objects={d} size={d}x{d}", .{
+            fds[0], format, modifier, n_planes, num_objects, width, height,
+        });
 
         var surface: VASurfaceID = undefined;
         const status = c.vaCreateSurfaces(
@@ -278,11 +305,11 @@ pub const Vaapi = struct {
             attrib_list.len,
         );
         if (status != c.VA_STATUS_SUCCESS) {
-            log.err("vaCreateSurfaces (DMA-BUF import) failed: {d}", .{status});
+            log.err("vaCreateSurfaces (DMA-BUF import) failed: status={d} (VA_RT_FORMAT_RGB32, DRM_PRIME_2)", .{status});
             return error.VaapiImportFailed;
         }
 
-        log.debug("imported DMA-BUF fd={d} as surface {d} ({d}x{d})", .{ fd, surface, width, height });
+        log.debug("imported DMA-BUF fd={d} as surface {d} ({d}x{d})", .{ fds[0], surface, width, height });
         return surface;
     }
 

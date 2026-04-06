@@ -432,14 +432,26 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
     const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
     const dmabuf = &frame.dmabuf;
 
+    {
+        const fmt: [4]u8 = @bitCast(dmabuf.format);
+        log.debug("DMA-BUF: {d}x{d} format={s}(0x{x}) modifier=0x{x} planes={d} fd={d} stride={d} offset={d}", .{
+            frame.width,           frame.height,
+            &fmt,                  dmabuf.format,
+            dmabuf.modifier,       dmabuf.n_planes,
+            dmabuf.fd[0],          dmabuf.stride[0],
+            dmabuf.offset[0],
+        });
+    }
+
     self.latest_dmabuf = .{
-        .fd = dmabuf.fd[0],
         .format = dmabuf.format,
         .modifier = dmabuf.modifier,
-        .stride = dmabuf.stride[0],
-        .offset = dmabuf.offset[0],
         .width = frame.width,
         .height = frame.height,
+        .n_planes = @intCast(dmabuf.n_planes),
+        .fd = dmabuf.fd,
+        .stride = dmabuf.stride,
+        .offset = dmabuf.offset,
     };
     self.has_new_frame = true;
 }

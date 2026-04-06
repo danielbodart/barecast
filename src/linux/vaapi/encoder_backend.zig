@@ -8,13 +8,14 @@ const log = std.log.scoped(.vaapi_backend);
 
 /// DMA-BUF attributes for importing compositor frames as VA-API surfaces.
 pub const DmaBufAttrs = struct {
-    fd: i32,
     format: u32,
     modifier: u64,
-    stride: u32,
-    offset: u32,
     width: u32,
     height: u32,
+    n_planes: u32,
+    fd: [4]i32,
+    stride: [4]u32,
+    offset: [4]u32,
 };
 
 /// VA-API hardware encoder backend (Intel QSV / AMD VCN).
@@ -68,7 +69,12 @@ pub const EncoderBackend = struct {
     }
 
     fn prepareFn(self: *EncoderBackend) !void {
-        const dmabuf = self.pending_dmabuf orelse return; // no-op in self-allocated mode
+        const dmabuf = self.pending_dmabuf orelse {
+            log.err("prepareFn: no pending_dmabuf", .{});
+            return;
+        };
+
+        log.debug("prepareFn: importing fd={d} format=0x{x} {d}x{d} planes={d}", .{ dmabuf.fd[0], dmabuf.format, dmabuf.width, dmabuf.height, dmabuf.n_planes });
 
         // Look up or import the DMA-BUF surface
         self.imported_surface = self.lookupOrImport(dmabuf) catch |err| {
@@ -116,9 +122,9 @@ pub const EncoderBackend = struct {
     fn lookupOrImport(self: *EncoderBackend, dmabuf: DmaBufAttrs) !VASurfaceID {
         self.cache_generation +%= 1;
 
-        // Check cache
+        // Check cache (keyed by first fd — wlroots swapchain reuses the same fds)
         for (&self.surface_cache) |*entry| {
-            if (entry.fd == dmabuf.fd) {
+            if (entry.fd == dmabuf.fd[0]) {
                 entry.use_count = self.cache_generation;
                 return entry.surface;
             }
@@ -131,6 +137,7 @@ pub const EncoderBackend = struct {
             dmabuf.modifier,
             dmabuf.stride,
             dmabuf.offset,
+            dmabuf.n_planes,
             dmabuf.width,
             dmabuf.height,
         );
@@ -155,7 +162,7 @@ pub const EncoderBackend = struct {
             self.vaapi.destroyImportedSurface(&self.surface_cache[evict_idx].surface);
         }
 
-        self.surface_cache[evict_idx] = .{ .fd = dmabuf.fd, .surface = surface, .use_count = self.cache_generation };
+        self.surface_cache[evict_idx] = .{ .fd = dmabuf.fd[0], .surface = surface, .use_count = self.cache_generation };
         return surface;
     }
 };
