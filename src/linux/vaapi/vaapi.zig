@@ -19,6 +19,23 @@ const c = @cImport({
 pub const VADisplay = c.VADisplay;
 pub const VASurfaceID = c.VASurfaceID;
 
+// DRM fourcc_code('A','B','C','D') differs from VA_FOURCC('A','B','C','D')
+// for RGB formats: DRM uses channel depth chars ('2','4') while VA uses
+// channel name chars ('G','B'). Convert the common ones we encounter.
+fn drmFourcc(a: u8, b: u8, d: u8, e: u8) u32 {
+    return @as(u32, a) | (@as(u32, b) << 8) | (@as(u32, d) << 16) | (@as(u32, e) << 24);
+}
+
+fn drmToVaFourcc(drm: u32) u32 {
+    return switch (drm) {
+        drmFourcc('X', 'R', '2', '4') => c.VA_FOURCC_XRGB,
+        drmFourcc('A', 'R', '2', '4') => c.VA_FOURCC_ARGB,
+        drmFourcc('X', 'B', '2', '4') => c.VA_FOURCC_XBGR,
+        drmFourcc('A', 'B', '2', '4') => c.VA_FOURCC_ABGR,
+        else => drm,
+    };
+}
+
 // ── Public types ─────────────────────────────────────────────────────────
 
 pub const EncodedFrame = struct {
@@ -58,6 +75,7 @@ pub const Vaapi = struct {
     height: u32,
     fps: u32,
     frame_count: u64,
+    last_idr_frame: u64,
     idr_period: u32,
     bitstream_ptr: ?[*]u8,
     bitstream_len: usize,
@@ -155,6 +173,7 @@ pub const Vaapi = struct {
             .height = height,
             .fps = fps,
             .frame_count = 0,
+            .last_idr_frame = 0,
             .idr_period = fps * 4,
             .bitstream_ptr = null,
             .bitstream_len = 0,
@@ -242,10 +261,14 @@ pub const Vaapi = struct {
             .value = .{ .type = c.VAGenericValueTypeInteger, .value = .{ .i = c.VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 } },
         };
 
+        // Convert DRM fourcc to VA fourcc for the descriptor.
+        // DRM uses fourcc_code('X','R','2','4') while VA uses VA_FOURCC('X','R','G','B').
+        const va_fourcc: u32 = drmToVaFourcc(format);
+
         // Build descriptor with per-plane objects
         // Each plane may share the same fd (common for tiled/CCS formats)
         var desc: c.VADRMPRIMESurfaceDescriptor = std.mem.zeroes(c.VADRMPRIMESurfaceDescriptor);
-        desc.fourcc = format;
+        desc.fourcc = va_fourcc;
         desc.width = width;
         desc.height = height;
 
@@ -322,11 +345,12 @@ pub const Vaapi = struct {
     /// The surface must contain RGB data compatible with the encoder.
     pub fn encodeImported(self: *Vaapi, input_surface: VASurfaceID, force_key: bool) !?EncodedFrame {
         const is_idr = isIdr(self.frame_count, self.idr_period, force_key);
-        const poc: u32 = picOrderCount(self.frame_count);
+        if (is_idr) self.last_idr_frame = self.frame_count;
+        const poc: u32 = picOrderCount(self.frame_count, self.last_idr_frame);
 
         const recon = self.recon_surfaces[self.cur_recon];
         const ref_recon = self.recon_surfaces[self.cur_recon ^ 1];
-        const ref_poc: u32 = if (self.frame_count > 0) picOrderCount(self.frame_count - 1) else 0;
+        const ref_poc: u32 = if (poc > 0) poc - 1 else 0;
 
         _ = c.vaSyncSurface(self.display, input_surface);
 
@@ -358,12 +382,13 @@ pub const Vaapi = struct {
     /// For DMA-BUF input from a compositor, use encodeImported() instead.
     pub fn encodeFrame(self: *Vaapi, force_key: bool) !?EncodedFrame {
         const is_idr = isIdr(self.frame_count, self.idr_period, force_key);
-        const poc: u32 = picOrderCount(self.frame_count);
+        if (is_idr) self.last_idr_frame = self.frame_count;
+        const poc: u32 = picOrderCount(self.frame_count, self.last_idr_frame);
 
         const input = self.input_surfaces[self.cur_input];
         const recon = self.recon_surfaces[self.cur_recon];
         const ref_recon = self.recon_surfaces[self.cur_recon ^ 1];
-        const ref_poc: u32 = if (self.frame_count > 0) picOrderCount(self.frame_count - 1) else 0;
+        const ref_poc: u32 = if (poc > 0) poc - 1 else 0;
 
         _ = c.vaSyncSurface(self.display, input);
 
@@ -399,14 +424,19 @@ pub const Vaapi = struct {
 
         if (is_idr) {
             const bitrate = targetBitrate(self.width, self.height, self.fps);
-            const st = c.vaapi_submit_hevc_seq(self.display, self.context, self.width, self.height, self.fps, bitrate, self.idr_period);
+            var st = c.vaapi_submit_hevc_seq(self.display, self.context, self.width, self.height, self.fps, bitrate, self.idr_period);
             if (st != c.VA_STATUS_SUCCESS) {
                 log.err("hevc seq failed: {d}", .{st});
                 return error.VaapiEncodeFailed;
             }
+            st = c.vaapi_submit_frame_rate(self.display, self.context, self.fps);
+            if (st != c.VA_STATUS_SUCCESS) {
+                log.err("frame rate failed: {d}", .{st});
+                return error.VaapiEncodeFailed;
+            }
         }
 
-        var st = c.vaapi_submit_hevc_pic(self.display, self.context, recon, ref_recon, self.coded_buf, poc, is_idr_int);
+        var st = c.vaapi_submit_hevc_pic(self.display, self.context, recon, ref_recon, self.coded_buf, poc, ref_poc, is_idr_int);
         if (st != c.VA_STATUS_SUCCESS) {
             log.err("hevc pic failed: {d}", .{st});
             return error.VaapiEncodeFailed;
@@ -438,7 +468,7 @@ pub const Vaapi = struct {
         var slice_hdr_buf: [256]u8 = undefined;
         var slice_hdr_size: c_int = 0;
         _ = c.vaapi_generate_packed_slice_header(
-            self.width, self.height, poc, is_idr_int,
+            self.width, self.height, poc, ref_poc, is_idr_int,
             &slice_hdr_buf, 256, &slice_hdr_size,
         );
         if (c.vaapi_submit_packed_header(self.display, self.context, c.VAEncPackedHeaderSlice, &slice_hdr_buf, slice_hdr_size) != c.VA_STATUS_SUCCESS) {
@@ -549,9 +579,11 @@ pub fn isIdr(frame_count: u64, idr_period: u32, force_key: bool) bool {
         (idr_period > 0 and frame_count % idr_period == 0);
 }
 
-/// Picture order count — wraps at 256 per HEVC spec.
-pub fn picOrderCount(frame_count: u64) u32 {
-    return @intCast(frame_count % 256);
+/// Picture order count — resets to 0 on each IDR, matching FFmpeg's pattern.
+/// With idr_period <= fps*4 (e.g. 120 at 30fps), POC never approaches
+/// the 4096 LSB limit (log2_max_pic_order_cnt_lsb_minus4=8 in SPS).
+pub fn picOrderCount(frame_count: u64, last_idr_frame: u64) u32 {
+    return @intCast(frame_count - last_idr_frame);
 }
 
 /// Fill an RGB32 buffer with a synthetic test pattern (colored bars that shift per frame).
@@ -605,11 +637,71 @@ test "isIdr idr_period zero disables periodic" {
     try std.testing.expect(isIdr(0, 0, false)); // first frame always IDR
 }
 
-test "picOrderCount wraps at 256" {
-    try std.testing.expectEqual(@as(u32, 0), picOrderCount(0));
-    try std.testing.expectEqual(@as(u32, 255), picOrderCount(255));
-    try std.testing.expectEqual(@as(u32, 0), picOrderCount(256));
-    try std.testing.expectEqual(@as(u32, 1), picOrderCount(257));
+test "picOrderCount resets on IDR" {
+    // First GOP: IDR at frame 0
+    try std.testing.expectEqual(@as(u32, 0), picOrderCount(0, 0));
+    try std.testing.expectEqual(@as(u32, 1), picOrderCount(1, 0));
+    try std.testing.expectEqual(@as(u32, 119), picOrderCount(119, 0));
+    // Second GOP: IDR at frame 120
+    try std.testing.expectEqual(@as(u32, 0), picOrderCount(120, 120));
+    try std.testing.expectEqual(@as(u32, 1), picOrderCount(121, 120));
+    // Third GOP: IDR at frame 240
+    try std.testing.expectEqual(@as(u32, 0), picOrderCount(240, 240));
+    try std.testing.expectEqual(@as(u32, 59), picOrderCount(299, 240));
+}
+
+test "packed slice header encodes correct POC across IDR boundaries" {
+    // Generate packed slice headers for frames across an IDR boundary
+    // and verify the POC LSB field is correctly encoded.
+    var buf: [256]u8 = undefined;
+    var size: c_int = 0;
+
+    // Frame 1 of first GOP: poc=1, ref_poc=0
+    _ = c.vaapi_generate_packed_slice_header(1920, 1080, 1, 0, 0, &buf, 256, &size);
+    try std.testing.expect(size > 0);
+    // POC LSB (12 bits) should be 1 — encoded after NAL header + start code + flags
+    const poc_1 = extractPocLsb(&buf, @intCast(size));
+    try std.testing.expectEqual(@as(u32, 1), poc_1);
+
+    // Frame 119 of first GOP: poc=119, ref_poc=118
+    _ = c.vaapi_generate_packed_slice_header(1920, 1080, 119, 118, 0, &buf, 256, &size);
+    const poc_119 = extractPocLsb(&buf, @intCast(size));
+    try std.testing.expectEqual(@as(u32, 119), poc_119);
+
+    // First frame of second GOP (IDR): should be flagged as IDR, no POC field
+    _ = c.vaapi_generate_packed_slice_header(1920, 1080, 0, 0, 1, &buf, 256, &size);
+    try std.testing.expect(size > 0);
+
+    // Frame 1 of second GOP: poc=1, ref_poc=0 (reset after IDR)
+    _ = c.vaapi_generate_packed_slice_header(1920, 1080, 1, 0, 0, &buf, 256, &size);
+    const poc_after_idr = extractPocLsb(&buf, @intCast(size));
+    try std.testing.expectEqual(@as(u32, 1), poc_after_idr);
+}
+
+/// Extract POC LSB from a packed slice header NAL unit (non-IDR TRAIL_R).
+/// Format: [00 00 00 01] [NAL header 2 bytes] [first_slice_flag 1 bit]
+///         [slice_pps_id ue(0)=1 bit] [slice_type ue(0)=1 bit] [poc_lsb 12 bits]
+fn extractPocLsb(buf: []const u8, size: usize) u32 {
+    // Skip start code (4 bytes) + NAL header (2 bytes) = 6 bytes
+    if (size < 8) return 0xFFFF;
+    // Bit offset 48: first_slice_segment_in_pic_flag (1 bit)
+    // Bit offset 49: slice_pic_parameter_set_id = ue(0) = 1 bit
+    // Bit offset 50: slice_type = ue(0) = B=0, encoded as ue(0) = 1 bit
+    // Bit offset 51: pic_order_cnt_lsb (12 bits)
+    // Total: start at byte 6, bit 0 → skip 3 bits, read 12 bits
+    const data = buf[6..size];
+    // Read bits starting at bit offset 3 within data
+    var poc: u32 = 0;
+    var bit_offset: usize = 3;
+    for (0..12) |_| {
+        const byte_idx = bit_offset / 8;
+        const bit_idx: u3 = @intCast(7 - (bit_offset % 8));
+        if (byte_idx < data.len) {
+            poc = (poc << 1) | ((data[byte_idx] >> bit_idx) & 1);
+        }
+        bit_offset += 1;
+    }
+    return poc;
 }
 
 test "fillTestPattern does not crash" {

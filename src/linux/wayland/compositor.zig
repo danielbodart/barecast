@@ -59,7 +59,7 @@ pub const Compositor = struct {
     frame_callback: ?*const fn (frame: *const CapturedFrame, userdata: ?*anyopaque) void,
     frame_userdata: ?*anyopaque,
 
-    pub fn init(width: u32, height: u32) !*Compositor {
+    pub fn init(width: u32, height: u32, render_device: ?[*:0]const u8) !*Compositor {
         const allocator = std.heap.c_allocator;
         const self = try allocator.create(Compositor);
         errdefer allocator.destroy(self);
@@ -72,10 +72,16 @@ pub const Compositor = struct {
             return error.CompositorInitFailed;
         };
 
+        const setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+
+        // Force wlroots to use the same GPU as VA-API encode (e.g. Intel iGPU)
+        if (render_device) |dev| {
+            _ = setenv("WLR_RENDER_DRM_DEVICE", dev, 1);
+        }
+
         // Disable direct scanout so the scene graph always composites into the
         // swapchain buffer. Without this, wlroots passes the client's buffer through
         // directly — which may use CCS compression that VA-API cannot import.
-        const setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
         _ = setenv("WLR_SCENE_DISABLE_DIRECT_SCANOUT", "1", 1);
 
         // Create headless backend (no physical display needed)

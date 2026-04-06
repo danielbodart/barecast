@@ -165,7 +165,7 @@ export async function build() {
     const ver = await version();
     console.log(`Building v${ver}...`);
     const cpuFlag = IS_LINUX ? ["-Dcpu=x86_64_v3"] : [];
-    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSmall ${cpuFlag}`;
+    await $`zig build --prefix dist -Dversion=${ver} -Doptimize=ReleaseSafe ${cpuFlag}`;
 }
 
 export async function rebuildLibs() {
@@ -406,6 +406,69 @@ export async function integration() {
     console.log(`Integration test passed: ${codec}, ${frames} frames`);
 }
 
+/// Validate HEVC bitstream: record raw .h265, remux to MP4, check for decode errors.
+/// Requires: ffmpeg, ffprobe, and a running daemon with Intel GPU.
+/// Usage: ZEROCAST_RECORD_DIR=/tmp/zerocast-rec ./run.ts hevc-validate <h265-file>
+///   or:  ./run.ts hevc-validate  (uses first .h265 in ZEROCAST_RECORD_DIR)
+export async function hevcValidate() {
+    if (!await which("ffmpeg")) { console.log("SKIP: ffmpeg not found"); return; }
+    if (!await which("ffprobe")) { console.log("SKIP: ffprobe not found"); return; }
+
+    const arg = process.argv[3];
+    const recordDir = process.env.ZEROCAST_RECORD_DIR || "/tmp/zerocast-rec";
+    let h265File = arg;
+
+    if (!h265File) {
+        const { stdout } = await $`ls -t ${recordDir}/*.h265 2>/dev/null`.quiet().nothrow();
+        h265File = stdout.toString().trim().split("\n")[0];
+        if (!h265File) {
+            console.error(`ERROR: no .h265 files found in ${recordDir}`);
+            console.error("Record first: ZEROCAST_RECORD_DIR=/tmp/zerocast-rec dist/bin/zerocast daemon");
+            process.exit(1);
+        }
+    }
+
+    if (!existsSync(h265File)) {
+        console.error(`ERROR: file not found: ${h265File}`);
+        process.exit(1);
+    }
+
+    console.log(`Validating: ${h265File}`);
+    const mp4File = "/tmp/zerocast-hevc-test.mp4";
+
+    // Remux to MP4 (first 5 seconds)
+    await $`ffmpeg -y -f hevc -framerate 30 -i ${h265File} -c copy -t 5 ${mp4File}`.quiet();
+
+    // Check for decode errors with ffprobe
+    const probeResult = await $`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,nb_read_frames -count_frames -of csv=p=0 ${mp4File}`.quiet();
+    const parts = probeResult.stdout.toString().trim().split(",");
+    const codec = parts[0];
+    const frames = parseInt(parts[1]) || 0;
+
+    if (codec !== "hevc") {
+        console.error(`ERROR: expected codec hevc, got ${codec}`);
+        process.exit(1);
+    }
+    if (frames < 10) {
+        console.error(`ERROR: expected >= 10 frames, got ${frames}`);
+        process.exit(1);
+    }
+
+    // Decode all frames and check for errors (ffmpeg -v error prints nothing on success)
+    const decodeResult = await $`ffmpeg -v error -i ${mp4File} -f null - 2>&1`.quiet().nothrow();
+    // Filter out non-monotonic DTS warnings (harmless remux artifact from raw .h265)
+    const errors = decodeResult.stdout.toString().trim().split("\n")
+        .filter(l => l.trim().length > 0 && !l.includes("non monotonically increasing dts") && !l.includes("Last message repeated"))
+        .join("\n");
+    if (errors.length > 0) {
+        console.error(`ERROR: decode errors:\n${errors}`);
+        process.exit(1);
+    }
+
+    await $`rm -f ${mp4File}`;
+    console.log(`HEVC validation passed: ${codec}, ${frames} frames, 0 decode errors`);
+}
+
 // ─── Worker commands ───────────────────────────────────────────────────────
 
 async function workerBuild(minify = false) {
@@ -441,7 +504,7 @@ async function printVersion() {
 
 const commands: Record<string, Function> = {
     dev, build, clean, setup, test, lint, dist, ci, integration, install, version: printVersion,
-    "rebuild-libs": rebuildLibs,
+    "rebuild-libs": rebuildLibs, "hevc-validate": hevcValidate,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,
     "worker-promote": workerPromote,

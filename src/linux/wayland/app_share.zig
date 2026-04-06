@@ -88,7 +88,7 @@ pub const WaylandAppShare = struct {
         };
 
         // Start compositor
-        self.compositor = Compositor.init(config.width, config.height) catch |err| {
+        self.compositor = Compositor.init(config.width, config.height, config.render_device) catch |err| {
             log.err("compositor init failed: {}", .{err});
             return error.CompositorFailed;
         };
@@ -385,10 +385,11 @@ pub const WaylandAppShare = struct {
 
         const pid = posix.fork() catch return error.AppLaunchFailed;
         if (pid == 0) {
-            // Child: set WAYLAND_DISPLAY and GDK_BACKEND for the app
+            // Child: force Wayland, remove X11 so apps can't fall back to host display
             _ = c.setenv("WAYLAND_DISPLAY", socket, 1);
             _ = c.setenv("GDK_BACKEND", "wayland", 1);
             _ = c.setenv("QT_QPA_PLATFORM", "wayland", 1);
+            _ = c.unsetenv("DISPLAY");
 
             // Redirect stdout/stderr to /dev/null
             const devnull = posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0) catch posix.exit(127);

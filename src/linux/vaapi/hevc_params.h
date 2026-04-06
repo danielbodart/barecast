@@ -14,7 +14,7 @@ int vaapi_generate_packed_headers(
 /// Generate a packed HEVC slice segment header NAL unit.
 int vaapi_generate_packed_slice_header(
     unsigned int width, unsigned int height,
-    unsigned int poc, int is_idr,
+    unsigned int poc, unsigned int ref_poc, int is_idr,
     unsigned char *buf, int capacity, int *out_size);
 
 /// Submit a packed header (VPS/SPS/PPS NAL unit) to the encoder.
@@ -29,7 +29,7 @@ VAStatus vaapi_submit_hevc_seq(
     unsigned int width, unsigned int height, unsigned int fps,
     unsigned int bitrate, unsigned int idr_period);
 
-/// Submit frame rate misc parameter. Call on every frame.
+/// Submit frame rate misc parameter. Call on IDR frames.
 VAStatus vaapi_submit_frame_rate(
     VADisplay display, VAContextID context, unsigned int fps);
 
@@ -38,7 +38,7 @@ VAStatus vaapi_submit_hevc_pic(
     VADisplay display, VAContextID context,
     VASurfaceID recon_surface, VASurfaceID ref_surface,
     VABufferID coded_buf,
-    unsigned int pic_order_cnt, int is_idr);
+    unsigned int pic_order_cnt, unsigned int ref_poc, int is_idr);
 
 /// Submit HEVC slice parameters. Call every frame.
 VAStatus vaapi_submit_hevc_slice(

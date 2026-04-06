@@ -12,7 +12,7 @@ const build_options = @import("build_options");
 const log = std.log.scoped(.daemon);
 
 pub const std_options: std.Options = .{
-    .log_level = .info,
+    .log_level = if (@import("builtin").mode == .Debug or @import("builtin").mode == .ReleaseSafe) .debug else .info,
 };
 
 var should_exit: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);

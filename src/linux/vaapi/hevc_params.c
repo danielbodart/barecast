@@ -242,7 +242,7 @@ static void write_pps(BitstreamWriter *bs) {
 // Write a minimal HEVC slice segment header NAL unit.
 // Must match the PPS/SPS settings above.
 static void write_slice_header(BitstreamWriter *bs, unsigned int width, unsigned int height,
-                                unsigned int poc, int is_idr, int slice_type) {
+                                unsigned int poc, unsigned int ref_poc, int is_idr, int slice_type) {
     // NAL unit type: IDR_W_RADL=19 for IDR, TRAIL_R=1 for P
     int nal_type = is_idr ? 19 : 1;
     write_nal_header(bs, nal_type);
@@ -277,8 +277,11 @@ static void write_slice_header(BitstreamWriter *bs, unsigned int width, unsigned
         bs_write_ue(bs, 1);
         // num_positive_pics
         bs_write_ue(bs, 0);
-        // delta_poc_s0_minus1[0] = 0 (delta_poc = -(0+1) = -1)
-        bs_write_ue(bs, 0);
+        // delta_poc_s0_minus1[0]: delta_poc = -(delta_poc_s0_minus1 + 1)
+        // So delta_poc_s0_minus1 = poc - ref_poc - 1
+        // Guard: poc > ref_poc always holds for non-IDR (poc >= 1, ref_poc = poc - 1)
+        unsigned int delta = (poc > ref_poc) ? (poc - ref_poc - 1) : 0;
+        bs_write_ue(bs, delta);
         // used_by_curr_pic_s0_flag[0] = 1
         bs_write(bs, 1, 1);
 
@@ -303,9 +306,6 @@ static void write_slice_header(BitstreamWriter *bs, unsigned int width, unsigned
         }
 
         // five_minus_max_num_merge_cand = 0 (max_num_merge_cand=5)
-        bs_write_ue(bs, 0);
-    } else if (is_idr) {
-        // I-slice: five_minus_max_num_merge_cand
         bs_write_ue(bs, 0);
     }
 
@@ -386,14 +386,14 @@ int vaapi_generate_packed_headers(
 
 int vaapi_generate_packed_slice_header(
     unsigned int width, unsigned int height,
-    unsigned int poc, int is_idr,
+    unsigned int poc, unsigned int ref_poc, int is_idr,
     unsigned char *buf, int capacity, int *out_size)
 {
     unsigned char tmp[256];
     BitstreamWriter bs;
     bs_init(&bs, tmp, sizeof(tmp));
     int slice_type = is_idr ? 2 : 0; // I=2, B=0 (GPB for Intel EncSliceLP)
-    write_slice_header(&bs, width, height, poc, is_idr, slice_type);
+    write_slice_header(&bs, width, height, poc, ref_poc, is_idr, slice_type);
     *out_size = rbsp_to_nal(tmp, bs_length_bytes(&bs), buf, capacity);
     return 0;
 }
@@ -464,7 +464,7 @@ VAStatus vaapi_submit_hevc_pic(
     VADisplay display, VAContextID context,
     VASurfaceID recon_surface, VASurfaceID ref_surface,
     VABufferID coded_buf,
-    unsigned int pic_order_cnt, int is_idr)
+    unsigned int pic_order_cnt, unsigned int ref_poc, int is_idr)
 {
     VAEncPictureParameterBufferHEVC pic;
     memset(&pic, 0, sizeof(pic));
@@ -489,7 +489,7 @@ VAStatus vaapi_submit_hevc_pic(
 
     if (!is_idr) {
         pic.reference_frames[0].picture_id = ref_surface;
-        pic.reference_frames[0].pic_order_cnt = (pic_order_cnt > 0) ? pic_order_cnt - 1 : 0;
+        pic.reference_frames[0].pic_order_cnt = ref_poc;
         pic.reference_frames[0].flags = VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE;
     }
 

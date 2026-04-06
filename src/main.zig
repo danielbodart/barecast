@@ -3,7 +3,7 @@ const daemon = @import("daemon");
 const cli = @import("cli");
 
 pub const std_options: std.Options = .{
-    .log_level = .info,
+    .log_level = if (@import("builtin").mode == .Debug or @import("builtin").mode == .ReleaseSafe) .debug else .info,
 };
 
 pub fn main() void {
