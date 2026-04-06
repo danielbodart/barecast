@@ -54,17 +54,28 @@ pub const Compositor = struct {
     scene_output: *c.wlr_scene_output,
     xdg_shell: *c.wlr_xdg_shell,
     seat: *c.wlr_seat,
-    socket: [*:0]const u8,
+    socket_buf: [32]u8,
+    socket_len: u8,
     width: u32,
     height: u32,
+
+    // Tracked toplevel (the app's main window)
+    toplevel: ?*c.wlr_xdg_toplevel = null,
+    toplevel_surface: ?*c.wlr_xdg_surface = null,
 
     // Listeners
     new_toplevel: c.wl_listener,
     output_frame: c.wl_listener,
+    toplevel_map: c.wl_listener,
+    toplevel_commit: c.wl_listener,
 
     // Frame callback — called with DMA-BUF of the rendered frame
     frame_callback: ?*const fn (frame: *const CapturedFrame, userdata: ?*anyopaque) void,
     frame_userdata: ?*anyopaque,
+
+    // Resize callback — notifies app_share when the app's initial size is known
+    resize_callback: ?*const fn (width: u32, height: u32, userdata: ?*anyopaque) void = null,
+    resize_userdata: ?*anyopaque = null,
 
     pub fn init(width: u32, height: u32, render_device: ?[*:0]const u8) !*Compositor {
         const allocator = std.heap.c_allocator;
@@ -194,6 +205,10 @@ pub const Compositor = struct {
 
         self.frame_callback = null;
         self.frame_userdata = null;
+        self.toplevel = null;
+        self.toplevel_surface = null;
+        self.toplevel_map = std.mem.zeroes(c.wl_listener);
+        self.toplevel_commit = std.mem.zeroes(c.wl_listener);
 
         // Enable the output (triggers headless timer → frame events)
         {
@@ -204,13 +219,18 @@ pub const Compositor = struct {
             c.wlr_output_state_finish(&out_state);
         }
 
-        // Create Wayland socket for client connections
-        self.socket = c.wl_display_add_socket_auto(self.display) orelse {
-            log.err("failed to create Wayland socket", .{});
+        // Create Wayland socket with explicit name (prevents other apps from
+        // discovering it — only our child process has WAYLAND_DISPLAY set to this)
+        const socket_name = "zerocast-0";
+        if (c.wl_display_add_socket(self.display, socket_name) != 0) {
+            log.err("failed to create Wayland socket '{s}'", .{socket_name});
             return error.CompositorInitFailed;
-        };
+        }
+        @memcpy(self.socket_buf[0..socket_name.len], socket_name);
+        self.socket_buf[socket_name.len] = 0;
+        self.socket_len = socket_name.len;
 
-        log.info("compositor ready: {d}x{d} on {s}", .{ width, height, self.socket });
+        log.info("compositor ready: {d}x{d} on {s}", .{ width, height, socket_name });
 
         return self;
     }
@@ -227,22 +247,29 @@ pub const Compositor = struct {
         _ = c.wl_event_loop_dispatch(c.wl_display_get_event_loop(self.display), 0);
     }
 
-    /// Resize the headless output.
+    /// Resize the headless output and the app's toplevel window.
     pub fn resize(self: *Compositor, width: u32, height: u32) void {
         self.width = width;
         self.height = height;
-        // headless output resize via wlr_output_state
+
+        // Resize compositor output first
         var state: c.wlr_output_state = undefined;
         c.wlr_output_state_init(&state);
         c.wlr_output_state_set_custom_mode(&state, @intCast(width), @intCast(height), 0);
         _ = c.wlr_output_commit_state(self.output, &state);
         c.wlr_output_state_finish(&state);
+
+        // Then resize the app's toplevel to fill the new output
+        if (self.toplevel) |tl| {
+            _ = c.wlr_xdg_toplevel_set_size(tl, @intCast(width), @intCast(height));
+        }
+
         log.info("resized to {d}x{d}", .{ width, height });
     }
 
-    /// Get the Wayland socket path for client connections.
+    /// Get the Wayland socket name for client connections.
     pub fn socketName(self: *const Compositor) [*:0]const u8 {
-        return self.socket;
+        return @ptrCast(self.socket_buf[0..self.socket_len]);
     }
 
     pub fn deinit(self: *Compositor) void {
@@ -273,7 +300,72 @@ pub const Compositor = struct {
             xdg_surface,
         );
 
-        // TODO: focus the toplevel, track for resize
+        // Track this toplevel for resize
+        self.toplevel = toplevel;
+        self.toplevel_surface = xdg_surface;
+
+        // Activate (give keyboard focus)
+        _ = c.wlr_xdg_toplevel_set_activated(toplevel, true);
+
+        // Listen for map (surface has content, geometry is known)
+        self.toplevel_map = std.mem.zeroes(c.wl_listener);
+        self.toplevel_map.notify = @ptrCast(&handleToplevelMap);
+        c.wl_signal_add(&xdg_surface.surface.*.events.map, &self.toplevel_map);
+
+        // Listen for commits (geometry changes after initial map)
+        self.toplevel_commit = std.mem.zeroes(c.wl_listener);
+        self.toplevel_commit.notify = @ptrCast(&handleToplevelCommit);
+        c.wl_signal_add(&xdg_surface.surface.*.events.commit, &self.toplevel_commit);
+    }
+
+    fn handleToplevelMap(listener: [*c]c.wl_listener, _: ?*anyopaque) callconv(.c) void {
+        const self: *Compositor = @ptrCast(@alignCast(@as([*]u8, @ptrCast(listener)) - @offsetOf(Compositor, "toplevel_map")));
+
+        const xdg_surface = self.toplevel_surface orelse return;
+        var box: c.wlr_box = undefined;
+        c.wlr_xdg_surface_get_geometry(xdg_surface, &box);
+
+        if (box.width > 0 and box.height > 0) {
+            log.info("toplevel mapped: {d}x{d}", .{ box.width, box.height });
+        }
+    }
+
+    var last_committed_w: u32 = 0;
+    var last_committed_h: u32 = 0;
+
+    fn handleToplevelCommit(listener: [*c]c.wl_listener, _: ?*anyopaque) callconv(.c) void {
+        const self: *Compositor = @ptrCast(@alignCast(@as([*]u8, @ptrCast(listener)) - @offsetOf(Compositor, "toplevel_commit")));
+
+        const xdg_surface = self.toplevel_surface orelse return;
+
+        // Get the xdg geometry (excludes shadows/borders, just the content area)
+        var box: c.wlr_box = undefined;
+        c.wlr_xdg_surface_get_geometry(xdg_surface, &box);
+
+        const w: u32 = if (box.width > 0) @intCast(box.width) else return;
+        const h: u32 = if (box.height > 0) @intCast(box.height) else return;
+
+        // Only act if the app's size changed
+        if (w == last_committed_w and h == last_committed_h) return;
+        last_committed_w = w;
+        last_committed_h = h;
+
+        // Resize the compositor output to match the app
+        if (w != self.width or h != self.height) {
+            log.info("app resized to {d}x{d} — resizing compositor", .{ w, h });
+            self.width = w;
+            self.height = h;
+            var state: c.wlr_output_state = undefined;
+            c.wlr_output_state_init(&state);
+            c.wlr_output_state_set_custom_mode(&state, @intCast(w), @intCast(h), 0);
+            _ = c.wlr_output_commit_state(self.output, &state);
+            c.wlr_output_state_finish(&state);
+
+            // Notify app_share so the encoder can rebuild at the new size
+            if (self.resize_callback) |cb| {
+                cb(w, h, self.resize_userdata);
+            }
+        }
     }
 
     var frame_counter: u64 = 0;

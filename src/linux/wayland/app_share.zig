@@ -135,6 +135,10 @@ pub const WaylandAppShare = struct {
         // Register frame callback
         self.compositor.frame_callback = &frameCallback;
         self.compositor.frame_userdata = @ptrCast(self);
+
+        // Register resize callback (fired when app changes its own window size)
+        self.compositor.resize_callback = &compositorResizeCallback;
+        self.compositor.resize_userdata = @ptrCast(self);
         const t_compositor = ts.elapsed(&t);
 
         const socket = self.compositor.socketName();
@@ -546,4 +550,12 @@ fn appResizeCallback(session: *BroadcastSession, sender_peer_id: *const [PEER_ID
     log.info("viewer resize requested: {d}x{d}", .{ width, height });
     self.pending_resize_slot.store(session.peerSlotIndex(sender_peer_id), .release);
     self.pending_resize.store((@as(u32, width) << 16) | @as(u32, height), .release);
+}
+
+/// Called by the compositor when the app changes its own window size.
+/// Fires synchronously inside compositor.dispatch() on the encode loop thread.
+fn compositorResizeCallback(width: u32, height: u32, userdata: ?*anyopaque) void {
+    const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
+    log.info("app resized to {d}x{d} — triggering encoder rebuild", .{ width, height });
+    self.pending_resize.store((@as(u32, @intCast(width)) << 16) | @as(u32, @intCast(height)), .release);
 }
