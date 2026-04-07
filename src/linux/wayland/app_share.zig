@@ -239,6 +239,10 @@ pub const WaylandAppShare = struct {
         }
         if (self.wayland_input) |*input| {
             self.session.input_handler = input.inputHandler();
+            // Set focus on the app's surface (already mapped — we waited for first frame)
+            if (self.compositor.getToplevelSurface()) |surface| {
+                input.setFocusSurface(surface);
+            }
         }
         const t_session = ts.elapsed(&t);
 

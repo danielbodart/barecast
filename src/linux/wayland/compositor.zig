@@ -277,6 +277,12 @@ pub const Compositor = struct {
         log.info("resized to {d}x{d}", .{ width, height });
     }
 
+    /// Get the toplevel's wlr_surface as opaque pointer (for cross-module input focus).
+    pub fn getToplevelSurface(self: *const Compositor) ?*anyopaque {
+        if (self.toplevel_surface) |xdg| return @ptrCast(xdg.surface);
+        return null;
+    }
+
     /// Get the Wayland socket name for client connections.
     pub fn socketName(self: *const Compositor) [*:0]const u8 {
         return @ptrCast(self.socket_buf[0..self.socket_len]);
