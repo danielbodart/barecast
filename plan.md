@@ -1,213 +1,195 @@
-# Intel VA-API + Embedded Wayland Compositor — Implementation Plan
+# Wayland Pipeline Gap Closure Plan
+
+Status: in-progress
+Date: 2026-04-07
 
 ## Context
 
-We're adding a second encoder backend (Intel VA-API HEVC) alongside the existing NVIDIA NVENC pipeline, using an embedded Wayland compositor (wlroots) instead of X11 for headless app rendering and capture. This approach works on any GPU with EGL support. NVIDIA cannot use this path today (DMA-BUF → CUDA import not supported on desktop GPUs), so the X11+NvFBC pipeline remains for NVIDIA.
+The Wayland compositor pipeline (wlroots headless) is the new primary capture path. It works end-to-end (compositor -> GL FBO -> CUDA -> NVENC -> WebRTC for NVIDIA, compositor -> DMA-BUF -> VA-API for Intel/AMD) but has several gaps compared to the mature X11 path. This plan covers closing those gaps.
 
-## What's Done
+## Confirmed: Already in Place
 
-### 1. VA-API encoder backend
-- `src/linux/vaapi/vaapi.zig` — VA-API encoder: codec detection (AV1→HEVC fallback), double-buffered recon surfaces, DMA-BUF import, encode lifecycle
-- `src/linux/vaapi/encoder_backend.zig` — `EncodeBackend` vtable with DMA-BUF input mode and LRU surface cache
-- `src/linux/vaapi/hevc_params.c/.h` — C helper for HEVC encode parameter submission (va_enc_hevc.h bitfield unions break Zig translate-c)
-- Build system integration in `build_linux.zig` (links libva, libva-drm)
+- **Infinite GOP** — `gopLength = 0xFFFFFFFF`, keyframes only on PLI request
+- **No B-frames** — `frameIntervalP = 1`, P-frames only
+- **VBR rate control** — same formula as X11: `90_000 + pixels * fps * 12 / 1000`
+- **BT.709 color metadata** — matching X11 exactly
+- **Resize handling** — full teardown/rebuild via atomic pending_resize, both viewer- and app-initiated
+- **Recording** — SessionRecorder integration present
+- **GPU auto-detection** — sysfs vendor probe + NVENC/VA-API capability check
 
-**FIXED (2026-04-05):** Encoder now produces HEVC bitstream (1920x1080, ffprobe validates).
-Root cause: Intel iHD HEVC EncSliceLP requires GPB (Generalized P→B) encoding:
-  1. Non-IDR frames must use B-slices (slice_type=0), NOT P-slices — L0=L1 (both ref lists same picture)
-  2. Packed slice header (VAEncPackedHeaderSlice) required on every frame
-  3. Packed VPS/SPS/PPS (VAEncPackedHeaderSequence) with start codes + emulation prevention bytes
-  4. SPS dimensions must be CTU-aligned (64px), with conformance window for cropping
+---
 
-**Key VA-API patterns:**
-- `vaCreateContext` only needs reconstruction surfaces (not input surfaces) — matches FFmpeg's pattern
-- Input surfaces can come from any source (pre-allocated, DMA-BUF import) and are passed to `vaBeginPicture` independently
-- DMA-BUF import via `vaCreateSurfaces` with `VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2` + `VADRMPRIMESurfaceDescriptor`
-- wlroots swapchain reuses 2-3 fds, so surface cache is tiny (4 entries, LRU eviction)
+## Gap 1: Damage Tracking (Priority 1)
 
-### 2. Embedded Wayland compositor
-- `src/linux/wayland/compositor.zig` — wlroots-based headless compositor in Zig
-- `wlroots/` git submodule at 0.17.4, forked to `danielbodart/wlroots` (CCS filter patch)
-- `libs/wlroots/` — pre-built static lib + generated headers (committed to repo, rebuild only on submodule update)
-- Build system integration in `build_linux.zig`
+### Problem
 
-**Working:**
-- Headless output at arbitrary resolution on any GPU (no display, no dongle)
-- `WLR_RENDER_DRM_DEVICE` set from `render_device` config — ensures compositor uses same GPU as VA-API encoder
-- Native Wayland apps connect and render (tested gnome-calculator)
-- DMA-BUF extraction from scene graph via `wlr_scene_output_build_state` → `wlr_buffer_get_dmabuf`
-- Frame callback delivers real `CapturedFrame` with DMA-BUF attributes
-- xdg_shell for window management, seat for input focus
-- No Xwayland needed — modern apps (GTK, Qt, Electron) are native Wayland
-- `DISPLAY` unset in child process to prevent apps falling back to host X11
+The wlroots headless backend runs an internal timer that fires `output.events.frame` at its default refresh rate (~60Hz). Our `handleFrame` callback fires on every tick, calls `wlr_scene_output_build_state`, and sets `has_new_frame = true` — even if the app hasn't committed new content. This means the encoder encodes every frame even when the screen is static, wasting GPU and bandwidth.
 
-**wlroots fork (danielbodart/wlroots, branch zerocast-linear-gbm):**
-- Filters CCS (Color Compression Surface) modifiers from GBM allocation
-- Allows Y-tiled buffers (2-4x better iGPU bandwidth) while preventing CCS-compressed buffers that VA-API cannot import
-- Non-CCS tiled formats (X_TILED, Y_TILED, Yf_TILED, 4_TILED) preserved — fully supported by VA-API encode input
+In contrast, the X11 path uses NvFBC's `dwCurrentFrame` counter which only increments on actual pixel changes, so the encoder naturally skips idle frames.
 
-**Key wlroots patterns (0.17):**
-- `wlr_output_init_render(output, allocator, renderer)` MUST be called before any commit
-- Headless frame loop: enable commit → timer → frame signal → scene commit → timer → ...
-- `wlr_scene_output_build_state` renders scene into `wlr_output_state` with buffer
-- `wlr_buffer_get_dmabuf` exports buffer as DMA-BUF (fd, format, modifier, stride)
-- xdg_shell event is `new_surface` in 0.17 (renamed to `new_toplevel` in 0.20)
-- Listener callbacks need `callconv(.c)` in Zig
-- `@fieldParentPtr` returns allowzero — use manual offset calculation for container_of pattern
+Additionally: the compositor's headless output refresh rate is NOT wired to the `fps` config. The fps CLI flag (`--fps 30`) flows through to the encode loop's sleep-based pacing, but the compositor output runs at wlroots' default rate independently. These two clocks are decoupled.
 
-### 3. End-to-end pipeline wiring
-- `src/linux/wayland/app_share.zig` — Wayland app share orchestrator (parallel to `src/linux/x11/app_share.zig`)
-- Compositor init → WAYLAND_DISPLAY env → fork+exec app → frame callback → DMA-BUF → VA-API encode → WebRTC
-- DMA-BUF import into VA-API as encode input surface (zero-copy, same GPU)
-- `--gpu intel` CLI flag dispatches to Wayland/VA-API path in daemon
-- `GpuBackend` enum in control.zig: `auto`, `nvidia`, `intel`
-- Full resize support (compositor resize → encoder teardown/rebuild)
-- Same `EncodeBackend` vtable — shared `Encoder.processFrame` and `BroadcastSession` unchanged
+### Approach: Single Event Loop + Surface Commit Tracking
 
-**Multi-plane DMA-BUF import (2026-04-06):**
-- `DmaBufAttrs` carries per-plane fds/strides/offsets (`[4]i32`, `[4]u32`, `n_planes`)
-- `importDmaBuf` deduplicates fds into `VADRMPRIMESurfaceDescriptor.objects[]`
-- DRM fourcc to VA fourcc conversion: `DRM_FORMAT_XRGB8888` (XR24) → `VA_FOURCC_XRGB` etc.
-- `WLR_SCENE_DISABLE_DIRECT_SCANOUT=1` prevents client CCS buffers bypassing compositor
+**Problem**: currently two competing clocks — our sleep-based encode loop AND the wlroots headless timer fire independently, drifting against each other.
 
-### 4. Hardware validated
-- Intel Alder Lake GT1 (i9-12900K) UHD 770 at `/dev/dri/renderD128`
-- VA-API HEVC encode via `VAEntrypointEncSliceLP` (iHD driver 24.1.0)
-- No AV1 encode on this iGPU (needs Arc/Meteor Lake+)
-- VA-API supports RGB32 input directly (XRGB/RGBX) — no NV12 conversion needed
-- Y-tiled DMA-BUF buffers (modifier `I915_FORMAT_MOD_Y_TILED`) import into VA-API successfully
-- DMA-BUF capture confirmed: XR24 format, single plane, Y-tiled, 1920x1080
-- Encode pipeline running: ~3ms per frame at 1920x1080, 30fps sustained, 90ms total startup
-- User must be in `render` group for `/dev/dri/renderD*` access
+**Fix**: remove our sleep-based pacing, let wlroots be the single clock.
 
-### 5. Build configuration
-- **Local dev builds** use `ReleaseSafe` (debug logs visible, safety checks on)
-- **CI release builds** use `ReleaseSmall` (optimized, debug logs compiled out)
-- `std_options.log_level` tied to build mode: `Debug`/`ReleaseSafe` → `.debug`, `ReleaseSmall`/`ReleaseFast` → `.info`
+#### Frame rate: compositor drives it
 
-### 6. NVIDIA on Wayland — researched, not viable today
-- DMA-BUF → CUDA import (`cuImportExternalMemory`) is Jetson-only, not desktop GPUs
-- wlroots headless works on NVIDIA (driver 535+) but implicit sync bug causes flickering
-- NvFBC PipeWire backend (Capture SDK 9.0, driver 570+) is the future path but not ready
-- NvFBC Direct backend (Capture SDK 9.0) — Vulkan apps only, not general purpose
-- **Decision: keep X11+NvFBC for NVIDIA, Wayland+VA-API for Intel/AMD**
+1. Pass `fps` to `Compositor.init(width, height, fps, render_device)`
+2. Set headless output refresh rate: `wlr_output_state_set_custom_mode(state, w, h, fps * 1000)` (mHz)
+3. `wl_event_loop_dispatch(loop, 100)` blocks until the next frame event (or 100ms timeout for housekeeping)
+4. `handleFrame` fires synchronously inside dispatch — captures the buffer
+5. After dispatch returns, encode if new, then check pings/meta/resize/app-alive
 
-## What's Next (in order)
+This also paces well-behaved Wayland clients via `frame_done`. No LD_PRELOAD FPS cap needed.
 
-### Phase 1: Fix HEVC reference picture management — DONE (2026-04-06)
-**Fixed:** POC (Picture Order Count) now resets to 0 on each IDR, matching FFmpeg's pattern.
+#### Damage detection: surface commit serial
 
-**Root cause was:** POC used global `frame_count % 256` instead of IDR-relative counting. At IDR boundaries (every 120 frames at 30fps), decoders couldn't find references because POC values didn't reset.
+Track `wlr_surface.current.seq` — increments on every `wl_surface.commit`. If unchanged since last frame, the app hasn't drawn anything new.
 
-**Changes:**
-1. `vaapi.zig`: Added `last_idr_frame` tracking, `picOrderCount(frame_count, last_idr_frame)` returns IDR-relative POC
-2. `hevc_params.c`: `vaapi_submit_hevc_pic` and `vaapi_generate_packed_slice_header` now take explicit `ref_poc` (pure parameter builders, no internal POC logic). `delta_poc_s0_minus1` computed dynamically. Removed I-slice `five_minus_max_num_merge_cand` (HEVC spec violation). Wired up `vaapi_submit_frame_rate`.
-3. `hevc_params.h`: Updated signatures
-4. Added packed header POC unit test + `./run.ts hevc-validate` regression test (ffmpeg/ffprobe, skips if tools unavailable)
+1. Add `last_surface_seq: u32` to `Compositor`
+2. In `handleFrame`, compare `toplevel_surface.surface.current.seq` against `last_surface_seq`
+3. Set `CapturedFrame.is_new` accordingly
+4. `encoder.processFrame(false)` already handles idle skip (logs once, stops encoding, sends one keyframe on PLI for new viewers)
 
-**Validated:** 740 frames, 0 decode errors (was: `Could not find ref with POC 120/240/-1` on every IDR boundary).
+Equivalent to NvFBC's `dwCurrentFrame` — encode only when content changes.
 
-### Phase 2: Browser playback validation
-Once HEVC bitstream is correct:
-1. Test in Chrome with NVIDIA VA-API decode (existing `google-chrome-nvidia.desktop`)
-2. Test in Chrome with Intel VA-API decode (`google-chrome-intel.desktop`) — note: cross-GPU decode→display doesn't work (transparent pixels), need single-GPU machine to validate
-3. If HEVC WebRTC remains problematic on Linux, add H.264 as fallback codec (Intel Alder Lake has `VAProfileH264High` + `VAEntrypointEncSliceLP`)
-
-### Phase 3: Input injection
-1. Set seat capabilities (keyboard + pointer) in compositor
-2. Forward input events from WebRTC data channel → Wayland seat
-3. Wayland equivalent of XTEST — `wlr_seat_keyboard_notify_key`, `wlr_seat_pointer_notify_motion`
-4. Wire into existing `InputHandler` interface
-
-### Phase 4: Auto-detect GPU
-1. Probe `/dev/dri/renderD*` for VA-API encode profiles at daemon startup
-2. Check for NVIDIA (existing NvFBC detection)
-3. `--gpu auto` (default): prefer NVIDIA if available, fall back to Intel/AMD VA-API
-4. `--gpu intel` / `--gpu nvidia`: explicit override
-
-### Phase 5: Replace wlroots (incremental)
-Now that we understand what wlroots does for us (~8,000 lines of C for our use case), replace pieces bottom-up:
-1. Headless backend (trivial, ~50 lines of Zig replaces 237 lines of C)
-2. GBM allocator (thin libgbm wrapper, ~100 lines — can force linear/Y-tiled directly, eliminating the wlroots fork)
-3. EGL/GLES2 renderer (~400-600 lines for single-buffer rendering)
-4. Scene graph (hardest — damage tracking, visibility, transforms)
-5. xdg_shell + wl_surface (Wayland protocol handling, ~600-800 lines)
-Target: ~1,500-2,000 lines of Zig replacing 8,000 lines of C, purpose-built for our use case.
-
-### Phase 6: Foveated encoding (ROI)
-- Intel HEVC supports `VAEncROI` (rectangle-based, 32px granularity, works with VBR)
-- Track cursor position / high-activity regions → submit as ROI rectangles
-- AV1 ROI unverified on Intel — likely unsupported in current drivers
-- NVENC emphasis map is H.264-only (dead end for AV1/HEVC)
-
-### Phase 7: Clean up and test
-1. ffplay-based integration test: record → decode → validate frame count and error-free playback
-2. Playwright test: verify stream appears in browser with valid stats
-3. Power measurement: compare Intel iGPU encode vs NVIDIA
-4. Latency measurement: capture → encode → decode → render in Chrome
-5. Test with real apps (VS Code, Firefox, Electron apps)
-
-## Build Commands
-
-```bash
-# Rebuild wlroots static lib (only after submodule update)
-meson setup .zig-cache/wlroots-build wlroots \
-  --default-library=static \
-  -Dbackends=[] -Drenderers=gles2 -Dallocators=gbm \
-  -Dxwayland=disabled -Dexamples=false -Dsession=disabled -Dxcb-errors=disabled
-ninja -C .zig-cache/wlroots-build
-cp .zig-cache/wlroots-build/libwlroots.a libs/wlroots/
-cp -r .zig-cache/wlroots-build/include libs/wlroots/
-cp .zig-cache/wlroots-build/protocol/*.h libs/wlroots/protocol/
-
-# Build everything (ReleaseSafe for local dev, debug logs enabled)
-./run.ts build
-
-# Share an app on Intel GPU
-ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon
-# In another terminal:
-dist/bin/zerocast share app gnome-calculator --gpu intel
-
-# Record HEVC bitstream for validation
-mkdir -p /tmp/zerocast-rec
-ZEROCAST_URL=http://localhost:8787 ZEROCAST_RECORD_DIR=/tmp/zerocast-rec dist/bin/zerocast daemon
-# After sharing, recorded .h265 files appear in /tmp/zerocast-rec/
-# Validate: ffmpeg -f hevc -framerate 30 -i 000.h265 -c copy -t 5 test.mp4 && ffplay test.mp4
-```
-
-## File Map
+#### Resulting loop (single clock)
 
 ```
-src/linux/
-├── vaapi/
-│   ├── vaapi.zig              # VA-API encoder (DMA-BUF import, codec detection, encode)
-│   ├── encoder_backend.zig    # EncodeBackend vtable with DMA-BUF surface cache
-│   ├── hevc_params.c          # C helper for HEVC encode params
-│   └── hevc_params.h
-├── wayland/
-│   ├── app_share.zig          # Wayland app share orchestrator (compositor → VA-API → WebRTC)
-│   └── compositor.zig         # Embedded wlroots headless compositor
-├── x11/                       # Existing NVIDIA pipeline (unchanged)
-│   ├── app_share.zig
-│   ├── encoder_backend.zig
-│   ├── nvfbc.zig, cuda.zig, nvenc.zig
-│   └── ...
-└── kms/                       # KMS helper (unchanged)
-
-libs/wlroots/                  # Pre-built wlroots static lib + headers
-wlroots/                       # Git submodule (danielbodart/wlroots, branch zerocast-linear-gbm)
+while (!should_stop) {
+    wl_event_loop_dispatch(loop, 100)     // blocks until frame event or timeout
+      → handleFrame (synchronous)
+        → check surface.current.seq → is_new
+        → capture buffer (FBO or DMA-BUF)
+        → commit, frame_done → paces app
+    encoder.processFrame(is_new)          // skips if !is_new
+    check pings, meta, resize, app alive  // housekeeping on elapsed time
+}
 ```
 
-## Key Design Decisions
+### Files to Change
+- `src/linux/wayland/compositor.zig` — add fps param, set output refresh rate, track surface seq, change dispatch to blocking
+- `src/linux/wayland/app_share.zig` — pass fps to compositor, remove sleep-based pacing, simplify loop
 
-1. **Zig over C** — Use Zig for everything except where C is forced (va_enc_hevc.h bitfield unions). Keep C helpers minimal.
-2. **Wayland over X11** — Embedded compositor is simpler, more portable, and future-proof. No NvFBC, no DRM master, no dongle.
-3. **No Xwayland** — Modern apps are Wayland-native. Simplifies compositor significantly.
-4. **No color conversion** — VA-API on Intel accepts RGB32 directly, same as NVENC accepts ARGB.
-5. **DMA-BUF import (not export)** — Compositor produces buffers, VA-API consumes them. Goes with the natural flow of both wlroots and VA-API.
-6. **Recon-only context** — `vaCreateContext` gets only reconstruction surfaces; input surfaces (including DMA-BUF imports) are passed separately to `vaBeginPicture`. Matches FFmpeg's proven pattern.
-7. **wlroots 0.17.4 fork** — Matches Ubuntu 24.04 system libs. CCS filter patch allows Y-tiled (best perf) while preventing CCS. Pre-built lib committed to repo.
-8. **NVIDIA stays on X11** — DMA-BUF → CUDA not supported on desktop GPUs. No forced unification.
-9. **Frame pacing by compositor** — Headless output refresh rate controls frame rate. No LD_PRELOAD hacks needed (unlike X11 path).
-10. **DRM-to-VA fourcc conversion** — DRM_FORMAT_XRGB8888 differs from VA_FOURCC_XRGB. Must convert in importDmaBuf.
-11. **ReleaseSafe for local dev** — Enables debug log level without source changes. CI uses ReleaseSmall.
+---
+
+## Gap 2: Input Injection (Priority 2)
+
+### Problem
+
+The Wayland compositor has a `wlr_seat` (required for keyboard focus) but no virtual input devices. Viewers cannot send mouse/keyboard/scroll events to shared apps. The X11 path uses XTEST for this. The `session.input_handler` field is never set in the Wayland app_share — it stays null, so all input from viewers is silently dropped.
+
+### Approach: Virtual wlroots Input Devices
+
+Create virtual input devices using the wlroots headless backend API, implement the `InputHandler` vtable, and wire it into the session. Full parity with X11: mouse move, click, scroll, keyboard.
+
+### New File: `src/linux/wayland/input.zig`
+
+**Init:**
+1. Create virtual keyboard: `wlr_headless_add_input_device(backend, WLR_INPUT_DEVICE_KEYBOARD)`
+2. Configure xkbcommon keymap on the keyboard (default layout)
+3. Create virtual pointer: `wlr_headless_add_input_device(backend, WLR_INPUT_DEVICE_POINTER)`
+4. Register both with the `wlr_seat` (set capabilities, attach devices)
+5. When toplevel maps, call `wlr_seat_keyboard_enter` + `wlr_seat_pointer_enter` to give it focus
+
+**InputHandler vtable implementation:**
+- `moveFn` -> `wlr_seat_pointer_notify_motion_absolute` (coordinates relative to output)
+- `mouseButtonFn` -> `wlr_seat_pointer_notify_button` (Linux BTN_LEFT/BTN_RIGHT/BTN_MIDDLE)
+- `scrollFn` -> `wlr_seat_pointer_notify_axis` (WL_POINTER_AXIS_VERTICAL_SCROLL)
+- `keyCodeFn` -> W3C code string -> evdev keycode via existing `keymap.zig` -> `wlr_seat_keyboard_notify_key`
+
+### Thread Safety: Input Event Queue
+
+Input events arrive from libdatachannel's network thread (via `InputHandler` callbacks), but wlroots is strictly single-threaded — all wlr_seat calls must happen on the thread that owns the `wl_display`.
+
+Solution: ring buffer of input events. The `InputHandler` methods push events onto the queue (lock-free or mutex-protected). The encode loop drains the queue before each `compositor.dispatch()` call, applying events on the correct thread.
+
+### Keyboard Focus
+
+Since we only have one toplevel, focus management is trivial:
+- On `handleToplevelMap`: `wlr_seat_keyboard_enter(seat, surface)` + `wlr_seat_pointer_enter(seat, surface, 0, 0)`
+- No alt-tab, no window switching — the single app always has focus
+
+### Key Differences from X11
+
+| | X11 (XTEST) | Wayland (wlr_seat) |
+|---|---|---|
+| Keycodes | evdev + 8 offset | evdev directly |
+| Coordinates | Display-global (absolute) | Surface-relative |
+| Thread safety | Any thread (X11 handles it) | Single-threaded (needs queue) |
+| Keymap | Not needed (raw keycodes) | xkbcommon keymap required |
+
+### Files to Change
+- `src/linux/wayland/input.zig` — new file, virtual input devices + InputHandler
+- `src/linux/wayland/compositor.zig` — expose backend/seat for input init, focus management
+- `src/linux/wayland/app_share.zig` — create WaylandInput, set `session.input_handler`
+- `build_linux.zig` — add input.zig to wayland module, link xkbcommon (already linked for compositor)
+
+---
+
+## Gap 3: Configurable Rate Control — CQP vs VBR (Priority 3)
+
+### Problem
+
+Both pipelines use VBR with a custom bitrate formula. For screen sharing, Constant QP (CQP) may produce better results — consistent quality regardless of content complexity. We want to be able to switch between them at runtime to test experientially.
+
+### Approach: CLI Flag
+
+Add `--rc vbr|cqp` and optional `--qp N` flags to the `share app` command.
+
+### Wire Path
+1. **CLI** (`cli.zig`): parse `--rc` and `--qp` from share command args
+2. **Control protocol** (`control.zig`): add `rc: RateControl` enum (`.vbr`, `.cqp`) and `qp: ?u32` to `ShareRequest`, serialize/parse in JSON
+3. **Daemon** (`daemon.zig`): pass through to `AppShareConfig` / `WaylandAppShareConfig`
+4. **NVENC init** (both `x11/nvenc.zig` and `wayland/nvenc.zig`):
+   - If CQP: `rateControlMode = NV_ENC_PARAMS_RC_CONSTQP`, set `constQP = {qpIntra=N, qpInterP=N+4, qpInterB=N+4}`, skip bitrate/VBV fields
+   - If VBR: current behavior unchanged
+5. **VA-API** (`vaapi/vaapi.zig`): VA-API also supports CQP via `VA_RC_CQP` — same pattern, set QP on slice params instead of bitrate on rate control params
+
+### Default Values
+- `--rc vbr` (default — current behavior, safe for WebRTC congestion)
+- `--qp 24` (default if CQP selected — good balance for screen sharing)
+- Range: QP 16-32 reasonable for testing. QP 20 = high quality, QP 28 = lower quality/smaller
+
+### Trade-offs
+- **CQP pros**: Consistent quality, simpler, no bitrate formula tuning
+- **CQP cons**: No bitrate ceiling — complex content can spike bandwidth, risk WebRTC congestion
+- **VBR pros**: Bounded bandwidth, plays well with WebRTC congestion control
+- **VBR cons**: Quality varies with content complexity
+
+### Files to Change
+- `src/shared/cli.zig` — parse `--rc` and `--qp` flags
+- `src/shared/control.zig` — `RateControl` enum, add to `ShareRequest`
+- `src/shared/daemon.zig` — pass rc/qp to configs
+- `src/linux/x11/nvenc.zig` — CQP branch in init
+- `src/linux/wayland/nvenc.zig` — same CQP branch (duplicate until deduped)
+- `src/linux/vaapi/vaapi.zig` — CQP support for VA-API path
+
+---
+
+## Gap 4: Minor Items (Low Priority)
+
+### Wayland Socket Naming
+Socket name hardcoded to `"zerocast-0"`. Second concurrent session fails. Fix: use `"zerocast-{pid}"` or `"zerocast-{session_id_prefix}"`.
+
+### NVENC Code Deduplication
+`wayland/nvenc.zig` is a copy of `x11/nvenc.zig`. Any NVENC changes (CQP, buffer pool) must be made in both. Extract to a shared module — the build note says one `.zig` file can't be root of two modules, but it can be imported as a non-root dependency.
+
+### Capture Timestamp
+X11 gets `ulTimestampUs` from NvFBC for abs-capture-time RTP extension. Wayland has no capture timestamp from wlroots. Use `clock_gettime(CLOCK_MONOTONIC)` at frame callback time as approximation.
+
+### NVENC Buffer Pool (Ghost Frames)
+Single-buffer bug affects both X11 and Wayland NVENC paths. NVENC holds references to previous input buffers for reconstruction, causing ghost frames. Fix: pool of N surfaces. Not Wayland-specific — tracked separately.
+
+---
+
+## Execution Order
+
+1. **Damage tracking + frame rate wiring** — biggest efficiency win, moderate change
+2. **Input injection** — biggest feature gap, new file + wiring
+3. **CQP rate control** — quality improvement, cross-cutting CLI/protocol/encoder change
+
+Each item is independent and can be tested in isolation.

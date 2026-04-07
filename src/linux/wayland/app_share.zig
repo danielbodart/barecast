@@ -126,7 +126,7 @@ pub const WaylandAppShare = struct {
         };
 
         // Start compositor
-        self.compositor = Compositor.init(config.width, config.height, config.render_device) catch |err| {
+        self.compositor = Compositor.init(config.width, config.height, config.fps, config.render_device) catch |err| {
             log.err("compositor init failed: {}", .{err});
             return error.CompositorFailed;
         };
@@ -263,13 +263,7 @@ pub const WaylandAppShare = struct {
     }
 
     pub fn runLoop(self: *WaylandAppShare) void {
-        const frame_interval_ns: u64 = std.time.ns_per_s / self.config.fps;
-        var frame_timer = std.time.Timer.start() catch return;
-
-        const ping_interval_ns: u64 = 30 * std.time.ns_per_s;
         var ping_timer = std.time.Timer.start() catch return;
-
-        const meta_interval_ns: u64 = 5 * std.time.ns_per_s;
         var meta_timer = std.time.Timer.start() catch return;
         var prev_bytes: u64 = 0;
         var prev_frames: u64 = 0;
@@ -277,6 +271,9 @@ pub const WaylandAppShare = struct {
         self.sendAppMeta();
 
         while (!self.should_stop.load(.acquire)) {
+            // Block until next frame event from compositor (or 100ms timeout for housekeeping)
+            self.compositor.dispatch(100);
+
             // Check if app is still running
             if (self.app_pid) |pid| {
                 const wr = posix.waitpid(pid, posix.W.NOHANG);
@@ -287,14 +284,14 @@ pub const WaylandAppShare = struct {
                 }
             }
 
-            if (ping_timer.read() >= ping_interval_ns) {
+            if (ping_timer.read() >= 30 * std.time.ns_per_s) {
                 ping_timer.reset();
                 if (!self.session.sendPing()) {
                     self.session.reconnect();
                 }
             }
 
-            if (meta_timer.read() >= meta_interval_ns) {
+            if (meta_timer.read() >= 5 * std.time.ns_per_s) {
                 const elapsed_ns = meta_timer.read();
                 meta_timer.reset();
 
@@ -322,19 +319,8 @@ pub const WaylandAppShare = struct {
                 const new_h: u32 = resize_val & 0xFFFF;
                 self.handleResize(new_w, new_h);
                 self.session.sendHostResizeToOthersSlot(self.pending_resize_slot.load(.acquire), @intCast(new_w), @intCast(new_h));
-                frame_timer.reset();
                 continue;
             }
-
-            // Frame pacing
-            const elapsed_frame_ns = frame_timer.read();
-            if (elapsed_frame_ns < frame_interval_ns) {
-                std.Thread.sleep(frame_interval_ns - elapsed_frame_ns);
-            }
-            frame_timer.reset();
-
-            // Dispatch Wayland events (triggers handleFrame callback → updates frame state)
-            self.compositor.dispatch();
 
             // Feed the latest frame to the encoder backend
             const is_new = self.has_new_frame;
@@ -401,12 +387,11 @@ pub const WaylandAppShare = struct {
         const timeout_ns: u64 = 10 * std.time.ns_per_s;
         var timer = try std.time.Timer.start();
         while (timer.read() < timeout_ns) {
-            self.compositor.dispatch();
+            self.compositor.dispatch(100);
             if (self.has_new_frame) {
                 log.info("first frame received", .{});
                 return;
             }
-            std.Thread.sleep(10 * std.time.ns_per_ms);
         }
         return error.Timeout;
     }
@@ -535,7 +520,9 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
     self.latest_rbo = frame.rbo;
     self.latest_fbo = frame.fbo;
 
-    self.has_new_frame = true;
+    // has_new_frame reflects whether the app actually committed new content
+    // (tracked via wlr_surface.current.seq in compositor.handleFrame)
+    self.has_new_frame = frame.is_new;
 }
 
 fn appMetaCallback(session: *BroadcastSession) void {

@@ -58,6 +58,8 @@ pub const Compositor = struct {
     socket_len: u8,
     width: u32,
     height: u32,
+    fps: u32,
+    last_surface_seq: u32,
 
     // Tracked toplevel (the app's main window)
     toplevel: ?*c.wlr_xdg_toplevel = null,
@@ -77,7 +79,7 @@ pub const Compositor = struct {
     resize_callback: ?*const fn (width: u32, height: u32, userdata: ?*anyopaque) void = null,
     resize_userdata: ?*anyopaque = null,
 
-    pub fn init(width: u32, height: u32, render_device: ?[*:0]const u8) !*Compositor {
+    pub fn init(width: u32, height: u32, fps: u32, render_device: ?[*:0]const u8) !*Compositor {
         const allocator = std.heap.c_allocator;
         const self = try allocator.create(Compositor);
         errdefer allocator.destroy(self);
@@ -185,6 +187,8 @@ pub const Compositor = struct {
         }
         self.width = width;
         self.height = height;
+        self.fps = fps;
+        self.last_surface_seq = 0;
 
         // Add output to layout and scene
         const layout_output = c.wlr_output_layout_add_auto(self.output_layout, self.output) orelse {
@@ -210,11 +214,12 @@ pub const Compositor = struct {
         self.toplevel_map = std.mem.zeroes(c.wl_listener);
         self.toplevel_commit = std.mem.zeroes(c.wl_listener);
 
-        // Enable the output (triggers headless timer → frame events)
+        // Enable the output with target refresh rate (drives the single frame loop)
         {
             var out_state: c.wlr_output_state = undefined;
             c.wlr_output_state_init(&out_state);
             c.wlr_output_state_set_enabled(&out_state, true);
+            c.wlr_output_state_set_custom_mode(&out_state, @intCast(width), @intCast(height), @intCast(fps * 1000));
             _ = c.wlr_output_commit_state(self.output, &out_state);
             c.wlr_output_state_finish(&out_state);
         }
@@ -241,10 +246,11 @@ pub const Compositor = struct {
         c.wl_display_run(self.display);
     }
 
-    /// Dispatch pending events without blocking.
-    pub fn dispatch(self: *Compositor) void {
+    /// Dispatch events, blocking up to timeout_ms for the next frame event.
+    /// Pass 0 for non-blocking, -1 for indefinite.
+    pub fn dispatch(self: *Compositor, timeout_ms: c_int) void {
         _ = c.wl_display_flush_clients(self.display);
-        _ = c.wl_event_loop_dispatch(c.wl_display_get_event_loop(self.display), 0);
+        _ = c.wl_event_loop_dispatch(c.wl_display_get_event_loop(self.display), timeout_ms);
     }
 
     /// Resize the headless output and the app's toplevel window.
@@ -252,10 +258,10 @@ pub const Compositor = struct {
         self.width = width;
         self.height = height;
 
-        // Resize compositor output first
+        // Resize compositor output (preserve fps refresh rate)
         var state: c.wlr_output_state = undefined;
         c.wlr_output_state_init(&state);
-        c.wlr_output_state_set_custom_mode(&state, @intCast(width), @intCast(height), 0);
+        c.wlr_output_state_set_custom_mode(&state, @intCast(width), @intCast(height), @intCast(self.fps * 1000));
         _ = c.wlr_output_commit_state(self.output, &state);
         c.wlr_output_state_finish(&state);
 
@@ -357,7 +363,7 @@ pub const Compositor = struct {
             self.height = h;
             var state: c.wlr_output_state = undefined;
             c.wlr_output_state_init(&state);
-            c.wlr_output_state_set_custom_mode(&state, @intCast(w), @intCast(h), 0);
+            c.wlr_output_state_set_custom_mode(&state, @intCast(w), @intCast(h), @intCast(self.fps * 1000));
             _ = c.wlr_output_commit_state(self.output, &state);
             c.wlr_output_state_finish(&state);
 
@@ -377,6 +383,14 @@ pub const Compositor = struct {
         if (frame_counter == 1 or frame_counter % 60 == 0) {
             log.info("frame {d}", .{frame_counter});
         }
+
+        // Check if the app committed new content since last frame
+        const is_new = if (self.toplevel_surface) |xdg| blk: {
+            const seq = xdg.surface.*.current.seq;
+            if (seq == self.last_surface_seq) break :blk false;
+            self.last_surface_seq = seq;
+            break :blk true;
+        } else false;
 
         // Build output state (renders scene into a buffer without committing)
         var state: c.wlr_output_state = undefined;
@@ -400,7 +414,7 @@ pub const Compositor = struct {
                         .buffer = buf,
                         .width = self.width,
                         .height = self.height,
-                        .is_new = true,
+                        .is_new = is_new,
                         .rbo = c.gles2_get_buffer_rbo(self.renderer, buf),
                         .fbo = c.gles2_get_buffer_fbo(self.renderer, buf),
                     };
