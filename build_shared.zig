@@ -18,7 +18,6 @@ pub const SharedModules = struct {
 /// Platform-specific modules returned by platform build functions.
 pub const PlatformModules = struct {
     app_share: *std.Build.Module,
-    app_share_vaapi: ?*std.Build.Module = null,
     gpu_detect: ?*std.Build.Module = null,
 };
 

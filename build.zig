@@ -134,9 +134,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
-    if (platform_mods.app_share_vaapi) |vaapi_mod| {
-        daemon_mod.addImport("app_share_vaapi", vaapi_mod);
-    }
     if (platform_mods.gpu_detect) |gd_mod| {
         daemon_mod.addImport("gpu_detect", gd_mod);
     }
@@ -219,12 +216,22 @@ pub fn build(b: *std.Build) void {
     if (builtin.os.tag == .linux) {
         const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/linux/x11/keymap.zig"),
+                .root_source_file = b.path("src/linux/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
         });
         test_step.dependOn(&b.addRunArtifact(keymap_test).step);
+    }
+
+    // GPU detect tests (Linux only)
+    if (builtin.os.tag == .linux) {
+        if (platform_mods.gpu_detect) |gd_mod| {
+            const gpu_detect_tests = b.addTest(.{
+                .root_module = gd_mod,
+            });
+            test_step.dependOn(&b.addRunArtifact(gpu_detect_tests).step);
+        }
     }
 
     // CLI tests (needs imports)
@@ -300,9 +307,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    if (platform_mods.app_share_vaapi) |vaapi_mod| {
-        daemon_tests.root_module.addImport("app_share_vaapi", vaapi_mod);
-    }
     if (platform_mods.gpu_detect) |gd_mod| {
         daemon_tests.root_module.addImport("gpu_detect", gd_mod);
     }

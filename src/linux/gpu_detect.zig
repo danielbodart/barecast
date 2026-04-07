@@ -381,3 +381,62 @@ fn sortCandidates(items: []GpuCandidate) void {
         items[j] = key;
     }
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+fn testCandidate(vendor: GpuVendor, av1: bool, hevc: bool) GpuCandidate {
+    return .{
+        .render_node = [_]u8{0} ** 32,
+        .render_node_len = 0,
+        .vendor = vendor,
+        .best_codec = if (av1) .av1 else if (hevc) .hevc else null,
+        .has_av1 = av1,
+        .has_hevc = hevc,
+    };
+}
+
+test "score: AV1 > HEVC > none" {
+    const av1 = testCandidate(.nvidia, true, true);
+    const hevc = testCandidate(.nvidia, false, true);
+    const none = testCandidate(.nvidia, false, false);
+    try std.testing.expect(av1.score() > hevc.score());
+    try std.testing.expect(hevc.score() > none.score());
+}
+
+test "score: vendor priority breaks ties" {
+    const nvidia_hevc = testCandidate(.nvidia, false, true);
+    const intel_hevc = testCandidate(.intel, false, true);
+    const amd_hevc = testCandidate(.amd, false, true);
+    try std.testing.expect(nvidia_hevc.score() > intel_hevc.score());
+    try std.testing.expect(intel_hevc.score() > amd_hevc.score());
+}
+
+test "score: AV1 on weaker vendor beats HEVC on stronger" {
+    const amd_av1 = testCandidate(.amd, true, true);
+    const nvidia_hevc = testCandidate(.nvidia, false, true);
+    try std.testing.expect(amd_av1.score() > nvidia_hevc.score());
+}
+
+test "sortCandidates: best first" {
+    var items = [_]GpuCandidate{
+        testCandidate(.intel, false, true), // HEVC intel = 102
+        testCandidate(.nvidia, true, true), // AV1 nvidia = 203
+        testCandidate(.amd, false, false), // none amd = 1
+    };
+    sortCandidates(&items);
+    try std.testing.expectEqual(GpuVendor.nvidia, items[0].vendor);
+    try std.testing.expectEqual(GpuVendor.intel, items[1].vendor);
+    try std.testing.expectEqual(GpuVendor.amd, items[2].vendor);
+}
+
+test "sortCandidates: single element" {
+    var single = [_]GpuCandidate{testCandidate(.nvidia, true, true)};
+    sortCandidates(&single);
+    try std.testing.expectEqual(GpuVendor.nvidia, single[0].vendor);
+}
+
+test "vendor priority ordering" {
+    try std.testing.expect(GpuVendor.nvidia.priority() > GpuVendor.intel.priority());
+    try std.testing.expect(GpuVendor.intel.priority() > GpuVendor.amd.priority());
+    try std.testing.expect(GpuVendor.amd.priority() > GpuVendor.unknown.priority());
+}

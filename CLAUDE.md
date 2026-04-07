@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What is this?
 
-Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary captures the screen via KMS/DRM, hardware-encodes video via NVENC (AV1 preferred, HEVC fallback), and streams to a browser viewer over WebRTC. See `README.md` for the full design.
+Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary runs apps in an embedded Wayland compositor (wlroots), hardware-encodes video via NVENC (AV1 preferred, HEVC fallback) or VA-API (Intel/AMD), and streams to a browser viewer over WebRTC. See `README.md` for the full design.
 
 ## Build & Run
 
@@ -47,7 +47,7 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 
 Two Zig binaries + one Cloudflare Worker:
 
-- **`zerocast`** — Main binary (unprivileged). Screen capture pipeline: DMA-BUF → EGL → CUDA → NVENC (AV1/HEVC) → libdatachannel WebRTC → browser.
+- **`zerocast`** — Main binary (unprivileged). App share pipeline: embedded wlroots compositor → GL renderbuffer → CUDA/VA-API → NVENC/VA-API (AV1/HEVC) → libdatachannel WebRTC → browser.
 - **`zerocast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
 - **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
 
@@ -70,22 +70,25 @@ src/
 │   ├── osc_parser.zig                    # Terminal OSC sequence parser
 │   └── prop_tests.zig                    # Property-based tests (minish)
 ├── linux/
-│   ├── x11/
-│   │   ├── app_share.zig                # AppShare session (headless Xorg + NvFBC)
-│   │   ├── encoder_backend.zig          # EncodeBackend impl (CUDA + NVENC)
-│   │   ├── input.zig                    # Input injection (XTEST)
-│   │   ├── keymap.zig                   # W3C code → evdev keycodes
-│   │   ├── nvfbc.zig, cuda.zig          # NvFBC capture, CUDA texture copy
-│   │   ├── nvenc.zig                    # NVENC hardware encoder
-│   │   ├── headless_display.zig         # Headless Xorg lifecycle
-│   │   ├── window_manager.zig           # Minimal X11 WM
-│   │   └── xorg.zig                     # Setuid Xorg launcher helper
-│   ├── kms/
-│   │   ├── main.zig                     # zerocast-kms privileged helper entry
-│   │   ├── drm.zig                      # KMS/DRM framebuffer capture
-│   │   ├── ipc.zig                      # SCM_RIGHTS fd passing
-│   │   └── protocol.zig                 # Wire protocol (zerocast ↔ zerocast-kms)
-│   └── fpscap.zig                       # LD_PRELOAD FPS cap for GL apps
+│   ├── keymap.zig                       # W3C code → evdev keycodes
+│   ├── gpu_detect.zig                   # GPU auto-detection (sysfs + CUDA/VA-API probing)
+│   ├── wayland/
+│   │   ├── app_share.zig               # AppShare session (wlroots compositor)
+│   │   ├── compositor.zig              # Embedded wlroots headless compositor
+│   │   ├── nvenc_backend.zig           # EncodeBackend impl (CUDA + NVENC)
+│   │   ├── nvenc.zig                   # NVENC hardware encoder
+│   │   ├── cuda.zig                    # CUDA GL renderbuffer interop
+│   │   ├── input.zig                   # Input injection (wlr_seat)
+│   │   └── gles2_helper.c             # GL RBO extraction from wlroots
+│   ├── vaapi/
+│   │   ├── vaapi.zig                   # VA-API encoder (Intel QSV / AMD VCN)
+│   │   ├── encoder_backend.zig         # EncodeBackend impl (VA-API)
+│   │   └── hevc_params.c              # HEVC slice parameter helper
+│   └── kms/
+│       ├── main.zig                     # zerocast-kms privileged helper entry
+│       ├── drm.zig                      # KMS/DRM framebuffer capture
+│       ├── ipc.zig                      # SCM_RIGHTS fd passing
+│       └── protocol.zig                 # Wire protocol (zerocast ↔ zerocast-kms)
 └── macos/
     ├── app_share.zig                    # AppShare session (ScreenCaptureKit)
     ├── encoder_backend.zig              # EncodeBackend impl (VideoToolbox HEVC)
@@ -119,7 +122,7 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 - **Always use `./run.ts <target>`** — never run `zig build`, `bun build`, `bun install`, `wrangler deploy`, etc. directly. `run.ts` is the single entry point for all build, test, lint, and deploy operations. It handles deps, submodules, versioning, and cmake libs automatically. If a command you need isn't there, add it to `run.ts`.
 - **Binaries go to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast` and `dist/bin/zerocast-kms`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
 - **To run the daemon locally**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon` (after `./run.ts build`)
-- **To share screen**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share screen [WxH+X+Y] --room <id>`
+- **To share an app**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share app glxgears`
 - **Never deploy from a dev machine** — all deployments (worker, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
 - CI only calls `run.ts` targets — no build logic in workflow YAML
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)

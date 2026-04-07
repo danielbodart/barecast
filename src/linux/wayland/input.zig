@@ -207,7 +207,7 @@ pub const WaylandInput = struct {
                 c.wlr_seat_pointer_notify_frame(self.seatPtr());
             },
             .key => |k| {
-                // Wayland keycodes are evdev codes directly (no offset like X11)
+                // Wayland keycodes are evdev codes directly
                 const state: u32 = if (k.value != 0) c.WL_KEYBOARD_KEY_STATE_PRESSED else c.WL_KEYBOARD_KEY_STATE_RELEASED;
                 log.debug("key code={d} state={d}", .{ k.code, k.value });
                 c.wlr_seat_keyboard_notify_key(self.seatPtr(), now, k.code, state);

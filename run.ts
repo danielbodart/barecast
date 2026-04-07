@@ -58,16 +58,6 @@ async function ensureLinuxDeps() {
     const { exitCode: sslCheck } = await $`pkg-config --exists openssl`.quiet().nothrow();
     if (sslCheck !== 0) missing.push("libssl-dev");
 
-    // X11 + GL (needed by nvfbc module for GLX context)
-    const { exitCode: x11Check } = await $`pkg-config --exists x11`.quiet().nothrow();
-    if (x11Check !== 0) missing.push("libx11-dev");
-    const { exitCode: glCheck } = await $`pkg-config --exists gl`.quiet().nothrow();
-    if (glCheck !== 0) missing.push("libgl-dev");
-
-    // XTEST (needed by xtest_input for app sharing)
-    const { exitCode: xtstCheck } = await $`pkg-config --exists xtst`.quiet().nothrow();
-    if (xtstCheck !== 0) missing.push("libxtst-dev");
-
     // Wayland + wlroots deps (needed by compositor module)
     const { exitCode: waylandCheck } = await $`pkg-config --exists wayland-server`.quiet().nothrow();
     if (waylandCheck !== 0) missing.push("libwayland-dev");
@@ -221,7 +211,6 @@ export async function setup() {
         for (const [group, reason] of [
             ["video", "GPU access"],
             ["input", "/dev/uinput access"],
-            ["tty", "VT access for headless Xorg"],
         ] as const) {
             if (!groups.includes(group)) {
                 console.log(`Adding user to ${group} group (${reason})...`);
@@ -233,16 +222,9 @@ export async function setup() {
         console.log("Setting capabilities on zerocast-kms...");
         await $`sudo setcap cap_sys_admin+ep ${distBin}/zerocast-kms`;
 
-        // Install setuid helper to /usr/local/bin (must be on a non-nosuid filesystem).
-        // Home directories on eCryptfs/overlayfs ignore setuid bits.
-        console.log("Installing zerocast-xorg to /usr/local/bin (setuid root)...");
-        await $`sudo cp ${distBin}/zerocast-xorg /usr/local/bin/zerocast-xorg`;
-        await $`sudo chown root:root /usr/local/bin/zerocast-xorg`;
-        await $`sudo chmod u+s /usr/local/bin/zerocast-xorg`;
-
-        // Allow passwordless sudo for auto-update of privileged helpers.
+        // Allow passwordless sudo for setcap on zerocast-kms.
         const user = (await $`whoami`.quiet()).text().trim();
-        const sudoersRule = `${user} ALL=(root) NOPASSWD: /usr/bin/cp * /usr/local/bin/zerocast-xorg, /usr/bin/chown root\\:root /usr/local/bin/zerocast-xorg, /usr/bin/chmod u+s /usr/local/bin/zerocast-xorg, /usr/sbin/setcap cap_sys_admin+ep *`;
+        const sudoersRule = `${user} ALL=(root) NOPASSWD: /usr/sbin/setcap cap_sys_admin+ep *`;
         console.log("Installing sudoers rule for passwordless helper updates...");
         await $`echo ${sudoersRule} | sudo tee /etc/sudoers.d/zerocast > /dev/null`;
         await $`sudo chmod 440 /etc/sudoers.d/zerocast`;
@@ -253,7 +235,6 @@ export async function setup() {
 
         console.log("Setup complete.");
         console.log("  zerocast, zerocast-kms → ~/.local/bin/ (symlinks)");
-        console.log("  zerocast-xorg → /usr/local/bin/ (setuid root)");
         console.log(`  recordings → ${recordingsDir}`);
         console.log("");
         console.log("To enable debug recording, set ZEROCAST_RECORD_DIR:");

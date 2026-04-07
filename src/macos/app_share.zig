@@ -1,5 +1,5 @@
 // macOS app share — captures a window via ScreenCaptureKit, encodes HEVC via
-// VideoToolbox, and streams over WebRTC. Mirrors platform/linux/x11/app_share.zig.
+// VideoToolbox, and streams over WebRTC.
 
 const std = @import("std");
 const encoder_mod = @import("encoder");

@@ -77,12 +77,6 @@ fn handleShare(args: *std.process.ArgIterator) void {
                 w.writeAll(gpu) catch return;
                 w.writeByte('"') catch return;
             }
-        } else if (std.mem.eql(u8, arg, "--rc")) {
-            if (args.next()) |rc| {
-                w.writeAll(",\"rc\":\"") catch return;
-                w.writeAll(rc) catch return;
-                w.writeByte('"') catch return;
-            }
         } else if (std.mem.eql(u8, arg, "--qp")) {
             if (args.next()) |qp| {
                 w.writeAll(",\"qp\":") catch return;
@@ -300,8 +294,8 @@ fn printUsage() void {
         \\  zerocast join my-room                         Join a stable room
         \\  zerocast share terminal                       Share interactive shell
         \\  zerocast share terminal htop --record         Share htop + record .cast
-        \\  zerocast share app code                       Share VS Code in headless display
-        \\  zerocast share app glxgears                   Share glxgears in headless display
+        \\  zerocast share app code                       Share VS Code
+        \\  zerocast share app glxgears                   Share glxgears
         \\  zerocast unshare                              Stop all shares
         \\
     , .{build_options.version});

@@ -18,9 +18,7 @@ pub const Request = union(enum) {
     shutdown,
 };
 
-pub const GpuBackend = enum { auto, nvidia, intel, nvidia_x11 };
-
-pub const RateControl = enum { vbr, cqp };
+pub const GpuBackend = enum { auto, nvidia, intel };
 
 pub const ShareRequest = struct {
     type: ShareType = .app,
@@ -28,7 +26,6 @@ pub const ShareRequest = struct {
     record: bool = false,
     command: ?[]const u8 = null,
     gpu: GpuBackend = .auto,
-    rc: RateControl = .cqp,
     qp: u32 = 20,
 };
 
@@ -100,16 +97,6 @@ pub fn parseRequest(msg: []const u8) ?Request {
                 req.gpu = .nvidia;
             } else if (std.mem.eql(u8, g, "intel")) {
                 req.gpu = .intel;
-            } else if (std.mem.eql(u8, g, "nvidia+x11")) {
-                req.gpu = .nvidia_x11;
-            }
-        }
-
-        if (jsonExtract(msg, "rc")) |r| {
-            if (std.mem.eql(u8, r, "vbr")) {
-                req.rc = .vbr;
-            } else if (std.mem.eql(u8, r, "cqp")) {
-                req.rc = .cqp;
             }
         }
 
@@ -555,4 +542,69 @@ test "getSocketPath returns valid path" {
     try std.testing.expect(path != null);
     try std.testing.expect(path.?.len > 0);
     try std.testing.expect(std.mem.endsWith(u8, path.?, ".sock"));
+}
+
+test "writeJsonEscaped handles special characters" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+    writeJsonEscaped(w, "hello \"world\"\nfoo\\bar\t") catch unreachable;
+    const result = fbs.getWritten();
+    try std.testing.expectEqualSlices(u8, "hello \\\"world\\\"\\nfoo\\\\bar\\t", result);
+}
+
+test "writeJsonEscaped empty string" {
+    var buf: [256]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+    writeJsonEscaped(w, "") catch unreachable;
+    try std.testing.expectEqual(@as(usize, 0), fbs.getWritten().len);
+}
+
+test "jsonExtract with escaped quote in value" {
+    const json = "{\"key\":\"value with \\\"quotes\\\"\"}";
+    const result = jsonExtract(json, "key");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualSlices(u8, "value with \\\"quotes\\\"", result.?);
+}
+
+test "parseRequest share with qp" {
+    const msg =
+        \\{"cmd":"share","type":"app","command":"glxgears","qp":24}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .share => |s| {
+            try std.testing.expectEqual(@as(u32, 24), s.qp);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest share with gpu nvidia" {
+    const msg =
+        \\{"cmd":"share","type":"app","command":"code","gpu":"nvidia"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .share => |s| {
+            try std.testing.expectEqual(GpuBackend.nvidia, s.gpu);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseRequest share defaults" {
+    const msg =
+        \\{"cmd":"share","type":"app","command":"glxgears"}
+    ;
+    const req = parseRequest(msg).?;
+    switch (req) {
+        .share => |s| {
+            try std.testing.expectEqual(GpuBackend.auto, s.gpu);
+            try std.testing.expectEqual(@as(u32, 20), s.qp);
+            try std.testing.expectEqual(@as(u32, 30), s.fps);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

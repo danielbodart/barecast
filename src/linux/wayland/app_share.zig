@@ -17,11 +17,10 @@ const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const generateRoomId = @import("control").generateRoomId;
 const GpuBackend = @import("control").GpuBackend;
-const RateControl = @import("control").RateControl;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 const WaylandInput = @import("wayland_input").WaylandInput;
 
-const log = std.log.scoped(.wayland_app_share);
+const log = std.log.scoped(.app_share);
 
 pub const AppShareConfig = struct {
     command: []const u8,
@@ -33,7 +32,6 @@ pub const AppShareConfig = struct {
     record_dir: ?[]const u8 = null,
     render_device: [*:0]const u8 = "/dev/dri/renderD128",
     gpu: GpuBackend = .intel,
-    rc: RateControl = .cqp,
     qp: u32 = 20,
 };
 
@@ -63,7 +61,7 @@ const BackendState = union(enum) {
 /// Wayland app share session. Starts an embedded compositor (wlroots headless),
 /// launches the app as a Wayland client, captures frames from the compositor's
 /// GL renderbuffer (NVIDIA) or DMA-BUF (Intel/AMD), and encodes for WebRTC.
-pub const WaylandAppShare = struct {
+pub const AppShare = struct {
     session_id: [16]u8,
     room_id_buf: [16]u8,
     room_id: []const u8,
@@ -96,7 +94,7 @@ pub const WaylandAppShare = struct {
     has_new_frame: bool,
     wayland_input: ?WaylandInput,
 
-    pub fn initInPlace(self: *WaylandAppShare, config: AppShareConfig) !void {
+    pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
         self.pending_resize = std.atomic.Value(u32).init(0);
         self.pending_resize_slot = std.atomic.Value(u8).init(0xFF);
         self.should_stop = std.atomic.Value(bool).init(false);
@@ -205,9 +203,8 @@ pub const WaylandAppShare = struct {
 
         // Initialize encoder backend based on GPU type
         self.backend_state = switch (config.gpu) {
-            .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
-                const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.rc, config.qp) catch |err| {
+                const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
                     log.err("NVENC encoder init failed: {}", .{err});
                     return error.EncoderInitFailed;
                 };
@@ -285,11 +282,11 @@ pub const WaylandAppShare = struct {
         self.start_time = std.time.Timer.start() catch return error.TimerUnavailable;
     }
 
-    pub fn start(self: *WaylandAppShare) void {
+    pub fn start(self: *AppShare) void {
         self.session.start();
     }
 
-    pub fn runLoop(self: *WaylandAppShare) void {
+    pub fn runLoop(self: *AppShare) void {
         var ping_timer = std.time.Timer.start() catch return;
         var meta_timer = std.time.Timer.start() catch return;
         var prev_bytes: u64 = 0;
@@ -348,8 +345,8 @@ pub const WaylandAppShare = struct {
             // Check for pending resize
             const resize_val = self.pending_resize.swap(0, .acquire);
             if (resize_val != 0) {
-                const new_w: u32 = resize_val >> 16;
-                const new_h: u32 = resize_val & 0xFFFF;
+                const new_w: u32 = unpackWidth(resize_val);
+                const new_h: u32 = unpackHeight(resize_val);
                 self.handleResize(new_w, new_h);
                 self.session.sendHostResizeToOthersSlot(self.pending_resize_slot.load(.acquire), @intCast(new_w), @intCast(new_h));
                 continue;
@@ -380,7 +377,7 @@ pub const WaylandAppShare = struct {
         log.info("wayland app share stopped", .{});
     }
 
-    pub fn viewerCount(self: *WaylandAppShare) u32 {
+    pub fn viewerCount(self: *AppShare) u32 {
         var count: u32 = 0;
         for (&self.session.peers) |*peer| {
             if (peer.state.load(.acquire) == .connected) {
@@ -390,11 +387,11 @@ pub const WaylandAppShare = struct {
         return count;
     }
 
-    pub fn uptimeSeconds(self: *WaylandAppShare) u64 {
+    pub fn uptimeSeconds(self: *AppShare) u64 {
         return self.start_time.read() / std.time.ns_per_s;
     }
 
-    pub fn deinit(self: *WaylandAppShare) void {
+    pub fn deinit(self: *AppShare) void {
         if (self.recorder) |*rec| {
             rec.logEvent("session ended");
             rec.deinit();
@@ -417,7 +414,7 @@ pub const WaylandAppShare = struct {
 
     // ── Private ─────────────────────────────────────────────────────
 
-    fn waitForFirstFrame(self: *WaylandAppShare) !void {
+    fn waitForFirstFrame(self: *AppShare) !void {
         // Dispatch until we get a frame or timeout (10s)
         const timeout_ns: u64 = 10 * std.time.ns_per_s;
         var timer = try std.time.Timer.start();
@@ -431,16 +428,15 @@ pub const WaylandAppShare = struct {
         return error.Timeout;
     }
 
-    fn handleResize(self: *WaylandAppShare, new_w: u32, new_h: u32) void {
+    fn handleResize(self: *AppShare, new_w: u32, new_h: u32) void {
         log.info("resize {d}x{d} — rebuilding pipeline", .{ new_w, new_h });
 
         self.encoder.deinit();
         self.compositor.resize(new_w, new_h);
 
         self.backend_state = switch (self.config.gpu) {
-            .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
-                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps, self.config.rc, self.config.qp) catch |e| {
+                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps, self.config.qp) catch |e| {
                     log.err("NVENC reinit failed, stopping: {}", .{e});
                     self.should_stop.store(true, .release);
                     return;
@@ -478,7 +474,7 @@ pub const WaylandAppShare = struct {
         self.sendAppMeta();
     }
 
-    fn launchApp(self: *WaylandAppShare, socket: [*:0]const u8) !posix.pid_t {
+    fn launchApp(self: *AppShare, socket: [*:0]const u8) !posix.pid_t {
         const cmd = self.command_buf[0..self.command_len];
 
         const pid = posix.fork() catch return error.AppLaunchFailed;
@@ -511,7 +507,7 @@ pub const WaylandAppShare = struct {
         return pid;
     }
 
-    fn sendAppMeta(self: *WaylandAppShare) void {
+    fn sendAppMeta(self: *AppShare) void {
         const cmd = self.command_buf[0..self.command_len];
         var buf: [512]u8 = undefined;
         const meta = std.fmt.bufPrint(&buf, "{{\"type\":\"set-meta\",\"title\":\"{s}\",\"res\":\"{d}x{d}\",\"fps\":{d},\"bitrate\":{d}}}", .{
@@ -528,7 +524,7 @@ pub const WaylandAppShare = struct {
 // ── Callbacks (C-compatible, outside struct) ────────────────────────────
 
 fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
-    const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
+    const self: *AppShare = @ptrCast(@alignCast(userdata));
     const dmabuf = &frame.dmabuf;
 
     {
@@ -563,32 +559,84 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
 }
 
 fn appMetaCallback(session: *BroadcastSession) void {
-    const self: *WaylandAppShare = @alignCast(@fieldParentPtr("session", session));
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     self.sendAppMeta();
 }
 
 fn appResizeCallback(session: *BroadcastSession, sender_peer_id: *const [PEER_ID_LEN]u8, width: u16, height: u16) void {
-    const self: *WaylandAppShare = @alignCast(@fieldParentPtr("session", session));
-    if (width < 100 or height < 100) return;
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
+    if (!isValidResize(width, height)) return;
     if (@as(u32, width) == self.compositor.width and @as(u32, height) == self.compositor.height) return;
     log.info("viewer resize requested: {d}x{d}", .{ width, height });
     self.pending_resize_slot.store(session.peerSlotIndex(sender_peer_id), .release);
-    self.pending_resize.store((@as(u32, width) << 16) | @as(u32, height), .release);
+    self.pending_resize.store(packResize(width, height), .release);
 }
 
 /// Called by the compositor when the app changes its own window size.
 /// Fires synchronously inside compositor.dispatch() on the encode loop thread.
 fn compositorResizeCallback(width: u32, height: u32, userdata: ?*anyopaque) void {
-    const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
+    const self: *AppShare = @ptrCast(@alignCast(userdata));
     log.info("app resized to {d}x{d} — triggering encoder rebuild", .{ width, height });
-    self.pending_resize.store((@as(u32, @intCast(width)) << 16) | @as(u32, @intCast(height)), .release);
+    self.pending_resize.store(packResize(@intCast(width), @intCast(height)), .release);
 }
 
 /// Called by the compositor when the app's toplevel surface is mapped (ready for input).
 /// Fires synchronously inside compositor.dispatch() on the encode loop thread.
 fn compositorMapCallback(surface: *anyopaque, geo_x: i32, geo_y: i32, userdata: ?*anyopaque) void {
-    const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
+    const self: *AppShare = @ptrCast(@alignCast(userdata));
     if (self.wayland_input) |*input| {
         input.setFocusSurface(surface, geo_x, geo_y);
     }
+}
+
+// ── Pure helpers (unit-testable without compositor/GPU) ──────────────────
+
+/// Pack two u16 dimensions into a single u32 for atomic resize signaling.
+fn packResize(width: u16, height: u16) u32 {
+    return (@as(u32, width) << 16) | @as(u32, height);
+}
+
+fn unpackWidth(val: u32) u32 {
+    return val >> 16;
+}
+
+fn unpackHeight(val: u32) u32 {
+    return val & 0xFFFF;
+}
+
+/// Returns true if the requested dimensions are valid for resize.
+pub fn isValidResize(width: u16, height: u16) bool {
+    return width >= 100 and height >= 100;
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+test "packResize roundtrip" {
+    const val = packResize(1920, 1080);
+    try std.testing.expectEqual(@as(u32, 1920), unpackWidth(val));
+    try std.testing.expectEqual(@as(u32, 1080), unpackHeight(val));
+}
+
+test "packResize min values" {
+    const val = packResize(1, 1);
+    try std.testing.expectEqual(@as(u32, 1), unpackWidth(val));
+    try std.testing.expectEqual(@as(u32, 1), unpackHeight(val));
+}
+
+test "packResize max values" {
+    const val = packResize(std.math.maxInt(u16), std.math.maxInt(u16));
+    try std.testing.expectEqual(@as(u32, 65535), unpackWidth(val));
+    try std.testing.expectEqual(@as(u32, 65535), unpackHeight(val));
+}
+
+test "isValidResize rejects small dimensions" {
+    try std.testing.expect(!isValidResize(99, 1080));
+    try std.testing.expect(!isValidResize(1920, 99));
+    try std.testing.expect(!isValidResize(50, 50));
+}
+
+test "isValidResize accepts valid dimensions" {
+    try std.testing.expect(isValidResize(100, 100));
+    try std.testing.expect(isValidResize(1920, 1080));
+    try std.testing.expect(isValidResize(3840, 2160));
 }

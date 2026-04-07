@@ -3,8 +3,6 @@ const posix = std.posix;
 const control = @import("control");
 const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
-const WaylandAppShare = @import("app_share_vaapi").WaylandAppShare;
-const WaylandAppShareConfig = @import("app_share_vaapi").AppShareConfig;
 const gpu_detect = @import("gpu_detect");
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
@@ -25,7 +23,6 @@ const MAX_SESSIONS = 8;
 const SharePayload = union(enum) {
     terminal: *TerminalShare,
     app: *AppShare,
-    wayland_app: *WaylandAppShare,
 };
 
 const SessionSlot = struct {
@@ -229,16 +226,6 @@ fn handleStatus(buf: []u8) []const u8 {
                         .uptime_s = share.uptimeSeconds(),
                     };
                 },
-                .wayland_app => |share| {
-                    infos[count] = .{
-                        .id = &share.session_id,
-                        .type = .app,
-                        .room = share.share_url,
-                        .viewers = share.viewerCount(),
-                        .recording = false,
-                        .uptime_s = share.uptimeSeconds(),
-                    };
-                },
             }
             count += 1;
         }
@@ -267,99 +254,6 @@ const AppInitResult = struct {
 };
 
 fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
-    if (req.gpu == .nvidia_x11) {
-        return handleShareAppNvidia(req, buf);
-    }
-    if (req.gpu == .intel or req.gpu == .nvidia) {
-        return handleShareAppWayland(req, buf);
-    }
-
-    // auto → detect best GPU with hardware encode
-    const result = gpu_detect.detectGpus();
-    if (result.best()) |gpu| {
-        if (gpu.best_codec != null) {
-            // Route to Wayland path with detected GPU
-            var auto_req = req;
-            auto_req.gpu = switch (gpu.vendor) {
-                .nvidia => .nvidia,
-                .intel => .intel,
-                .amd => .intel, // AMD uses VA-API path (same as intel)
-                .unknown => .intel,
-            };
-            return handleShareAppWayland(auto_req, buf);
-        }
-    }
-
-    // Fallback: X11+NvFBC pipeline
-    log.info("auto-detect: no Wayland-capable encoder found, falling back to X11+NvFBC", .{});
-    return handleShareAppNvidia(req, buf);
-}
-
-fn handleShareAppNvidia(req: control.ShareRequest, buf: []u8) []const u8 {
-    const allocator = std.heap.c_allocator;
-
-    const command = req.command orelse
-        return control.writeErrorResponse(buf, "app share requires a command") orelse "";
-
-    const base_url = std.process.getEnvVarOwned(allocator, "ZEROCAST_URL") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => allocator.dupe(u8, "https://zerocast.bodar.com") catch
-            return control.writeErrorResponse(buf, "internal error") orelse "",
-        else => return control.writeErrorResponse(buf, "internal error") orelse "",
-    };
-
-    if (currentRoom() == null) {
-        const id_buf = control.generateRoomId();
-        setRoom(&id_buf);
-        log.info("auto-joined room: {s}", .{currentRoom().?});
-    }
-
-    const record_dir = std.process.getEnvVarOwned(allocator, "ZEROCAST_RECORD_DIR") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => null,
-    };
-
-    const config = AppShareConfig{
-        .command = command,
-        .fps = req.fps,
-        .base_url = base_url,
-        .room_id = currentRoom(),
-        .record_dir = if (record_dir) |d| d else null,
-        .rc = req.rc,
-        .qp = req.qp,
-    };
-
-    const slot_idx = findEmptySlot() orelse {
-        return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
-    };
-
-    const result = allocator.create(AppInitResult) catch
-        return control.writeErrorResponse(buf, "out of memory") orelse "";
-    defer allocator.destroy(result);
-    result.* = .{};
-
-    const thread = std.Thread.spawn(.{}, appThreadEntry, .{ result, config, slot_idx }) catch |err| {
-        log.err("app thread spawn failed: {}", .{err});
-        return control.writeErrorResponse(buf, "failed to start app thread") orelse "";
-    };
-
-    result.done.wait();
-
-    if (result.err_msg) |err_msg| {
-        thread.join();
-        return control.writeErrorResponse(buf, err_msg) orelse "";
-    }
-
-    const share = result.share.?;
-
-    sessions_mutex.lock();
-    sessions[slot_idx].thread = thread;
-    sessions_mutex.unlock();
-
-    return control.writeOkResponse(buf, &share.session_id, share.share_url) orelse
-        control.writeErrorResponse(buf, "internal error") orelse "";
-}
-
-fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
     const allocator = std.heap.c_allocator;
 
     const command = req.command orelse
@@ -383,10 +277,10 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
     };
 
     // Detect render device for the requested GPU vendor
+    const gpu = req.gpu;
     const render_device: [*:0]const u8 = blk: {
         const detected = gpu_detect.detectGpus();
-        const target_vendor: gpu_detect.GpuVendor = switch (req.gpu) {
-            .nvidia_x11 => unreachable, // routed to X11 path before this
+        const target_vendor: gpu_detect.GpuVendor = switch (gpu) {
             .nvidia => .nvidia,
             .intel => .intel,
             .auto => if (detected.best()) |b| b.vendor else .intel,
@@ -394,19 +288,17 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
         for (detected.candidates[0..detected.count]) |*c2| {
             if (c2.vendor == target_vendor) break :blk c2.renderPath();
         }
-        // Fallback defaults
-        break :blk if (req.gpu == .nvidia) "/dev/dri/renderD129" else "/dev/dri/renderD128";
+        break :blk if (gpu == .nvidia) "/dev/dri/renderD129" else "/dev/dri/renderD128";
     };
 
-    const config = WaylandAppShareConfig{
+    const config = AppShareConfig{
         .command = command,
         .fps = req.fps,
         .base_url = base_url,
         .room_id = currentRoom(),
         .record_dir = if (record_dir) |d| d else null,
-        .gpu = req.gpu,
+        .gpu = gpu,
         .render_device = render_device,
-        .rc = req.rc,
         .qp = req.qp,
     };
 
@@ -414,14 +306,14 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
         return control.writeErrorResponse(buf, "maximum sessions reached") orelse "";
     };
 
-    const result = allocator.create(WaylandInitResult) catch
+    const result = allocator.create(AppInitResult) catch
         return control.writeErrorResponse(buf, "out of memory") orelse "";
     defer allocator.destroy(result);
     result.* = .{};
 
-    const thread = std.Thread.spawn(.{}, waylandAppThreadEntry, .{ result, config, slot_idx }) catch |err| {
-        log.err("wayland app thread spawn failed: {}", .{err});
-        return control.writeErrorResponse(buf, "failed to start wayland app thread") orelse "";
+    const thread = std.Thread.spawn(.{}, appThreadEntry, .{ result, config, slot_idx }) catch |err| {
+        log.err("app thread spawn failed: {}", .{err});
+        return control.writeErrorResponse(buf, "failed to start app thread") orelse "";
     };
 
     result.done.wait();
@@ -468,56 +360,12 @@ fn appThreadEntry(result: *AppInitResult, config: AppShareConfig, slot_idx: usiz
 
     share.runLoop();
 
-    // Clean up on the same thread (GL/CUDA contexts are thread-local)
+    // Clean up on the same thread (GPU contexts are thread-local)
     share.deinit();
 
     // Clear the session slot. If stopAllSessions/stopSessionById already
     // cleared it (leave/unshare), the daemon owns the free after thread.join().
     // Otherwise we're exiting naturally and must free here.
-    sessions_mutex.lock();
-    const daemon_owns_free = sessions[slot_idx].payload == null;
-    sessions[slot_idx] = .{};
-    sessions_mutex.unlock();
-
-    if (!daemon_owns_free) allocator.destroy(share);
-}
-
-const WaylandInitResult = struct {
-    share: ?*WaylandAppShare = null,
-    err_msg: ?[]const u8 = null,
-    done: std.Thread.ResetEvent = .{},
-};
-
-fn waylandAppThreadEntry(result: *WaylandInitResult, config: WaylandAppShareConfig, slot_idx: usize) void {
-    const allocator = std.heap.c_allocator;
-
-    const share = allocator.create(WaylandAppShare) catch {
-        result.err_msg = "out of memory";
-        result.done.set();
-        return;
-    };
-
-    share.initInPlace(config) catch {
-        allocator.destroy(share);
-        result.err_msg = "wayland app share init failed";
-        result.done.set();
-        return;
-    };
-
-    sessions_mutex.lock();
-    sessions[slot_idx].payload = .{ .wayland_app = share };
-    sessions_mutex.unlock();
-
-    share.start();
-
-    result.share = share;
-    result.done.set();
-
-    share.runLoop();
-
-    // Clean up on the same thread (GPU contexts are thread-local)
-    share.deinit();
-
     sessions_mutex.lock();
     const daemon_owns_free = sessions[slot_idx].payload == null;
     sessions[slot_idx] = .{};
@@ -679,14 +527,13 @@ fn getSessionId(payload: SharePayload) *const [16]u8 {
     return switch (payload) {
         .terminal => |t| &t.session_id,
         .app => |a| &a.session_id,
-        .wayland_app => |a| &a.session_id,
     };
 }
 
 fn getSessionType(payload: SharePayload) control.ShareType {
     return switch (payload) {
         .terminal => .terminal,
-        .app, .wayland_app => .app,
+        .app => .app,
     };
 }
 
@@ -694,7 +541,6 @@ fn signalStop(payload: SharePayload) void {
     switch (payload) {
         .terminal => |t| t.should_stop.store(true, .release),
         .app => |a| a.should_stop.store(true, .release),
-        .wayland_app => |a| a.should_stop.store(true, .release),
     }
 }
 
@@ -704,7 +550,6 @@ fn deinitAndFree(payload: SharePayload) void {
         // App shares deinit on their capture thread (GPU contexts are thread-local).
         // We only free the heap allocation here after thread.join().
         .app => |a| allocator.destroy(a),
-        .wayland_app => |a| allocator.destroy(a),
         .terminal => |t| {
             t.deinit();
             allocator.destroy(t);
