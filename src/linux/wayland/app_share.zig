@@ -292,11 +292,14 @@ pub const WaylandAppShare = struct {
         self.sendAppMeta();
 
         while (!self.should_stop.load(.acquire)) {
-            // Drain queued input events onto the compositor thread
-            if (self.wayland_input) |*input| input.drainEvents();
-
             // Block until next frame event from compositor (or 100ms timeout for housekeeping)
             self.compositor.dispatch(100);
+
+            // Drain queued input events onto the compositor thread, then flush to clients
+            if (self.wayland_input) |*input| {
+                input.drainEvents();
+                self.compositor.dispatch(0); // non-blocking flush
+            }
 
             // Check if app is still running
             if (self.app_pid) |pid| {
