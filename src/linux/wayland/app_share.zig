@@ -202,6 +202,7 @@ pub const WaylandAppShare = struct {
 
         // Initialize encoder backend based on GPU type
         self.backend_state = switch (config.gpu) {
+            .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
                 const nvenc = NvencBackend.init(config.width, config.height, config.fps) catch |err| {
                     log.err("NVENC encoder init failed: {}", .{err});
@@ -433,6 +434,7 @@ pub const WaylandAppShare = struct {
         self.compositor.resize(new_w, new_h);
 
         self.backend_state = switch (self.config.gpu) {
+            .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
                 const nvenc = NvencBackend.init(new_w, new_h, self.config.fps) catch |e| {
                     log.err("NVENC reinit failed, stopping: {}", .{e});

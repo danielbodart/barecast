@@ -267,6 +267,9 @@ const AppInitResult = struct {
 };
 
 fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
+    if (req.gpu == .nvidia_x11) {
+        return handleShareAppNvidia(req, buf);
+    }
     if (req.gpu == .intel or req.gpu == .nvidia) {
         return handleShareAppWayland(req, buf);
     }
@@ -381,6 +384,7 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
     const render_device: [*:0]const u8 = blk: {
         const detected = gpu_detect.detectGpus();
         const target_vendor: gpu_detect.GpuVendor = switch (req.gpu) {
+            .nvidia_x11 => unreachable, // routed to X11 path before this
             .nvidia => .nvidia,
             .intel => .intel,
             .auto => if (detected.best()) |b| b.vendor else .intel,

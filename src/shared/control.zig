@@ -18,7 +18,7 @@ pub const Request = union(enum) {
     shutdown,
 };
 
-pub const GpuBackend = enum { auto, nvidia, intel };
+pub const GpuBackend = enum { auto, nvidia, intel, nvidia_x11 };
 
 pub const ShareRequest = struct {
     type: ShareType = .app,
@@ -96,6 +96,8 @@ pub fn parseRequest(msg: []const u8) ?Request {
                 req.gpu = .nvidia;
             } else if (std.mem.eql(u8, g, "intel")) {
                 req.gpu = .intel;
+            } else if (std.mem.eql(u8, g, "nvidia+x11")) {
+                req.gpu = .nvidia_x11;
             }
         }
 
