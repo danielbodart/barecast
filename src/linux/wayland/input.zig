@@ -38,6 +38,10 @@ pub const WaylandInput = struct {
     surface: ?*anyopaque,
     output_width: u32,
     output_height: u32,
+    // XDG geometry offset: video coordinates are relative to the content area,
+    // but wlr_seat expects surface-local coords (including CSD header bar).
+    geo_offset_x: i32,
+    geo_offset_y: i32,
 
     // Lock-free SPSC ring buffer (single producer = network thread, single consumer = compositor thread)
     queue: [QUEUE_SIZE]InputEvent,
@@ -63,6 +67,8 @@ pub const WaylandInput = struct {
         self.surface = null;
         self.output_width = width;
         self.output_height = height;
+        self.geo_offset_x = 0;
+        self.geo_offset_y = 0;
         self.write_idx = std.atomic.Value(u32).init(0);
         self.read_idx = std.atomic.Value(u32).init(0);
 
@@ -110,13 +116,15 @@ pub const WaylandInput = struct {
 
     /// Set the focused surface (called when toplevel maps).
     /// Takes *anyopaque because the compositor and input modules have separate cImports.
-    pub fn setFocusSurface(self: *WaylandInput, surface_opaque: *anyopaque) void {
+    pub fn setFocusSurface(self: *WaylandInput, surface_opaque: *anyopaque, geo_x: i32, geo_y: i32) void {
         const surface: ?*c.wlr_surface = @ptrCast(surface_opaque);
         self.surface = surface_opaque;
+        self.geo_offset_x = geo_x;
+        self.geo_offset_y = geo_y;
         // Enter the surface for both keyboard and pointer
         c.wlr_seat_keyboard_notify_enter(self.seatPtr(), surface, null, 0, null);
         c.wlr_seat_pointer_notify_enter(self.seatPtr(), surface, 0, 0);
-        log.info("input focus set", .{});
+        log.info("input focus set, geometry offset=({d},{d})", .{ geo_x, geo_y });
     }
 
     /// Update output dimensions (called on resize).
@@ -162,9 +170,10 @@ pub const WaylandInput = struct {
 
         switch (event) {
             .mouse_move => |m| {
-                const sx: f64 = @floatFromInt(m.x);
-                const sy: f64 = @floatFromInt(m.y);
-                log.debug("mouse_move ({d},{d})", .{ m.x, m.y });
+                // Video coords are content-area relative; add CSD offset for surface-local
+                const sx: f64 = @floatFromInt(@as(i32, m.x) + self.geo_offset_x);
+                const sy: f64 = @floatFromInt(@as(i32, m.y) + self.geo_offset_y);
+                log.debug("mouse_move ({d},{d}) -> surface ({d},{d})", .{ m.x, m.y, @as(i32, m.x) + self.geo_offset_x, @as(i32, m.y) + self.geo_offset_y });
                 c.wlr_seat_pointer_notify_motion(self.seatPtr(), now, sx, sy);
                 c.wlr_seat_pointer_notify_frame(self.seatPtr());
             },

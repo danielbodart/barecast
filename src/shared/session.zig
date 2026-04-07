@@ -207,6 +207,13 @@ pub const Peer = struct {
         log.info("peer {s}: {s}", .{ self.peer_id, @tagName(state) });
         self.state.store(state, .release);
 
+        // Send a keyframe so the viewer gets content immediately.
+        // Without this, the browser may never send a PLI (it needs at least
+        // one RTP packet to realize the track is active).
+        if (state == .connected) {
+            self.force_keyframe.store(true, .release);
+        }
+
         // Auto-cleanup on terminal states.
         // Capture peer_id by value — the slot may be reused by allocPeer
         // after freePeerById releases the mutex.

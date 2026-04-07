@@ -79,8 +79,9 @@ pub const Compositor = struct {
     resize_callback: ?*const fn (width: u32, height: u32, userdata: ?*anyopaque) void = null,
     resize_userdata: ?*anyopaque = null,
 
-    // Toplevel map callback — notifies app_share when the app's surface is ready for input focus
-    map_callback: ?*const fn (surface: *anyopaque, userdata: ?*anyopaque) void = null,
+    // Toplevel map callback — notifies app_share when the app's surface is ready for input focus.
+    // geo_x/geo_y: XDG geometry offset (CSD header bar) — input coords must add this.
+    map_callback: ?*const fn (surface: *anyopaque, geo_x: i32, geo_y: i32, userdata: ?*anyopaque) void = null,
     map_userdata: ?*anyopaque = null,
 
     pub fn init(width: u32, height: u32, fps: u32, render_device: ?[*:0]const u8) !*Compositor {
@@ -283,6 +284,17 @@ pub const Compositor = struct {
         return null;
     }
 
+    /// Get the XDG geometry offset (CSD header bar). Input coordinates from
+    /// the video must add this offset to become surface-local coordinates.
+    pub fn getGeometryOffset(self: *const Compositor) struct { x: i32, y: i32 } {
+        if (self.toplevel_surface) |xdg| {
+            var box: c.wlr_box = undefined;
+            c.wlr_xdg_surface_get_geometry(xdg, &box);
+            return .{ .x = box.x, .y = box.y };
+        }
+        return .{ .x = 0, .y = 0 };
+    }
+
     /// Get the Wayland socket name for client connections.
     pub fn socketName(self: *const Compositor) [*:0]const u8 {
         return @ptrCast(self.socket_buf[0..self.socket_len]);
@@ -342,12 +354,13 @@ pub const Compositor = struct {
         c.wlr_xdg_surface_get_geometry(xdg_surface, &box);
 
         if (box.width > 0 and box.height > 0) {
-            log.info("toplevel mapped: {d}x{d}", .{ box.width, box.height });
+            log.info("toplevel mapped: {d}x{d} geometry_offset=({d},{d})", .{ box.width, box.height, box.x, box.y });
         }
 
-        // Notify app_share so input can be focused on this surface
+        // Notify app_share so input can be focused on this surface.
+        // Pass the geometry offset (CSD header bar) so input coords can be corrected.
         if (self.map_callback) |cb| {
-            cb(@ptrCast(xdg_surface.surface), self.map_userdata);
+            cb(@ptrCast(xdg_surface.surface), box.x, box.y, self.map_userdata);
         }
     }
 

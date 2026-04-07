@@ -70,19 +70,9 @@ export class InputController {
 
         this.bindEvents();
 
-        // Send resize when the video element changes size (debounced)
-        this.resizeObserver = new ResizeObserver(() => {
-            if (this.resizeTimer) clearTimeout(this.resizeTimer);
-            this.resizeTimer = setTimeout(() => {
-                const rect = this.video.getBoundingClientRect();
-                const w = Math.round(rect.width * devicePixelRatio);
-                const h = Math.round(rect.height * devicePixelRatio);
-                // Skip if matching native video resolution (avoids resize loop)
-                if (w === this.video.videoWidth && h === this.video.videoHeight) return;
-                if (w > 0 && h > 0) this.sendResize(w, h);
-            }, 250);
-        });
-        this.resizeObserver.observe(this.video);
+        // Viewer-initiated resize disabled: the app's native size is authoritative.
+        // The viewer window adjusts to match the stream, not the other way around.
+        this.resizeObserver = null;
     }
 
     get currentMode(): ViewerMode {
@@ -227,7 +217,12 @@ export class InputController {
 
     private onMouseDown(e: MouseEvent): void {
         const pt = this.mapCoords(e.clientX, e.clientY);
-        if (!pt) return;
+        if (!pt) {
+            console.warn("[input] mousedown outside video", e.clientX, e.clientY);
+            return;
+        }
+
+        console.log(`[input] mousedown client=(${e.clientX},${e.clientY}) native=(${pt.x},${pt.y}) btn=${e.button} mode=${this.mode}`);
 
         if (this.mode === "draw") {
             if (e.button === 0) {
@@ -250,6 +245,10 @@ export class InputController {
 
     private onMouseUp(e: MouseEvent): void {
         const pt = this.mapCoords(e.clientX, e.clientY);
+
+        if (pt) {
+            console.log(`[input] mouseup client=(${e.clientX},${e.clientY}) native=(${pt.x},${pt.y}) btn=${e.button} mode=${this.mode}`);
+        }
 
         if (this.mode === "draw") {
             if (e.button === 0 && this.drawing) {
@@ -333,6 +332,8 @@ export class InputController {
     private send(buf: ArrayBuffer): void {
         if (this.dc.readyState === "open") {
             this.dc.send(buf);
+        } else {
+            console.warn("[input] DC not open, state:", this.dc.readyState);
         }
     }
 

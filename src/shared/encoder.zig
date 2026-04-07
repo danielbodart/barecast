@@ -108,7 +108,6 @@ pub const Encoder = struct {
     recorder: ?*SessionRecorder = null,
     consecutive_skips: u64 = 0,
     idle_logged: bool = false,
-    idle_keyframe_sent: bool = false,
     force_next_keyframe: bool = false,
 
     pub fn init(backend: EncodeBackend, width: u32, height: u32, sink: FrameSink, fps: u32) !Encoder {
@@ -127,14 +126,12 @@ pub const Encoder = struct {
     /// Process one captured frame: prepare → encode → sink dispatch.
     /// `is_new` indicates whether the frame content changed since last call.
     pub fn processFrame(self: *Encoder, is_new: bool) !void {
-        // Even when idle, the first PLI (viewer join) must be serviced — encode
-        // the last captured texture as a keyframe so new viewers can start decoding.
-        // Subsequent PLIs while still idle are ignored to avoid periodic keyframe bursts.
-        const pli_raw = switch (self.sink) {
+        // Honour every PLI — the browser only sends them when it genuinely needs
+        // a keyframe (new viewer, packet loss, etc.) and stops once it decodes one.
+        const pli_pending = switch (self.sink) {
             .session => |s| s.shouldForceKeyframe(),
             .ivf, .none => false,
         };
-        const pli_pending = pli_raw and !self.idle_keyframe_sent;
 
         if (!is_new and !pli_pending) {
             self.stats.frames_skipped += 1;
@@ -148,9 +145,8 @@ pub const Encoder = struct {
         }
 
         if (pli_pending and !is_new) {
-            // Idle PLI — send one keyframe but stay in idle state
+            // Idle PLI — send keyframe using last captured texture
             log.info("idle PLI — sending keyframe after {d} skipped frames", .{self.consecutive_skips});
-            self.idle_keyframe_sent = true;
         } else if (is_new) {
             // Real content change — reset idle tracking
             if (self.idle_logged) {
@@ -158,7 +154,6 @@ pub const Encoder = struct {
             }
             self.consecutive_skips = 0;
             self.idle_logged = false;
-            self.idle_keyframe_sent = false;
         }
 
         // Real wall clock PTS in milliseconds

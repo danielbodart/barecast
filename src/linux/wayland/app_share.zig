@@ -243,7 +243,8 @@ pub const WaylandAppShare = struct {
             self.session.input_handler = input.inputHandler();
             // Set focus on the app's surface (already mapped — we waited for first frame)
             if (self.compositor.getToplevelSurface()) |surface| {
-                input.setFocusSurface(surface);
+                const geo = self.compositor.getGeometryOffset();
+                input.setFocusSurface(surface, geo.x, geo.y);
             }
         }
         const t_session = ts.elapsed(&t);
@@ -582,9 +583,9 @@ fn compositorResizeCallback(width: u32, height: u32, userdata: ?*anyopaque) void
 
 /// Called by the compositor when the app's toplevel surface is mapped (ready for input).
 /// Fires synchronously inside compositor.dispatch() on the encode loop thread.
-fn compositorMapCallback(surface: *anyopaque, userdata: ?*anyopaque) void {
+fn compositorMapCallback(surface: *anyopaque, geo_x: i32, geo_y: i32, userdata: ?*anyopaque) void {
     const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
     if (self.wayland_input) |*input| {
-        input.setFocusSurface(surface);
+        input.setFocusSurface(surface, geo_x, geo_y);
     }
 }

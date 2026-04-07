@@ -508,6 +508,10 @@ if (!roomId) {
                     }
                 },
             });
+            // Expose for debugging
+            (window as any).__inputCtrl = inputCtrl;
+            (window as any).__dc = dc;
+            (window as any).__video = video;
             if (modeBtn) modeBtn.classList.add("visible");
             updateModeUI("input");
         };
