@@ -79,6 +79,10 @@ pub const Compositor = struct {
     resize_callback: ?*const fn (width: u32, height: u32, userdata: ?*anyopaque) void = null,
     resize_userdata: ?*anyopaque = null,
 
+    // Toplevel map callback — notifies app_share when the app's surface is ready for input focus
+    map_callback: ?*const fn (surface: *anyopaque, userdata: ?*anyopaque) void = null,
+    map_userdata: ?*anyopaque = null,
+
     pub fn init(width: u32, height: u32, fps: u32, render_device: ?[*:0]const u8) !*Compositor {
         const allocator = std.heap.c_allocator;
         const self = try allocator.create(Compositor);
@@ -333,6 +337,11 @@ pub const Compositor = struct {
 
         if (box.width > 0 and box.height > 0) {
             log.info("toplevel mapped: {d}x{d}", .{ box.width, box.height });
+        }
+
+        // Notify app_share so input can be focused on this surface
+        if (self.map_callback) |cb| {
+            cb(@ptrCast(xdg_surface.surface), self.map_userdata);
         }
     }
 

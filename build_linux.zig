@@ -192,6 +192,26 @@ pub fn buildPlatform(
         },
     });
 
+    // --- Wayland input module (virtual keyboard + pointer via wlr_seat) ---
+    const wayland_input_mod = b.createModule(.{
+        .root_source_file = b.path("src/linux/wayland/input.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "keymap", .module = keymap_mod },
+            .{ .name = "session", .module = shared.session },
+        },
+    });
+    wayland_input_mod.addIncludePath(b.path("wlroots/include"));
+    wayland_input_mod.addIncludePath(b.path("libs/wlroots/include"));
+    wayland_input_mod.addIncludePath(b.path("libs/wlroots/protocol"));
+    wayland_input_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
+    wayland_input_mod.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
+    wayland_input_mod.linkSystemLibrary("wayland-server", .{});
+    wayland_input_mod.linkSystemLibrary("xkbcommon", .{});
+    wayland_input_mod.linkSystemLibrary("pixman-1", .{});
+
     // --- Wayland app share (compositor + VA-API or NVENC encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
         .root_source_file = b.path("src/linux/wayland/app_share.zig"),
@@ -207,6 +227,7 @@ pub fn buildPlatform(
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
             .{ .name = "session_recorder", .module = shared.session_recorder },
+            .{ .name = "wayland_input", .module = wayland_input_mod },
         },
     });
 

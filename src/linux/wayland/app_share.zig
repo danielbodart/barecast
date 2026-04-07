@@ -18,6 +18,7 @@ const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const generateRoomId = @import("control").generateRoomId;
 const GpuBackend = @import("control").GpuBackend;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
+const WaylandInput = @import("wayland_input").WaylandInput;
 
 const log = std.log.scoped(.wayland_app_share);
 
@@ -90,6 +91,7 @@ pub const WaylandAppShare = struct {
     latest_rbo: u32,
     latest_fbo: u32,
     has_new_frame: bool,
+    wayland_input: ?WaylandInput,
 
     pub fn initInPlace(self: *WaylandAppShare, config: AppShareConfig) !void {
         self.pending_resize = std.atomic.Value(u32).init(0);
@@ -139,6 +141,10 @@ pub const WaylandAppShare = struct {
         // Register resize callback (fired when app changes its own window size)
         self.compositor.resize_callback = &compositorResizeCallback;
         self.compositor.resize_userdata = @ptrCast(self);
+
+        // Register map callback (fired when app's surface is ready for input focus)
+        self.compositor.map_callback = &compositorMapCallback;
+        self.compositor.map_userdata = @ptrCast(self);
         const t_compositor = ts.elapsed(&t);
 
         const socket = self.compositor.socketName();
@@ -223,6 +229,17 @@ pub const WaylandAppShare = struct {
         self.session.viewer_registry = &self.viewer_registry;
         self.session.meta_callback = appMetaCallback;
         self.session.resize_callback = appResizeCallback;
+
+        // Input injection (virtual keyboard + pointer via wlr_seat)
+        if (WaylandInput.init(@ptrCast(self.compositor.seat), config.width, config.height)) |input| {
+            self.wayland_input = input;
+        } else |err| {
+            log.warn("input injection unavailable: {}", .{err});
+            self.wayland_input = null;
+        }
+        if (self.wayland_input) |*input| {
+            self.session.input_handler = input.inputHandler();
+        }
         const t_session = ts.elapsed(&t);
 
         // Encoder
@@ -271,6 +288,9 @@ pub const WaylandAppShare = struct {
         self.sendAppMeta();
 
         while (!self.should_stop.load(.acquire)) {
+            // Drain queued input events onto the compositor thread
+            if (self.wayland_input) |*input| input.drainEvents();
+
             // Block until next frame event from compositor (or 100ms timeout for housekeeping)
             self.compositor.dispatch(100);
 
@@ -372,6 +392,8 @@ pub const WaylandAppShare = struct {
         self.encoder.deinit();
         self.session.deinit();
 
+        if (self.wayland_input) |*input| input.deinit();
+
         if (self.app_pid) |pid| {
             posix.kill(pid, posix.SIG.TERM) catch {};
             _ = posix.waitpid(pid, 0);
@@ -434,6 +456,7 @@ pub const WaylandAppShare = struct {
             return;
         };
         self.session.codec = self.encoder.backend.codec;
+        if (self.wayland_input) |*input| input.updateSize(new_w, new_h);
         if (self.recorder) |*rec| {
             self.encoder.recorder = rec;
             rec.updateResolution(new_w, new_h);
@@ -545,4 +568,13 @@ fn compositorResizeCallback(width: u32, height: u32, userdata: ?*anyopaque) void
     const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
     log.info("app resized to {d}x{d} — triggering encoder rebuild", .{ width, height });
     self.pending_resize.store((@as(u32, @intCast(width)) << 16) | @as(u32, @intCast(height)), .release);
+}
+
+/// Called by the compositor when the app's toplevel surface is mapped (ready for input).
+/// Fires synchronously inside compositor.dispatch() on the encode loop thread.
+fn compositorMapCallback(surface: *anyopaque, userdata: ?*anyopaque) void {
+    const self: *WaylandAppShare = @ptrCast(@alignCast(userdata));
+    if (self.wayland_input) |*input| {
+        input.setFocusSurface(surface);
+    }
 }
