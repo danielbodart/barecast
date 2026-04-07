@@ -261,6 +261,7 @@ pub const Peer = struct {
         switch (msg) {
             .mouse_move => |m| {
                 reg.updateCursor(peer_id, m.x, m.y);
+                if (session.input_handler) |handler| handler.moveMouse(m.x, m.y);
             },
             .mouse_down => |m| {
                 log.info("DC mouse_down ({d},{d}) btn={d} handler={}", .{ m.x, m.y, @intFromEnum(m.button), session.input_handler != null });
