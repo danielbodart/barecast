@@ -94,9 +94,8 @@ pub const WaylandInput = struct {
         c.wlr_pointer_init(&self.pointer, &pointer_impl, "zerocast-pointer");
 
         // Set seat capabilities and attach keyboard
-        const seat: *c.wlr_seat = @ptrCast(@alignCast(seat_opaque));
-        c.wlr_seat_set_capabilities(seat, c.WL_SEAT_CAPABILITY_KEYBOARD | c.WL_SEAT_CAPABILITY_POINTER);
-        c.wlr_seat_set_keyboard(seat, &self.keyboard);
+        c.wlr_seat_set_capabilities(self.seatPtr(), c.WL_SEAT_CAPABILITY_KEYBOARD | c.WL_SEAT_CAPABILITY_POINTER);
+        c.wlr_seat_set_keyboard(self.seatPtr(), &self.keyboard);
 
         log.info("wayland input initialized ({d}x{d})", .{ width, height });
 
@@ -112,7 +111,7 @@ pub const WaylandInput = struct {
     /// Set the focused surface (called when toplevel maps).
     /// Takes *anyopaque because the compositor and input modules have separate cImports.
     pub fn setFocusSurface(self: *WaylandInput, surface_opaque: *anyopaque) void {
-        const surface: *c.wlr_surface = @ptrCast(@alignCast(surface_opaque));
+        const surface: ?*c.wlr_surface = @ptrCast(surface_opaque);
         self.surface = surface_opaque;
         // Enter the surface for both keyboard and pointer
         c.wlr_seat_keyboard_notify_enter(self.seatPtr(), surface, null, 0, null);
@@ -150,19 +149,22 @@ pub const WaylandInput = struct {
             count += 1;
         }
         if (count > 0) {
-            log.debug("drained {d} input events", .{count});
+            log.info("drained {d} input events", .{count});
         }
     }
 
     fn applyEvent(self: *WaylandInput, event: InputEvent) void {
-        _ = self.surface orelse return;
+        if (self.surface == null) {
+            log.warn("input event dropped: no focused surface", .{});
+            return;
+        }
         const now = getTimeMs();
 
         switch (event) {
             .mouse_move => |m| {
-                // Convert absolute coordinates to surface-local
                 const sx: f64 = @floatFromInt(m.x);
                 const sy: f64 = @floatFromInt(m.y);
+                log.debug("mouse_move ({d},{d})", .{ m.x, m.y });
                 c.wlr_seat_pointer_notify_motion(self.seatPtr(), now, sx, sy);
                 c.wlr_seat_pointer_notify_frame(self.seatPtr());
             },
@@ -176,6 +178,7 @@ pub const WaylandInput = struct {
                     else => return,
                 };
                 const state: c_uint = @intCast(if (b.value != 0) c.WL_POINTER_BUTTON_STATE_PRESSED else c.WL_POINTER_BUTTON_STATE_RELEASED);
+                log.debug("mouse_button btn={d} state={d}", .{ b.button, b.value });
                 _ = c.wlr_seat_pointer_notify_button(self.seatPtr(), now, linux_button, state);
                 c.wlr_seat_pointer_notify_frame(self.seatPtr());
             },
@@ -197,6 +200,7 @@ pub const WaylandInput = struct {
             .key => |k| {
                 // Wayland keycodes are evdev codes directly (no offset like X11)
                 const state: u32 = if (k.value != 0) c.WL_KEYBOARD_KEY_STATE_PRESSED else c.WL_KEYBOARD_KEY_STATE_RELEASED;
+                log.debug("key code={d} state={d}", .{ k.code, k.value });
                 c.wlr_seat_keyboard_notify_key(self.seatPtr(), now, k.code, state);
             },
         }

@@ -103,6 +103,7 @@ pub const WaylandAppShare = struct {
         self.latest_rbo = 0;
         self.latest_fbo = 0;
         self.has_new_frame = false;
+        self.wayland_input = null;
 
         if (config.command.len > self.command_buf.len) return error.CommandTooLong;
         @memcpy(self.command_buf[0..config.command.len], config.command);
