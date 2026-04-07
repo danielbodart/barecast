@@ -108,6 +108,7 @@ pub const Encoder = struct {
     recorder: ?*SessionRecorder = null,
     consecutive_skips: u64 = 0,
     idle_logged: bool = false,
+    idle_keyframe_sent: bool = false,
     force_next_keyframe: bool = false,
 
     pub fn init(backend: EncodeBackend, width: u32, height: u32, sink: FrameSink, fps: u32) !Encoder {
@@ -145,8 +146,15 @@ pub const Encoder = struct {
         }
 
         if (pli_pending and !is_new) {
-            // Idle PLI — send keyframe using last captured texture
+            if (self.idle_keyframe_sent) {
+                // Already sent a keyframe for this idle period — suppress.
+                // The browser already has the current frame; another identical
+                // keyframe is wasteful. A real content change will reset this.
+                return;
+            }
+            // First idle PLI — send one keyframe, then suppress further ones
             log.info("idle PLI — sending keyframe after {d} skipped frames", .{self.consecutive_skips});
+            self.idle_keyframe_sent = true;
         } else if (is_new) {
             // Real content change — reset idle tracking
             if (self.idle_logged) {
@@ -154,6 +162,7 @@ pub const Encoder = struct {
             }
             self.consecutive_skips = 0;
             self.idle_logged = false;
+            self.idle_keyframe_sent = false;
         }
 
         // Real wall clock PTS in milliseconds

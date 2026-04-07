@@ -17,6 +17,7 @@ const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const generateRoomId = @import("control").generateRoomId;
 const GpuBackend = @import("control").GpuBackend;
+const RateControl = @import("control").RateControl;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 const WaylandInput = @import("wayland_input").WaylandInput;
 
@@ -32,6 +33,8 @@ pub const AppShareConfig = struct {
     record_dir: ?[]const u8 = null,
     render_device: [*:0]const u8 = "/dev/dri/renderD128",
     gpu: GpuBackend = .intel,
+    rc: RateControl = .cqp,
+    qp: u32 = 20,
 };
 
 /// Encoder backend — either VA-API (Intel/AMD) or NVENC (NVIDIA).
@@ -204,7 +207,7 @@ pub const WaylandAppShare = struct {
         self.backend_state = switch (config.gpu) {
             .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
-                const nvenc = NvencBackend.init(config.width, config.height, config.fps) catch |err| {
+                const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.rc, config.qp) catch |err| {
                     log.err("NVENC encoder init failed: {}", .{err});
                     return error.EncoderInitFailed;
                 };
@@ -437,7 +440,7 @@ pub const WaylandAppShare = struct {
         self.backend_state = switch (self.config.gpu) {
             .nvidia_x11 => unreachable, // routed to X11 path in daemon
             .nvidia => blk: {
-                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps) catch |e| {
+                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps, self.config.rc, self.config.qp) catch |e| {
                     log.err("NVENC reinit failed, stopping: {}", .{e});
                     self.should_stop.store(true, .release);
                     return;

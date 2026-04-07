@@ -4,6 +4,7 @@ const NvencEncoder = @import("nvenc").Nvenc;
 const NvencEncodedFrame = @import("nvenc").EncodedFrame;
 const Codec = @import("codec").Codec;
 const encoder = @import("encoder");
+const RateControl = @import("control").RateControl;
 
 /// NVIDIA CUDA + NVENC encoder backend.
 /// Manages the CUDA GL-texture copy and NVENC hardware encoder.
@@ -13,11 +14,11 @@ pub const EncoderBackend = struct {
     cuda_ctx: Cuda,
     nvenc: NvencEncoder,
 
-    pub fn init(texture_id: u32, width: u32, height: u32, fps: u32) !EncoderBackend {
+    pub fn init(texture_id: u32, width: u32, height: u32, fps: u32, rc: RateControl, qp: u32) !EncoderBackend {
         var cu = try Cuda.init(texture_id, width, height);
         errdefer cu.deinit();
 
-        var enc = try NvencEncoder.init(&cu, fps);
+        var enc = try NvencEncoder.init(&cu, fps, rc, qp);
         errdefer enc.deinit();
 
         return .{

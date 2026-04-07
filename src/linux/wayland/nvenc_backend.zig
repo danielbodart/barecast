@@ -4,6 +4,7 @@ const NvencEncoder = @import("nvenc").Nvenc;
 const NvencEncodedFrame = @import("nvenc").EncodedFrame;
 const Codec = @import("codec").Codec;
 const encoder = @import("encoder");
+const RateControl = @import("control").RateControl;
 
 const log = std.log.scoped(.wayland_nvenc);
 
@@ -17,11 +18,11 @@ pub const NvencBackend = struct {
     /// FBO id to blit from (set by app_share before each processFrame)
     pending_fbo: u32 = 0,
 
-    pub fn init(width: u32, height: u32, fps: u32) !NvencBackend {
+    pub fn init(width: u32, height: u32, fps: u32, rc: RateControl, qp: u32) !NvencBackend {
         var cu = try Cuda.init(width, height);
         errdefer cu.deinit();
 
-        var enc = try NvencEncoder.init(&cu, fps);
+        var enc = try NvencEncoder.init(&cu, fps, rc, qp);
         errdefer enc.deinit();
 
         return .{

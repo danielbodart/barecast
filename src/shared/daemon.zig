@@ -324,6 +324,8 @@ fn handleShareAppNvidia(req: control.ShareRequest, buf: []u8) []const u8 {
         .base_url = base_url,
         .room_id = currentRoom(),
         .record_dir = if (record_dir) |d| d else null,
+        .rc = req.rc,
+        .qp = req.qp,
     };
 
     const slot_idx = findEmptySlot() orelse {
@@ -404,6 +406,8 @@ fn handleShareAppWayland(req: control.ShareRequest, buf: []u8) []const u8 {
         .record_dir = if (record_dir) |d| d else null,
         .gpu = req.gpu,
         .render_device = render_device,
+        .rc = req.rc,
+        .qp = req.qp,
     };
 
     const slot_idx = findEmptySlot() orelse {

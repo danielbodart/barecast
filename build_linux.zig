@@ -41,6 +41,7 @@ pub fn buildPlatform(
         .imports = &.{
             .{ .name = "cuda", .module = cuda_mod },
             .{ .name = "codec", .module = shared.codec },
+            .{ .name = "control", .module = shared.control },
         },
     });
 
@@ -54,6 +55,7 @@ pub fn buildPlatform(
             .{ .name = "nvenc", .module = nvenc_mod },
             .{ .name = "codec", .module = shared.codec },
             .{ .name = "encoder", .module = shared.encoder },
+            .{ .name = "control", .module = shared.control },
         },
     });
 
@@ -176,6 +178,7 @@ pub fn buildPlatform(
         .imports = &.{
             .{ .name = "cuda", .module = wayland_cuda_mod },
             .{ .name = "codec", .module = shared.codec },
+            .{ .name = "control", .module = shared.control },
         },
     });
 
@@ -189,6 +192,7 @@ pub fn buildPlatform(
             .{ .name = "nvenc", .module = wayland_nvenc_mod },
             .{ .name = "codec", .module = shared.codec },
             .{ .name = "encoder", .module = shared.encoder },
+            .{ .name = "control", .module = shared.control },
         },
     });
 

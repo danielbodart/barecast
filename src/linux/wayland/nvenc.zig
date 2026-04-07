@@ -2,6 +2,7 @@ const std = @import("std");
 const cuda = @import("cuda");
 pub const Codec = @import("codec").Codec;
 
+
 // ============================================================================
 // NVENC API version constants (SDK 12.0)
 // ============================================================================
@@ -708,7 +709,7 @@ pub const Nvenc = struct {
     frame_idx: u64,
     buffer_format: u32,
 
-    pub fn init(cu: *const cuda.Cuda, fps: u32) !Nvenc {
+    pub fn init(cu: *const cuda.Cuda, fps: u32, rc: @import("control").RateControl, qp: u32) !Nvenc {
         // dlopen libnvidia-encode
         const lib = std.c.dlopen("libnvidia-encode.so.1", .{ .LAZY = true }) orelse blk: {
             break :blk std.c.dlopen("libnvidia-encode.so", .{ .LAZY = true }) orelse {
@@ -800,16 +801,25 @@ pub const Nvenc = struct {
         config.version = structVersionHigh(8);
         config.gopLength = 0xFFFFFFFF; // infinite — keyframes only on PLI request
         config.frameIntervalP = 1; // no B-frames
-        // Adaptive VBR: linear bitrate scaling with resolution.
-        // bitrate = 90kbps base + 0.012 bits/pixel/frame
-        // Calibrated: 150x150→98kbps, 1350x800→479kbps, 4K→3.1Mbps
-        const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
-        const avg_bitrate: u32 = @intCast(90_000 + @min(pixels * fps * 12 / 1000, 10_000_000));
-        config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-        config.rcParams.averageBitRate = avg_bitrate;
-        config.rcParams.maxBitRate = avg_bitrate * 2;
-        config.rcParams.vbvBufferSize = avg_bitrate; // 1 second of average bitrate
-        config.rcParams.vbvInitialDelay = avg_bitrate / 2; // half buffer
+        switch (rc) {
+            .cqp => {
+                config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+                config.rcParams.constQP = .{ .qpIntra = qp, .qpInterP = qp, .qpInterB = qp };
+                std.debug.print("NVENC: CQP mode, QP={d}\n", .{qp});
+            },
+            .vbr => {
+                // Adaptive VBR: linear bitrate scaling with resolution.
+                // bitrate = 90kbps base + 0.012 bits/pixel/frame
+                // Calibrated: 150x150→98kbps, 1350x800→479kbps, 4K→3.1Mbps
+                const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
+                const avg_bitrate: u32 = @intCast(90_000 + @min(pixels * fps * 12 / 1000, 10_000_000));
+                config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+                config.rcParams.averageBitRate = avg_bitrate;
+                config.rcParams.maxBitRate = avg_bitrate * 2;
+                config.rcParams.vbvBufferSize = avg_bitrate; // 1 second of average bitrate
+                config.rcParams.vbvInitialDelay = avg_bitrate / 2; // half buffer
+            },
+        }
 
         // Codec-specific config
         switch (codec) {
@@ -864,7 +874,14 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
-        std.debug.print("NVENC: initialized {s} encoder {}x{} (target {}kbps)\n", .{ codec.name(), cu.frame_width, cu.frame_height, avg_bitrate / 1000 });
+        switch (rc) {
+            .cqp => std.debug.print("NVENC: initialized {s} encoder {}x{} (CQP QP={d})\n", .{ codec.name(), cu.frame_width, cu.frame_height, qp }),
+            .vbr => {
+                const pixels = @as(u64, cu.frame_width) * @as(u64, cu.frame_height);
+                const avg_bitrate: u32 = @intCast(90_000 + @min(pixels * fps * 12 / 1000, 10_000_000));
+                std.debug.print("NVENC: initialized {s} encoder {}x{} (VBR target {}kbps)\n", .{ codec.name(), cu.frame_width, cu.frame_height, avg_bitrate / 1000 });
+            },
+        }
 
         // Register CUDA device pointer as NVENC input
         const registerResource = fns.nvEncRegisterResource orelse return error.NvencInitFailed;

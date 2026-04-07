@@ -18,6 +18,7 @@ const Input = @import("input").Input;
 const HeadlessDisplay = @import("headless_display").HeadlessDisplay;
 const WindowManager = @import("window_manager").WindowManager;
 const generateRoomId = @import("control").generateRoomId;
+const RateControl = @import("control").RateControl;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 
 const log = std.log.scoped(.app_share);
@@ -30,6 +31,8 @@ pub const AppShareConfig = struct {
     room_id: ?[]const u8 = null,
     base_url: []const u8 = "https://zerocast.bodar.com",
     record_dir: ?[]const u8 = null,
+    rc: RateControl = .cqp,
+    qp: u32 = 20,
 };
 
 /// Self-contained app share session. Spawns a headless Xorg display,
@@ -203,7 +206,7 @@ pub const AppShare = struct {
         const t_session = ts.elapsed(&t);
 
         // Encoder backend (CUDA + NVENC)
-        self.nvenc_backend = EncoderBackend.init(first_frame.texture_id, first_frame.width, first_frame.height, config.fps) catch |err| {
+        self.nvenc_backend = EncoderBackend.init(first_frame.texture_id, first_frame.width, first_frame.height, config.fps, config.rc, config.qp) catch |err| {
             log.err("encoder backend init failed: {}", .{err});
             self.session.deinit();
             return error.EncoderInitFailed;
@@ -375,7 +378,7 @@ pub const AppShare = struct {
                 const t_grab = ts.elapsed(&t);
 
                 // 7. Rebuild encoder backend + encoder
-                self.nvenc_backend = EncoderBackend.init(new_frame.texture_id, new_frame.width, new_frame.height, self.config.fps) catch |e| {
+                self.nvenc_backend = EncoderBackend.init(new_frame.texture_id, new_frame.width, new_frame.height, self.config.fps, self.config.rc, self.config.qp) catch |e| {
                     log.err("encoder backend reinit failed: {}", .{e});
                     break :loop;
                 };

@@ -20,12 +20,16 @@ pub const Request = union(enum) {
 
 pub const GpuBackend = enum { auto, nvidia, intel, nvidia_x11 };
 
+pub const RateControl = enum { vbr, cqp };
+
 pub const ShareRequest = struct {
     type: ShareType = .app,
     fps: u32 = 30,
     record: bool = false,
     command: ?[]const u8 = null,
     gpu: GpuBackend = .auto,
+    rc: RateControl = .cqp,
+    qp: u32 = 20,
 };
 
 pub const JoinRequest = struct {
@@ -99,6 +103,18 @@ pub fn parseRequest(msg: []const u8) ?Request {
             } else if (std.mem.eql(u8, g, "nvidia+x11")) {
                 req.gpu = .nvidia_x11;
             }
+        }
+
+        if (jsonExtract(msg, "rc")) |r| {
+            if (std.mem.eql(u8, r, "vbr")) {
+                req.rc = .vbr;
+            } else if (std.mem.eql(u8, r, "cqp")) {
+                req.rc = .cqp;
+            }
+        }
+
+        if (jsonExtractInt(msg, "qp")) |q| {
+            if (q >= 0 and q <= 51) req.qp = @intCast(q);
         }
 
         return .{ .share = req };
