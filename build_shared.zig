@@ -12,6 +12,8 @@ pub const SharedModules = struct {
     encoder: *std.Build.Module,
     codec: *std.Build.Module,
     terminal_share: *std.Build.Module,
+    debounce: *std.Build.Module,
+    clock: *std.Build.Module,
     control: *std.Build.Module,
 };
 
@@ -19,6 +21,7 @@ pub const SharedModules = struct {
 pub const PlatformModules = struct {
     app_share: *std.Build.Module,
     gpu_detect: ?*std.Build.Module = null,
+    compositor: ?*std.Build.Module = null,
 };
 
 /// Link libdatachannel and its static dependencies into an artifact.

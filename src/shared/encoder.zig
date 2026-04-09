@@ -146,15 +146,9 @@ pub const Encoder = struct {
         }
 
         if (pli_pending and !is_new) {
-            if (self.idle_keyframe_sent) {
-                // Already sent a keyframe for this idle period — suppress.
-                // The browser already has the current frame; another identical
-                // keyframe is wasteful. A real content change will reset this.
-                return;
-            }
-            // First idle PLI — send one keyframe, then suppress further ones
+            // TODO: PLI suppression disabled — honour every PLI for now.
+            // Revisit with a cooldown timer to limit idle keyframe bandwidth.
             log.info("idle PLI — sending keyframe after {d} skipped frames", .{self.consecutive_skips});
-            self.idle_keyframe_sent = true;
         } else if (is_new) {
             // Real content change — reset idle tracking
             if (self.idle_logged) {

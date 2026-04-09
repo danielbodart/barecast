@@ -19,8 +19,12 @@ const generateRoomId = @import("control").generateRoomId;
 const GpuBackend = @import("control").GpuBackend;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 const WaylandInput = @import("wayland_input").WaylandInput;
+const Debounce = @import("debounce").Debounce;
+const SystemClock = @import("clock").SystemClock;
 
 const log = std.log.scoped(.app_share);
+
+const ResizeArgs = struct { w: u32, h: u32 };
 
 pub const AppShareConfig = struct {
     command: []const u8,
@@ -93,6 +97,7 @@ pub const AppShare = struct {
     latest_fbo: u32,
     has_new_frame: bool,
     wayland_input: ?WaylandInput,
+    resize_debounce: Debounce(ResizeArgs),
 
     pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
         self.pending_resize = std.atomic.Value(u32).init(0);
@@ -105,6 +110,12 @@ pub const AppShare = struct {
         self.latest_fbo = 0;
         self.has_new_frame = false;
         self.wayland_input = null;
+        self.resize_debounce = Debounce(ResizeArgs).init(
+            debouncedResizeCallback,
+            @ptrCast(self),
+            SystemClock.clock(),
+            250 * std.time.ns_per_ms,
+        );
 
         if (config.command.len > self.command_buf.len) return error.CommandTooLong;
         @memcpy(self.command_buf[0..config.command.len], config.command);
@@ -129,8 +140,11 @@ pub const AppShare = struct {
             }
         };
 
+        // Generate session ID early — used for socket name and signaling
+        self.session_id = generateRoomId();
+
         // Start compositor
-        self.compositor = Compositor.init(config.width, config.height, config.fps, config.render_device) catch |err| {
+        self.compositor = Compositor.init(config.width, config.height, config.fps, config.render_device, &self.session_id) catch |err| {
             log.err("compositor init failed: {}", .{err});
             return error.CompositorFailed;
         };
@@ -140,7 +154,7 @@ pub const AppShare = struct {
         self.compositor.frame_callback = &frameCallback;
         self.compositor.frame_userdata = @ptrCast(self);
 
-        // Register resize callback (fired when app changes its own window size)
+        // Register resize callback (debounced — GTK apps commit multiple sizes on launch)
         self.compositor.resize_callback = &compositorResizeCallback;
         self.compositor.resize_userdata = @ptrCast(self);
 
@@ -176,8 +190,6 @@ pub const AppShare = struct {
             self.room_id_buf = generateRoomId();
             self.room_id = &self.room_id_buf;
         }
-
-        self.session_id = generateRoomId();
 
         // Build URLs
         const base_url = config.base_url;
@@ -342,7 +354,10 @@ pub const AppShare = struct {
                 self.sendAppMeta();
             }
 
-            // Check for pending resize
+            // Tick resize debounce — fires when app size has settled
+            _ = self.resize_debounce.tick();
+
+            // Check for pending resize (written by debounce callback)
             const resize_val = self.pending_resize.swap(0, .acquire);
             if (resize_val != 0) {
                 const new_w: u32 = unpackWidth(resize_val);
@@ -572,12 +587,18 @@ fn appResizeCallback(session: *BroadcastSession, sender_peer_id: *const [PEER_ID
     self.pending_resize.store(packResize(width, height), .release);
 }
 
-/// Called by the compositor when the app changes its own window size.
-/// Fires synchronously inside compositor.dispatch() on the encode loop thread.
+/// Raw compositor resize — triggers the debounce.
 fn compositorResizeCallback(width: u32, height: u32, userdata: ?*anyopaque) void {
     const self: *AppShare = @ptrCast(@alignCast(userdata));
-    log.info("app resized to {d}x{d} — triggering encoder rebuild", .{ width, height });
-    self.pending_resize.store(packResize(@intCast(width), @intCast(height)), .release);
+    log.info("app resized to {d}x{d} — debouncing", .{ width, height });
+    self.resize_debounce.trigger(.{ .w = width, .h = height });
+}
+
+/// Debounce output — fires after the app's size has settled.
+fn debouncedResizeCallback(args: ResizeArgs, ctx: ?*anyopaque) void {
+    const self: *AppShare = @ptrCast(@alignCast(ctx));
+    log.info("resize settled: {d}x{d} — triggering encoder rebuild", .{ args.w, args.h });
+    self.pending_resize.store(packResize(@intCast(args.w), @intCast(args.h)), .release);
 }
 
 /// Called by the compositor when the app's toplevel surface is mapped (ready for input).

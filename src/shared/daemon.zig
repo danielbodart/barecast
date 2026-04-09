@@ -277,14 +277,17 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
     };
 
     // Detect render device for the requested GPU vendor
-    const gpu = req.gpu;
+    const detected = gpu_detect.detectGpus();
+    const target_vendor: gpu_detect.GpuVendor = switch (req.gpu) {
+        .nvidia => .nvidia,
+        .intel => .intel,
+        .auto => if (detected.best()) |b| b.vendor else .intel,
+    };
+    const gpu: control.GpuBackend = switch (target_vendor) {
+        .nvidia => .nvidia,
+        .intel, .amd, .unknown => .intel, // AMD/unknown use VA-API like Intel
+    };
     const render_device: [*:0]const u8 = blk: {
-        const detected = gpu_detect.detectGpus();
-        const target_vendor: gpu_detect.GpuVendor = switch (gpu) {
-            .nvidia => .nvidia,
-            .intel => .intel,
-            .auto => if (detected.best()) |b| b.vendor else .intel,
-        };
         for (detected.candidates[0..detected.count]) |*c2| {
             if (c2.vendor == target_vendor) break :blk c2.renderPath();
         }

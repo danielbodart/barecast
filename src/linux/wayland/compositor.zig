@@ -84,10 +84,20 @@ pub const Compositor = struct {
     map_callback: ?*const fn (surface: *anyopaque, geo_x: i32, geo_y: i32, userdata: ?*anyopaque) void = null,
     map_userdata: ?*anyopaque = null,
 
-    pub fn init(width: u32, height: u32, fps: u32, render_device: ?[*:0]const u8) !*Compositor {
+    pub fn init(width: u32, height: u32, fps: u32, render_device: ?[*:0]const u8, session_id: *const [16]u8) !*Compositor {
         const allocator = std.heap.c_allocator;
         const self = try allocator.create(Compositor);
         errdefer allocator.destroy(self);
+
+        // Zero callback fields — c_allocator doesn't zero-init
+        self.frame_callback = null;
+        self.frame_userdata = null;
+        self.resize_callback = null;
+        self.resize_userdata = null;
+        self.map_callback = null;
+        self.map_userdata = null;
+        self.toplevel_surface = null;
+        self.last_surface_seq = 0;
 
         c.wlr_log_init(c.WLR_INFO, null);
 
@@ -229,16 +239,15 @@ pub const Compositor = struct {
             c.wlr_output_state_finish(&out_state);
         }
 
-        // Create Wayland socket with explicit name (prevents other apps from
-        // discovering it — only our child process has WAYLAND_DISPLAY set to this)
-        const socket_name = "zerocast-0";
-        if (c.wl_display_add_socket(self.display, socket_name) != 0) {
+        // Create Wayland socket named by session ID (unique per session,
+        // only our child process has WAYLAND_DISPLAY set to this)
+        const socket_name = std.fmt.bufPrint(&self.socket_buf, "zerocast-{s}", .{session_id}) catch unreachable;
+        self.socket_buf[socket_name.len] = 0;
+        self.socket_len = @intCast(socket_name.len);
+        if (c.wl_display_add_socket(self.display, @ptrCast(self.socket_buf[0..socket_name.len :0])) != 0) {
             log.err("failed to create Wayland socket '{s}'", .{socket_name});
             return error.CompositorInitFailed;
         }
-        @memcpy(self.socket_buf[0..socket_name.len], socket_name);
-        self.socket_buf[socket_name.len] = 0;
-        self.socket_len = socket_name.len;
 
         log.info("compositor ready: {d}x{d} on {s}", .{ width, height, socket_name });
 
@@ -384,7 +393,7 @@ pub const Compositor = struct {
         last_committed_w = w;
         last_committed_h = h;
 
-        // Resize the compositor output to match the app
+        // Resize the compositor output immediately so frames render correctly
         if (w != self.width or h != self.height) {
             log.info("app resized to {d}x{d} — resizing compositor", .{ w, h });
             self.width = w;

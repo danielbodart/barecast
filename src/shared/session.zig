@@ -264,7 +264,7 @@ pub const Peer = struct {
                 if (session.input_handler) |handler| handler.moveMouse(m.x, m.y);
             },
             .mouse_down => |m| {
-                log.info("DC mouse_down ({d},{d}) btn={d} handler={}", .{ m.x, m.y, @intFromEnum(m.button), session.input_handler != null });
+                log.debug("DC mouse_down ({d},{d}) btn={d} handler={}", .{ m.x, m.y, @intFromEnum(m.button), session.input_handler != null });
                 reg.updateCursor(peer_id, m.x, m.y);
                 if (session.input_handler) |handler| {
                     handler.moveMouse(m.x, m.y);
@@ -272,7 +272,7 @@ pub const Peer = struct {
                 }
             },
             .mouse_up => |m| {
-                log.info("DC mouse_up ({d},{d}) btn={d}", .{ m.x, m.y, @intFromEnum(m.button) });
+                log.debug("DC mouse_up ({d},{d}) btn={d}", .{ m.x, m.y, @intFromEnum(m.button) });
                 reg.updateCursor(peer_id, m.x, m.y);
                 if (session.input_handler) |handler| {
                     handler.moveMouse(m.x, m.y);

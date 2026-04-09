@@ -85,19 +85,20 @@ Viewer-initiated resize is disabled. The app's native size is authoritative and 
 
 ---
 
-## Gap 5: Minor Items (Low Priority)
+## Gap 5: Minor Items — DONE (2026-04-08)
 
-### Wayland Socket Naming
-Socket name hardcoded to `"zerocast-0"`. Second concurrent session fails. Fix: use `"zerocast-{pid}"` or `"zerocast-{session_id_prefix}"`.
+### Wayland Socket Naming — DONE
+Socket name now uses PID: `"zerocast-{pid}"`. Concurrent sessions get unique sockets.
 
-### NVENC Code Deduplication
-`wayland/nvenc.zig` is a copy of `x11/nvenc.zig`. Any NVENC changes (CQP, buffer pool) must be made in both. Extract to a shared module.
+### NVENC Code Deduplication — N/A
+X11 pipeline removed (2026-04-07). Only one NVENC implementation remains (`wayland/nvenc.zig`).
 
-### Capture Timestamp
-X11 gets `ulTimestampUs` from NvFBC for abs-capture-time RTP extension. Wayland has no capture timestamp from wlroots. Use `clock_gettime(CLOCK_MONOTONIC)` at frame callback time as approximation.
+### Capture Timestamp — Already Done
+NTP capture timestamp (`clock_gettime` → NTP epoch UQ32.32) implemented in `encoder.zig`, passed through to `session.sendFrame()` for abs-capture-time RTP extension.
 
-### NVENC Buffer Pool (Ghost Frames)
-Single-buffer bug affects both X11 and Wayland NVENC paths. Fix: pool of N surfaces. Not Wayland-specific — tracked separately.
+### NVENC Buffer Pool (Ghost Frames) — N/A
+Single-buffer design is correct. The entire encode path (prepare → encode → send → unlock) runs synchronously on the compositor thread with no overlap between frames. No ghost frames observed or possible with this architecture.
 
-### Debug Logging Cleanup
-`session.zig` has info-level DC mouse_down/mouse_up logging and `input.ts` has console.log for clicks. Remove or demote to debug before release.
+### Debug Logging Cleanup — DONE
+- `session.zig`: mouse_down/mouse_up demoted from `info` to `debug`
+- `input.ts`: removed unconditional console.log for mouse events (kept warn for out-of-bounds clicks)

@@ -354,6 +354,10 @@ if (!roomId) {
             const vw = video.videoWidth;
             const vh = video.videoHeight;
 
+            console.log(`[resize] stream native=${vw}x${vh}`);
+            console.log(`[resize] before: inner=${window.innerWidth}x${window.innerHeight} outer=${window.outerWidth}x${window.outerHeight}`);
+            console.log(`[resize] video element: ${video.clientWidth}x${video.clientHeight} boundingRect=${JSON.stringify(video.getBoundingClientRect())}`);
+
             // Set CSS custom properties for zoom mode (1:1 native pixels)
             document.documentElement.style.setProperty("--video-w", vw + "px");
             document.documentElement.style.setProperty("--video-h", vh + "px");
@@ -375,7 +379,26 @@ if (!roomId) {
                 fitH = maxH;
                 fitW = Math.round((maxH - chromH) * ratio) + chromW;
             }
+            console.log(`[resize] chrome=${chromW}x${chromH} screen=${maxW}x${maxH} target=${fitW}x${fitH}`);
             window.resizeTo(fitW, fitH);
+
+            // Log what actually happened after resizeTo
+            requestAnimationFrame(() => {
+                console.log(`[resize] after resizeTo: inner=${window.innerWidth}x${window.innerHeight} outer=${window.outerWidth}x${window.outerHeight}`);
+                console.log(`[resize] video element: ${video.clientWidth}x${video.clientHeight}`);
+                const rect = video.getBoundingClientRect();
+                const videoAspect = vw / vh;
+                const elemAspect = rect.width / rect.height;
+                let actualW: number, actualH: number;
+                if (elemAspect > videoAspect) {
+                    actualH = rect.height;
+                    actualW = actualH * videoAspect;
+                } else {
+                    actualW = rect.width;
+                    actualH = actualW / videoAspect;
+                }
+                console.log(`[resize] rendered video area: ${Math.round(actualW)}x${Math.round(actualH)} (letterbox: elem=${Math.round(rect.width)}x${Math.round(rect.height)})`);
+            });
         }
     });
 

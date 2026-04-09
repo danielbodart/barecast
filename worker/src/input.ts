@@ -222,7 +222,6 @@ export class InputController {
             return;
         }
 
-        console.log(`[input] mousedown client=(${e.clientX},${e.clientY}) native=(${pt.x},${pt.y}) btn=${e.button} mode=${this.mode}`);
 
         if (this.mode === "draw") {
             if (e.button === 0) {
@@ -246,9 +245,7 @@ export class InputController {
     private onMouseUp(e: MouseEvent): void {
         const pt = this.mapCoords(e.clientX, e.clientY);
 
-        if (pt) {
-            console.log(`[input] mouseup client=(${e.clientX},${e.clientY}) native=(${pt.x},${pt.y}) btn=${e.button} mode=${this.mode}`);
-        }
+        if (!pt) return;
 
         if (this.mode === "draw") {
             if (e.button === 0 && this.drawing) {
@@ -264,7 +261,7 @@ export class InputController {
                     this.overlay?.handleLocalDraw("undo");
                 }
             }
-        } else if (pt) {
+        } else {
             this.sendMouseButton(MSG_MOUSE_UP, pt.x, pt.y, e.button);
         }
     }

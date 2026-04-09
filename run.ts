@@ -189,6 +189,10 @@ export async function test() {
     await $`zig build test`;
 }
 
+async function compositorTest() {
+    await $`zig build compositor-test -- 2>&1`;
+}
+
 export async function lint() {
     await $`zig build analyze`;
     await $`shellcheck bootstrap.sh`;
@@ -485,6 +489,7 @@ async function printVersion() {
 
 const commands: Record<string, Function> = {
     dev, build, clean, setup, test, lint, dist, ci, integration, install, version: printVersion,
+    "compositor-test": compositorTest,
     "rebuild-libs": rebuildLibs, "hevc-validate": hevcValidate,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,

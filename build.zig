@@ -86,6 +86,21 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const clock_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const debounce_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/debounce.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "clock", .module = clock_mod },
+        },
+    });
+
     const control_mod = b.createModule(.{
         .root_source_file = b.path("src/shared/control.zig"),
         .target = target,
@@ -115,6 +130,8 @@ pub fn build(b: *std.Build) void {
         .encoder = encoder_mod,
         .codec = codec_mod,
         .terminal_share = terminal_share_mod,
+        .debounce = debounce_mod,
+        .clock = clock_mod,
         .control = control_mod,
     };
 
@@ -189,6 +206,7 @@ pub fn build(b: *std.Build) void {
         .{ "src/shared/ivf.zig", false, &[_]std.Build.Module.Import{} },
         .{ "src/shared/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
         .{ "src/shared/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "src/shared/clock.zig", false, &[_]std.Build.Module.Import{} },
     }) |entry| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{
@@ -199,6 +217,21 @@ pub fn build(b: *std.Build) void {
             }),
         });
         test_step.dependOn(&b.addRunArtifact(t).step);
+    }
+
+    // Debounce tests (depends on clock module)
+    {
+        const debounce_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/shared/debounce.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "clock", .module = clock_mod },
+                },
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(debounce_test).step);
     }
 
     // Platform-specific pure tests
@@ -360,6 +393,27 @@ pub fn build(b: *std.Build) void {
     const prop_step = b.step("prop-test", "Run property-based tests");
     prop_step.dependOn(&run_prop.step);
     test_step.dependOn(&run_prop.step);
+
+    // ── Compositor integration tests (Linux, requires GPU) ────────────────
+    if (builtin.os.tag == .linux) {
+        if (platform_mods.compositor) |compositor_mod| {
+            const compositor_test = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/linux/wayland/compositor_test.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                    .imports = &.{
+                        .{ .name = "compositor", .module = compositor_mod },
+                        .{ .name = "debounce", .module = debounce_mod },
+                        .{ .name = "clock", .module = clock_mod },
+                    },
+                }),
+            });
+            const compositor_test_step = b.step("compositor-test", "Run compositor integration tests (requires GPU)");
+            compositor_test_step.dependOn(&b.addRunArtifact(compositor_test).step);
+        }
+    }
 
     // ── Static analysis (zwanzig) ────────────────────────────────────────
     const analyze_step = b.step("analyze", "Run zwanzig static analyzer on src/");

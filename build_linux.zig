@@ -136,6 +136,8 @@ pub fn buildPlatform(
             .{ .name = "viewer_state", .module = shared.viewer_state },
             .{ .name = "session_recorder", .module = shared.session_recorder },
             .{ .name = "wayland_input", .module = wayland_input_mod },
+            .{ .name = "debounce", .module = shared.debounce },
+            .{ .name = "clock", .module = shared.clock },
         },
     });
 
@@ -154,6 +156,7 @@ pub fn buildPlatform(
     return .{
         .app_share = wayland_app_share_mod,
         .gpu_detect = gpu_detect_mod,
+        .compositor = compositor_mod,
     };
 }
 
