@@ -320,6 +320,7 @@ if (!roomId) {
             document.body.classList.remove("zoom");
             toggle.textContent = "1:1";
         }
+        inputCtrl?.setZoomMode(isZoom);
     });
 
     // ── Mode toggle ───────────────────────────────────────────────────

@@ -80,7 +80,8 @@ pub const AppShare = struct {
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
-    pending_resize_slot: std.atomic.Value(u8),
+    committed_width: std.atomic.Value(u32),
+    committed_height: std.atomic.Value(u32),
     should_stop: std.atomic.Value(bool),
     start_time: std.time.Timer,
     last_fps: u32,
@@ -101,7 +102,8 @@ pub const AppShare = struct {
 
     pub fn initInPlace(self: *AppShare, config: AppShareConfig) !void {
         self.pending_resize = std.atomic.Value(u32).init(0);
-        self.pending_resize_slot = std.atomic.Value(u8).init(0xFF);
+        self.committed_width = std.atomic.Value(u32).init(config.width);
+        self.committed_height = std.atomic.Value(u32).init(config.height);
         self.should_stop = std.atomic.Value(bool).init(false);
         self.config = config;
         self.app_pid = null;
@@ -243,6 +245,7 @@ pub const AppShare = struct {
         self.session.viewer_registry = &self.viewer_registry;
         self.session.meta_callback = appMetaCallback;
         self.session.resize_callback = appResizeCallback;
+        self.session.host_resize_callback = hostResizeDcOpenCallback;
 
         // Input injection (virtual keyboard + pointer via wlr_seat)
         if (WaylandInput.init(@ptrCast(self.compositor.seat), config.width, config.height)) |input| {
@@ -363,7 +366,9 @@ pub const AppShare = struct {
                 const new_w: u32 = unpackWidth(resize_val);
                 const new_h: u32 = unpackHeight(resize_val);
                 self.handleResize(new_w, new_h);
-                self.session.sendHostResizeToOthersSlot(self.pending_resize_slot.load(.acquire), @intCast(new_w), @intCast(new_h));
+                // Echo actual committed size to ALL peers — including requester
+                // so it can confirm the resize and re-arm its ResizeObserver.
+                self.session.sendHostResizeToAll(@intCast(new_w), @intCast(new_h));
                 continue;
             }
 
@@ -486,6 +491,8 @@ pub const AppShare = struct {
             self.encoder.recorder = rec;
             rec.updateResolution(new_w, new_h);
         }
+        self.committed_width.store(new_w, .release);
+        self.committed_height.store(new_h, .release);
         self.sendAppMeta();
     }
 
@@ -524,13 +531,18 @@ pub const AppShare = struct {
 
     fn sendAppMeta(self: *AppShare) void {
         const cmd = self.command_buf[0..self.command_len];
-        var buf: [512]u8 = undefined;
-        const meta = std.fmt.bufPrint(&buf, "{{\"type\":\"set-meta\",\"title\":\"{s}\",\"res\":\"{d}x{d}\",\"fps\":{d},\"bitrate\":{d}}}", .{
+        const con = self.compositor.getConstraints();
+        var buf: [640]u8 = undefined;
+        const meta = std.fmt.bufPrint(&buf, "{{\"type\":\"set-meta\",\"title\":\"{s}\",\"res\":\"{d}x{d}\",\"fps\":{d},\"bitrate\":{d},\"min_w\":{d},\"max_w\":{d},\"min_h\":{d},\"max_h\":{d}}}", .{
             cmd,
             self.encoder.width,
             self.encoder.height,
             self.last_fps,
             self.last_bitrate,
+            con.min_w,
+            con.max_w,
+            con.min_h,
+            con.max_h,
         }) catch return;
         self.session.sendMeta(meta);
     }
@@ -573,17 +585,21 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
     self.has_new_frame = frame.is_new;
 }
 
+fn hostResizeDcOpenCallback(session: *BroadcastSession) BroadcastSession.HostDims {
+    const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
+    return .{ .w = @intCast(self.committed_width.load(.acquire)), .h = @intCast(self.committed_height.load(.acquire)) };
+}
+
 fn appMetaCallback(session: *BroadcastSession) void {
     const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     self.sendAppMeta();
 }
 
-fn appResizeCallback(session: *BroadcastSession, sender_peer_id: *const [PEER_ID_LEN]u8, width: u16, height: u16) void {
+fn appResizeCallback(session: *BroadcastSession, _: *const [PEER_ID_LEN]u8, width: u16, height: u16) void {
     const self: *AppShare = @alignCast(@fieldParentPtr("session", session));
     if (!isValidResize(width, height)) return;
     if (@as(u32, width) == self.compositor.width and @as(u32, height) == self.compositor.height) return;
     log.info("viewer resize requested: {d}x{d}", .{ width, height });
-    self.pending_resize_slot.store(session.peerSlotIndex(sender_peer_id), .release);
     self.pending_resize.store(packResize(width, height), .release);
 }
 

@@ -304,6 +304,21 @@ pub const Compositor = struct {
         return .{ .x = 0, .y = 0 };
     }
 
+    /// Get the app toplevel's size constraints from xdg-shell.
+    /// Zero means unconstrained on that axis.
+    pub fn getConstraints(self: *const Compositor) struct { min_w: u32, min_h: u32, max_w: u32, max_h: u32 } {
+        if (self.toplevel) |tl| {
+            const s = tl.current;
+            return .{
+                .min_w = if (s.min_width > 0) @intCast(s.min_width) else 0,
+                .min_h = if (s.min_height > 0) @intCast(s.min_height) else 0,
+                .max_w = if (s.max_width > 0) @intCast(s.max_width) else 0,
+                .max_h = if (s.max_height > 0) @intCast(s.max_height) else 0,
+            };
+        }
+        return .{ .min_w = 0, .min_h = 0, .max_w = 0, .max_h = 0 };
+    }
+
     /// Get the Wayland socket name for client connections.
     pub fn socketName(self: *const Compositor) [*:0]const u8 {
         return @ptrCast(self.socket_buf[0..self.socket_len]);

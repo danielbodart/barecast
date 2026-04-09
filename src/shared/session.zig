@@ -228,7 +228,7 @@ pub const Peer = struct {
         self.force_keyframe.store(true, .release);
     }
 
-    /// Data channel opened — send color assignment to viewer.
+    /// Data channel opened — send color assignment and current size to viewer.
     fn dcOpenCallback(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = ptrToPeer(ptr) orelse return;
         const session = self.session;
@@ -240,6 +240,13 @@ pub const Peer = struct {
                 const msg = input_protocol.encodeColorAssign(color_index);
                 _ = c.rtcSendMessage(self.dc, @ptrCast(&msg), @intCast(msg.len));
             }
+        }
+
+        // Send current dimensions so the viewer can enable its ResizeObserver
+        if (session.host_resize_callback) |cb| {
+            const dims = cb(session);
+            const resize_msg = input_protocol.encodeHostResize(dims.w, dims.h);
+            _ = c.rtcSendMessage(self.dc, @ptrCast(&resize_msg), @intCast(resize_msg.len));
         }
     }
 
@@ -444,6 +451,9 @@ pub const BroadcastSession = struct {
     frames_sent: std.atomic.Value(u64),
     meta_callback: ?*const fn (*BroadcastSession) void,
     resize_callback: ?*const fn (*BroadcastSession, *const [PEER_ID_LEN]u8, u16, u16) void,
+    host_resize_callback: ?*const fn (*BroadcastSession) HostDims,
+
+    pub const HostDims = struct { w: u16, h: u16 };
 
     /// Create signaling WebSocket and initialize empty peer array.
     pub fn init(signaling_url: []const u8, room_id: []const u8, share_id: []const u8, share_type: []const u8, mode: SessionMode) !BroadcastSession {
@@ -483,6 +493,7 @@ pub const BroadcastSession = struct {
         session.frames_sent = std.atomic.Value(u64).init(0);
         session.meta_callback = null;
         session.resize_callback = null;
+        session.host_resize_callback = null;
 
         // Initialize all peer slots as empty
         for (&session.peers) |*peer| {
@@ -604,6 +615,19 @@ pub const BroadcastSession = struct {
         defer self.peers_mutex.unlock();
         for (&self.peers, 0..) |*peer, i| {
             if (i == sender_slot) continue;
+            if (peer.state.load(.acquire) != .connected) continue;
+            if (peer.dc < 0) continue;
+            _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));
+        }
+    }
+
+    /// Broadcast host_resize to ALL connected peers (including requester for echo/ack).
+    pub fn sendHostResizeToAll(self: *BroadcastSession, width: u16, height: u16) void {
+        const msg = input_protocol.encodeHostResize(width, height);
+
+        self.peers_mutex.lock();
+        defer self.peers_mutex.unlock();
+        for (&self.peers) |*peer| {
             if (peer.state.load(.acquire) != .connected) continue;
             if (peer.dc < 0) continue;
             _ = c.rtcSendMessage(peer.dc, @ptrCast(&msg), @intCast(msg.len));

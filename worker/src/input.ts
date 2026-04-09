@@ -32,6 +32,13 @@ const MSG_COLOR_ASSIGN = 0xff;
 // Long-press threshold for right-click clear (ms)
 const LONG_PRESS_MS = 500;
 
+// Resize state machine: gates when the viewer can send resize requests.
+const enum ResizeState {
+    WaitingForSync,  // before first MSG_HOST_RESIZE — observer disabled
+    Synced,          // ready to send resize requests
+    ResizePending,   // sent a resize, waiting for server echo
+}
+
 export class InputController {
     private dc: RTCDataChannel;
     private video: HTMLVideoElement;
@@ -43,8 +50,10 @@ export class InputController {
     private onColorAssign: ((index: number) => void) | null = null;
     private overlay: OverlayRenderer | null = null;
     private resizeObserver: ResizeObserver | null = null;
-    private resizeTimer: ReturnType<typeof setTimeout> | null = null;
     private hostResizeTimer: ReturnType<typeof setTimeout> | null = null;
+    private resizeState: ResizeState = ResizeState.WaitingForSync;
+    private suppressNextResize = false;
+    private _isZoom = false;
 
     // Native video resolution (for coordinate mapping)
     private nativeW = 0;
@@ -69,10 +78,6 @@ export class InputController {
         dc.onmessage = (e) => this.handleHostMessage(e);
 
         this.bindEvents();
-
-        // Viewer-initiated resize disabled: the app's native size is authoritative.
-        // The viewer window adjusts to match the stream, not the other way around.
-        this.resizeObserver = null;
     }
 
     get currentMode(): ViewerMode {
@@ -101,14 +106,32 @@ export class InputController {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
         }
-        if (this.resizeTimer) {
-            clearTimeout(this.resizeTimer);
-            this.resizeTimer = null;
-        }
         if (this.hostResizeTimer) {
             clearTimeout(this.hostResizeTimer);
             this.hostResizeTimer = null;
         }
+    }
+
+    setZoomMode(zoom: boolean): void {
+        this._isZoom = zoom;
+    }
+
+    private enableResizeObserver(): void {
+        if (this.resizeObserver) return; // already enabled
+        this.resizeObserver = new ResizeObserver(() => {
+            if (this.suppressNextResize) {
+                this.suppressNextResize = false;
+                return;
+            }
+            if (this.resizeState !== ResizeState.Synced) return;
+            if (this._isZoom) return;
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            if (w < 100 || h < 100) return;
+            this.resizeState = ResizeState.ResizePending;
+            this.sendResize(w, h);
+        });
+        this.resizeObserver.observe(document.documentElement);
     }
 
     // ── Coordinate mapping ──────────────────────────────────────────────
@@ -319,6 +342,11 @@ export class InputController {
             const w = view.getUint16(1, true);
             const h = view.getUint16(3, true);
             this.handleHostResize(w, h);
+            // Drive resize state machine
+            if (this.resizeState === ResizeState.WaitingForSync) {
+                this.enableResizeObserver();
+            }
+            this.resizeState = ResizeState.Synced;
         } else if (data[0] === MSG_VIEWER_LEFT && data.length >= 2) {
             this.overlay?.removeViewer(data[1]);
         }
@@ -384,6 +412,7 @@ export class InputController {
                 fitH = maxH;
                 fitW = Math.round((maxH - chromH) * ratio) + chromW;
             }
+            this.suppressNextResize = true;
             window.resizeTo(fitW, fitH);
         }, 250);
     }
