@@ -120,6 +120,21 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // SVT-AV1 software encoder backend. Built as a static library by the
+    // rebuild-libs step; linked into any artifact that imports svt_backend.
+    const svt_backend_mod = b.createModule(.{
+        .root_source_file = b.path("packages/zerocast/src/shared/svt_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "encoder", .module = encoder_mod },
+            .{ .name = "codec", .module = codec_mod },
+        },
+    });
+    svt_backend_mod.addIncludePath(b.path("packages/svt-av1/Source/API"));
+    svt_backend_mod.addObjectFile(b.path("packages/svt-av1/Bin/Release/libSvtAv1Enc.a"));
+
     const shared = shared_defs.SharedModules{
         .build_options = build_options_mod,
         .input_protocol = input_protocol_mod,
@@ -313,6 +328,26 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
     }
+
+    // SVT-AV1 software backend smoke test — proves the library links and
+    // the init/deinit handle lifecycle succeeds on this host.
+    const svt_backend_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/zerocast/src/shared/svt_backend.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "encoder", .module = encoder_mod },
+                .{ .name = "codec", .module = codec_mod },
+            },
+        }),
+    });
+    svt_backend_tests.root_module.addIncludePath(b.path("packages/svt-av1/Source/API"));
+    svt_backend_tests.root_module.addObjectFile(b.path("packages/svt-av1/Bin/Release/libSvtAv1Enc.a"));
+    svt_backend_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
+    shared_defs.linkDatachannel(b, svt_backend_tests);
+    test_step.dependOn(&b.addRunArtifact(svt_backend_tests).step);
 
     // Encoder backend contract tests (cross-backend acceptance suite)
     const encoder_contract_tests = b.addTest(.{
