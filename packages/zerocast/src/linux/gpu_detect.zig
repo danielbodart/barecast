@@ -36,17 +36,16 @@ pub const GpuCandidate = struct {
     render_node: [32]u8,
     render_node_len: u8,
     vendor: GpuVendor,
-    best_codec: ?Codec, // null = no encode support detected
+    best_codec: ?Codec, // null = no hardware AV1 encode; caller routes to SVT-AV1
     has_av1: bool,
-    has_hevc: bool,
 
     pub fn renderPath(self: *const GpuCandidate) [*:0]const u8 {
         return @ptrCast(self.render_node[0..self.render_node_len]);
     }
 
-    /// Score for ranking: AV1 > HEVC > nothing, then vendor priority.
+    /// Score for ranking: hardware AV1 beats no-encode; vendor priority breaks ties.
     fn score(self: *const GpuCandidate) u16 {
-        const codec_score: u16 = if (self.has_av1) 200 else if (self.has_hevc) 100 else 0;
+        const codec_score: u16 = if (self.has_av1) 200 else 0;
         return codec_score + self.vendor.priority();
     }
 };
@@ -65,8 +64,9 @@ const MAX_GPUS = 8;
 
 // ── Main entry point ────────────────────────────────────────────────────
 
-/// Detect all GPUs with hardware encode capability, sorted best-first.
-/// AV1 beats HEVC; among equal codecs, NVIDIA > Intel > AMD.
+/// Detect all GPUs with hardware AV1 encode capability, sorted best-first.
+/// Vendor priority breaks ties: NVIDIA > Intel > AMD. Hosts with no AV1
+/// hardware return best_codec=null; the caller routes them to SVT-AV1.
 pub fn detectGpus() DetectResult {
     var result = DetectResult{ .candidates = undefined, .count = 0 };
 
@@ -83,7 +83,6 @@ pub fn detectGpus() DetectResult {
             .vendor = node.vendor,
             .best_codec = null,
             .has_av1 = false,
-            .has_hevc = false,
         };
         @memcpy(candidate.render_node[0..node.path_len], node.path[0..node.path_len]);
         candidate.render_node[node.path_len] = 0; // null terminate
@@ -97,8 +96,6 @@ pub fn detectGpus() DetectResult {
 
         if (candidate.has_av1) {
             candidate.best_codec = .av1;
-        } else if (candidate.has_hevc) {
-            candidate.best_codec = .hevc;
         }
 
         const vendor_name = node.vendor.name();
@@ -284,7 +281,6 @@ fn probeNvenc(candidate: *GpuCandidate) void {
 
     for (guids[0..returned]) |guid| {
         if (guidEql(guid, nvenc.codec_av1_guid)) candidate.has_av1 = true;
-        if (guidEql(guid, nvenc.codec_hevc_guid)) candidate.has_hevc = true;
     }
 }
 
@@ -327,20 +323,13 @@ fn probeVaapi(candidate: *GpuCandidate) void {
     if (vaInitialize(display, &major, &minor) != VA_STATUS_SUCCESS) return;
     defer _ = vaTerminate(display);
 
-    // VA-API profile constants
+    // VA-API profile constants — AV1 only per R5
     const VAProfileAV1Profile0: c_int = 32;
-    const VAProfileHEVCMain: c_int = 17;
     const VAEntrypointEncSlice: c_int = 6;
     const VAEntrypointEncSliceLP: c_int = 8;
 
-    // Probe AV1
     if (hasEncodeEntrypoint(vaQueryConfigEntrypoints, display, VAProfileAV1Profile0, VAEntrypointEncSlice, VAEntrypointEncSliceLP)) {
         candidate.has_av1 = true;
-    }
-
-    // Probe HEVC
-    if (hasEncodeEntrypoint(vaQueryConfigEntrypoints, display, VAProfileHEVCMain, VAEntrypointEncSlice, VAEntrypointEncSliceLP)) {
-        candidate.has_hevc = true;
     }
 }
 
@@ -384,44 +373,35 @@ fn sortCandidates(items: []GpuCandidate) void {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-fn testCandidate(vendor: GpuVendor, av1: bool, hevc: bool) GpuCandidate {
+fn testCandidate(vendor: GpuVendor, av1: bool) GpuCandidate {
     return .{
         .render_node = [_]u8{0} ** 32,
         .render_node_len = 0,
         .vendor = vendor,
-        .best_codec = if (av1) .av1 else if (hevc) .hevc else null,
+        .best_codec = if (av1) .av1 else null,
         .has_av1 = av1,
-        .has_hevc = hevc,
     };
 }
 
-test "score: AV1 > HEVC > none" {
-    const av1 = testCandidate(.nvidia, true, true);
-    const hevc = testCandidate(.nvidia, false, true);
-    const none = testCandidate(.nvidia, false, false);
-    try std.testing.expect(av1.score() > hevc.score());
-    try std.testing.expect(hevc.score() > none.score());
+test "score: hardware AV1 beats no-encode" {
+    const av1 = testCandidate(.nvidia, true);
+    const none = testCandidate(.nvidia, false);
+    try std.testing.expect(av1.score() > none.score());
 }
 
 test "score: vendor priority breaks ties" {
-    const nvidia_hevc = testCandidate(.nvidia, false, true);
-    const intel_hevc = testCandidate(.intel, false, true);
-    const amd_hevc = testCandidate(.amd, false, true);
-    try std.testing.expect(nvidia_hevc.score() > intel_hevc.score());
-    try std.testing.expect(intel_hevc.score() > amd_hevc.score());
-}
-
-test "score: AV1 on weaker vendor beats HEVC on stronger" {
-    const amd_av1 = testCandidate(.amd, true, true);
-    const nvidia_hevc = testCandidate(.nvidia, false, true);
-    try std.testing.expect(amd_av1.score() > nvidia_hevc.score());
+    const nvidia = testCandidate(.nvidia, true);
+    const intel = testCandidate(.intel, true);
+    const amd = testCandidate(.amd, true);
+    try std.testing.expect(nvidia.score() > intel.score());
+    try std.testing.expect(intel.score() > amd.score());
 }
 
 test "sortCandidates: best first" {
     var items = [_]GpuCandidate{
-        testCandidate(.intel, false, true), // HEVC intel = 102
-        testCandidate(.nvidia, true, true), // AV1 nvidia = 203
-        testCandidate(.amd, false, false), // none amd = 1
+        testCandidate(.intel, false), // no-encode intel = 2
+        testCandidate(.nvidia, true), // AV1 nvidia = 203
+        testCandidate(.amd, false), // no-encode amd = 1
     };
     sortCandidates(&items);
     try std.testing.expectEqual(GpuVendor.nvidia, items[0].vendor);
@@ -430,7 +410,7 @@ test "sortCandidates: best first" {
 }
 
 test "sortCandidates: single element" {
-    var single = [_]GpuCandidate{testCandidate(.nvidia, true, true)};
+    var single = [_]GpuCandidate{testCandidate(.nvidia, true)};
     sortCandidates(&single);
     try std.testing.expectEqual(GpuVendor.nvidia, single[0].vendor);
 }

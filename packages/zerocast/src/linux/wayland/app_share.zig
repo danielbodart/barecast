@@ -8,8 +8,6 @@ const CapturedFrame = @import("compositor").CapturedFrame;
 const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const EncodeBackend = @import("encoder").EncodeBackend;
-const VaapiEncoderBackend = @import("vaapi_encoder_backend").EncoderBackend;
-const DmaBufAttrs = @import("vaapi_encoder_backend").DmaBufAttrs;
 const NvencBackend = @import("nvenc_backend").NvencBackend;
 const session_mod = @import("session");
 const BroadcastSession = session_mod.BroadcastSession;
@@ -35,25 +33,24 @@ pub const AppShareConfig = struct {
     base_url: []const u8 = "https://zerocast.bodar.com",
     record_dir: ?[]const u8 = null,
     render_device: [*:0]const u8 = "/dev/dri/renderD128",
-    gpu: GpuBackend = .intel,
+    gpu: GpuBackend = .auto,
     qp: u32 = 20,
 };
 
-/// Encoder backend — either VA-API (Intel/AMD) or NVENC (NVIDIA).
+/// Encoder backend. Currently NVENC only. A software SVT-AV1 variant
+/// lands with T-018 (backend selector wiring); the union shape is kept
+/// so the second variant slots in without disturbing call sites.
 const BackendState = union(enum) {
-    vaapi: VaapiEncoderBackend,
     nvenc: NvencBackend,
 
     fn encodeBackend(self: *BackendState) EncodeBackend {
         return switch (self.*) {
-            .vaapi => |*v| v.backend(),
             .nvenc => |*n| n.backend(),
         };
     }
 
     fn deinitInner(self: *BackendState) void {
         switch (self.*) {
-            .vaapi => |*v| v.vaapi.deinit(),
             .nvenc => |*n| {
                 n.nvenc.deinit();
                 n.cuda_ctx.deinit();
@@ -93,7 +90,6 @@ pub const AppShare = struct {
     // Frame state: written by compositor frame callback, read by encode loop.
     // NOT a race: compositor.dispatch() is called from the encode loop thread,
     // and the frame callback fires synchronously inside dispatch().
-    latest_dmabuf: ?DmaBufAttrs,
     latest_rbo: u32,
     latest_fbo: u32,
     has_new_frame: bool,
@@ -107,7 +103,6 @@ pub const AppShare = struct {
         self.should_stop = std.atomic.Value(bool).init(false);
         self.config = config;
         self.app_pid = null;
-        self.latest_dmabuf = null;
         self.latest_rbo = 0;
         self.latest_fbo = 0;
         self.has_new_frame = false;
@@ -215,23 +210,23 @@ pub const AppShare = struct {
 
         self.viewer_registry = ViewerRegistry.init();
 
-        // Initialize encoder backend based on GPU type
+        // Initialize encoder backend based on GPU type.
+        // AV1-only direction: NVENC AV1 hardware path is live; non-NVIDIA
+        // hardware will route to SVT-AV1 software fallback when T-018
+        // wires the selector. Until then, non-NVIDIA GPU types surface a
+        // clear error.
         self.backend_state = switch (config.gpu) {
-            .nvidia => blk: {
+            .nvidia, .auto => blk: {
                 const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
                     log.err("NVENC encoder init failed: {}", .{err});
                     return error.EncoderInitFailed;
                 };
-                log.info("using NVIDIA NVENC encoder (GL renderbuffer → CUDA → NVENC)", .{});
+                log.info("using NVIDIA NVENC AV1 encoder (GL renderbuffer → CUDA → NVENC)", .{});
                 break :blk .{ .nvenc = nvenc };
             },
-            .intel, .auto => blk: {
-                const vaapi = VaapiEncoderBackend.init(config.render_device, config.width, config.height, config.fps) catch |err| {
-                    log.err("VA-API encoder init failed: {}", .{err});
-                    return error.EncoderInitFailed;
-                };
-                log.info("using VA-API encoder (DMA-BUF import)", .{});
-                break :blk .{ .vaapi = vaapi };
+            .intel => {
+                log.err(".intel GPU type requires SVT-AV1 software fallback, not yet wired (pending T-018)", .{});
+                return error.EncoderInitFailed;
             },
         };
         errdefer self.backend_state.deinitInner();
@@ -377,11 +372,6 @@ pub const AppShare = struct {
             const is_new = self.has_new_frame;
             if (is_new) {
                 switch (self.backend_state) {
-                    .vaapi => |*v| {
-                        if (self.latest_dmabuf) |dmabuf| {
-                            v.pending_dmabuf = dmabuf;
-                        }
-                    },
                     .nvenc => |*n| {
                         n.pending_fbo = self.latest_fbo;
                     },
@@ -456,7 +446,7 @@ pub const AppShare = struct {
         self.compositor.resize(new_w, new_h);
 
         self.backend_state = switch (self.config.gpu) {
-            .nvidia => blk: {
+            .nvidia, .auto => blk: {
                 const nvenc = NvencBackend.init(new_w, new_h, self.config.fps, self.config.qp) catch |e| {
                     log.err("NVENC reinit failed, stopping: {}", .{e});
                     self.should_stop.store(true, .release);
@@ -464,13 +454,10 @@ pub const AppShare = struct {
                 };
                 break :blk .{ .nvenc = nvenc };
             },
-            .intel, .auto => blk: {
-                const vaapi = VaapiEncoderBackend.init(self.config.render_device, new_w, new_h, self.config.fps) catch |e| {
-                    log.err("VA-API reinit failed, stopping: {}", .{e});
-                    self.should_stop.store(true, .release);
-                    return;
-                };
-                break :blk .{ .vaapi = vaapi };
+            .intel => {
+                log.err(".intel reinit requires SVT-AV1 software fallback (pending T-018)", .{});
+                self.should_stop.store(true, .release);
+                return;
             },
         };
 
@@ -569,19 +556,9 @@ fn frameCallback(frame: *const CapturedFrame, userdata: ?*anyopaque) void {
         });
     }
 
-    // Save DMA-BUF attrs (used by VA-API path)
-    self.latest_dmabuf = .{
-        .format = dmabuf.format,
-        .modifier = dmabuf.modifier,
-        .width = frame.width,
-        .height = frame.height,
-        .n_planes = @intCast(dmabuf.n_planes),
-        .fd = dmabuf.fd,
-        .stride = dmabuf.stride,
-        .offset = dmabuf.offset,
-    };
-
-    // Save GL object ids (used by NVIDIA CUDA path)
+    // Save GL object ids (used by NVIDIA CUDA path).
+    // DMA-BUF attrs are no longer consumed beyond the debug log above —
+    // the VA-API import path was removed with T-009.
     self.latest_rbo = frame.rbo;
     self.latest_fbo = frame.fbo;
 

@@ -15,7 +15,6 @@ const log = std.log.scoped(.recorder);
 pub const SessionRecorder = struct {
     const ChunkWriter = union(enum) {
         ivf: IvfWriter,
-        raw: std.fs.File,
     };
 
     dir: std.fs.Dir,
@@ -94,13 +93,6 @@ pub const SessionRecorder = struct {
                     };
                     self.chunk_bytes += data.len + 12; // frame data + 12-byte IVF frame header
                 },
-                .raw => |*file| {
-                    file.writeAll(data) catch |err| {
-                        log.warn("recording write failed: {}", .{err});
-                        return;
-                    };
-                    self.chunk_bytes += data.len;
-                },
             }
         }
     }
@@ -161,14 +153,6 @@ pub const SessionRecorder = struct {
                 self.chunk_bytes = 32; // IVF 32-byte file header
                 break :blk .{ .ivf = ivf };
             },
-            .hevc => blk: {
-                const file = self.dir.createFile(name, .{}) catch |err| {
-                    log.warn("cannot create recording chunk {s}: {}", .{ name, err });
-                    break :blk null;
-                };
-                self.chunk_bytes = 0;
-                break :blk .{ .raw = file };
-            },
         };
 
         self.chunk_start_ns = if (self.seq == 0) 0 else self.chunk_start_ns + self.chunk_duration_ns;
@@ -187,9 +171,6 @@ pub const SessionRecorder = struct {
                         1,
                     ) catch {};
                     ivf.deinit();
-                },
-                .raw => |*file| {
-                    file.close();
                 },
             }
             self.chunk = null;

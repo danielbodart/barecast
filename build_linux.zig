@@ -15,32 +15,6 @@ pub fn buildPlatform(
         .optimize = optimize,
     });
 
-    // --- VA-API encoder backend (Intel QSV / AMD VCN) ---
-    const vaapi_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/vaapi/vaapi.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "codec", .module = shared.codec },
-        },
-    });
-    vaapi_mod.linkSystemLibrary("libva", .{});
-    vaapi_mod.linkSystemLibrary("libva-drm", .{});
-    vaapi_mod.addIncludePath(b.path("packages/zerocast/src/linux/vaapi"));
-    vaapi_mod.addCSourceFile(.{ .file = b.path("packages/zerocast/src/linux/vaapi/hevc_params.c") });
-
-    const vaapi_encoder_backend_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/vaapi/encoder_backend.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "vaapi", .module = vaapi_mod },
-            .{ .name = "codec", .module = shared.codec },
-            .{ .name = "encoder", .module = shared.encoder },
-        },
-    });
-
     // --- Embedded Wayland compositor (wlroots headless) ---
     const compositor_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/linux/wayland/compositor.zig"),
@@ -120,7 +94,7 @@ pub fn buildPlatform(
     wayland_input_mod.linkSystemLibrary("xkbcommon", .{});
     wayland_input_mod.linkSystemLibrary("pixman-1", .{});
 
-    // --- Wayland app share (compositor + VA-API or NVENC encoder pipeline) ---
+    // --- Wayland app share (compositor + NVENC encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/linux/wayland/app_share.zig"),
         .target = target,
@@ -129,7 +103,6 @@ pub fn buildPlatform(
         .imports = &.{
             .{ .name = "compositor", .module = compositor_mod },
             .{ .name = "encoder", .module = shared.encoder },
-            .{ .name = "vaapi_encoder_backend", .module = vaapi_encoder_backend_mod },
             .{ .name = "nvenc_backend", .module = wayland_nvenc_backend_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session", .module = shared.session },

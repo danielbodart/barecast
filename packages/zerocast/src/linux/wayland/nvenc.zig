@@ -744,14 +744,13 @@ pub const Nvenc = struct {
             return error.NvencInitFailed;
         }
 
-        // Detect codec: prefer AV1, fall back to HEVC
+        // Confirm AV1 is supported — AV1-only per R5.
         const codec = detectCodec(encoder_handle, &fns) catch {
             _ = (fns.nvEncDestroyEncoder orelse unreachable)(encoder_handle);
             return error.NvencInitFailed;
         };
         const codec_guid = switch (codec) {
             .av1 => codec_av1_guid,
-            .hevc => codec_hevc_guid,
         };
 
         // Query encoder capabilities
@@ -802,7 +801,7 @@ pub const Nvenc = struct {
         config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
         config.rcParams.constQP = .{ .qpIntra = qp, .qpInterP = qp, .qpInterB = qp };
 
-        // Codec-specific config
+        // Codec-specific config — AV1 only
         switch (codec) {
             .av1 => {
                 config.profileGUID = profile_av1_main_guid;
@@ -816,20 +815,6 @@ pub const Nvenc = struct {
                 av1.transferCharacteristics = 1; // BT.709
                 av1.matrixCoefficients = 1; // BT.709
                 av1.colorRange = 0; // limited range — NVENC's internal RGB→YUV uses limited (16-235)
-            },
-            .hevc => {
-                config.profileGUID = profile_hevc_main_guid;
-                const hevc = config.hevcConfig();
-                hevc.idrPeriod = 0xFFFFFFFF; // infinite — matches gopLength
-                hevc.bitfield_flags.repeatSPSPPS = 1; // VPS/SPS/PPS on every IDR
-                hevc.bitfield_flags.chromaFormatIDC = 1; // 4:2:0
-                // Color metadata via VUI — same BT.709 signaling as AV1 path
-                hevc.hevcVUIParameters.videoSignalTypePresentFlag = 1;
-                hevc.hevcVUIParameters.colourDescriptionPresentFlag = 1;
-                hevc.hevcVUIParameters.colourPrimaries = 1; // BT.709
-                hevc.hevcVUIParameters.transferCharacteristics = 1; // BT.709
-                hevc.hevcVUIParameters.colourMatrix = 1; // BT.709
-                hevc.hevcVUIParameters.videoFullRangeFlag = 0; // limited range
             },
         }
 
@@ -1028,7 +1013,9 @@ pub const Nvenc = struct {
     }
 };
 
-/// Query supported encode codecs and pick the best one (AV1 > HEVC).
+/// Query supported encode codecs and confirm AV1 is available.
+/// AV1-only per R5; hosts without NVENC AV1 route to the SVT-AV1
+/// software fallback (wired in T-018).
 fn detectCodec(encoder: ?*anyopaque, fns: *const ApiFunctionList) !Codec {
     const getCount = fns.nvEncGetEncodeGUIDCount orelse return error.NvencInitFailed;
     const getGUIDs = fns.nvEncGetEncodeGUIDs orelse return error.NvencInitFailed;
@@ -1048,23 +1035,14 @@ fn detectCodec(encoder: ?*anyopaque, fns: *const ApiFunctionList) !Codec {
         return error.NvencInitFailed;
     }
 
-    var has_av1 = false;
-    var has_hevc = false;
     for (guids[0..returned]) |guid| {
-        if (guidEql(guid, codec_av1_guid)) has_av1 = true;
-        if (guidEql(guid, codec_hevc_guid)) has_hevc = true;
+        if (guidEql(guid, codec_av1_guid)) {
+            std.log.info("NVENC: AV1 supported, using AV1", .{});
+            return .av1;
+        }
     }
 
-    if (has_av1) {
-        std.log.info("NVENC: AV1 supported, using AV1", .{});
-        return .av1;
-    }
-    if (has_hevc) {
-        std.log.info("NVENC: AV1 not supported, falling back to HEVC", .{});
-        return .hevc;
-    }
-
-    std.debug.print("NVENC: neither AV1 nor HEVC supported\n", .{});
+    std.debug.print("NVENC: AV1 not supported by this GPU\n", .{});
     return error.NvencInitFailed;
 }
 

@@ -13,7 +13,7 @@ pub const MAX_PEERS: usize = 8;
 pub const PEER_ID_LEN: usize = 16;
 
 pub const SessionMode = enum {
-    video, // Video track (AV1 or HEVC) + unreliable "input" data channel
+    video, // AV1 video track + unreliable "input" data channel
     terminal, // No track + reliable "terminal" data channel
 };
 
@@ -92,7 +92,6 @@ pub const Peer = struct {
         track_init.direction = c.RTC_DIRECTION_SENDONLY;
         track_init.codec = switch (self.session.codec) {
             .av1 => c.RTC_CODEC_AV1,
-            .hevc => c.RTC_CODEC_H265,
         };
         track_init.payloadType = 96;
         track_init.ssrc = 1;
@@ -120,11 +119,6 @@ pub const Peer = struct {
                 .av1 => {
                     pkt_init.obuPacketization = c.RTC_OBU_PACKETIZED_TEMPORAL_UNIT;
                     _ = c.rtcSetAV1Packetizer(track, &pkt_init);
-                },
-                .hevc => {
-                    // NVENC HEVC outputs Annex B (start-code delimited NAL units)
-                    pkt_init.nalSeparator = c.RTC_NAL_SEPARATOR_START_SEQUENCE;
-                    _ = c.rtcSetH265Packetizer(track, &pkt_init);
                 },
             }
 
