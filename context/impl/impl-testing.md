@@ -8,9 +8,9 @@ Build site: context/plans/build-site.md
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T-002 | DONE | encoder_contract_test.zig skeleton + FakeBackend validation + registered in build.zig (commit adad2ed) |
-| T-003 | DONE | FrameBuffer struct + FrameSink.buffer variant + unit tests (commit adad2ed) |
-| T-004 | DONE | Encoder clock injection — start_ns + self.clock.nowNs() for PTS. 4 Encoder.init call sites updated. See commit message for boundary reads left in place. (commit adad2ed) |
-| T-007 | PENDING | Contract suite expansion (blocked T-002 ✓, T-003 ✓ — unblocked) |
-| T-008 | PENDING | Property tests (blocked T-002 ✓, T-003 ✓ — unblocked) |
-| T-020 | PENDING | GPU-free integration lane (blocked T-018) |
+| T-002 | DONE | encoder_contract_test.zig skeleton + FakeBackend validation. Registered in build.zig test_step. Commit adad2ed |
+| T-003 | DONE | FrameBuffer + FrameSink.buffer variant in encoder.zig. Ring buffer, bounded alloc, oldest-first iteration. Inline unit tests. Commit adad2ed |
+| T-004 | DONE | Encoder clock injection — clock: Clock + start_ns: u64 fields, PTS via (clock.nowNs - start_ns). 4 Encoder.init call sites updated. Legacy timer field kept for session_recorder compat (refactor later). Commit adad2ed |
+| T-007 | DONE | Contract suite expansion — caseReconfigureEmitsKeyframe + caseMalformedInputRejected added. runContract now 5 cases. Commit 6399803 |
+| T-008 | DONE | Property tests — sweeps 7 resolutions × fps/qp combinations through runContract; separate idempotent-reconfigure loop. Commit 6399803 |
+| T-020 | PENDING | GPU-free integration lane — capture → SvtBackend → IVF through FrameSink.buffer, exposed via run.ts entry point. Blocked on T-018. |
