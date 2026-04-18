@@ -85,14 +85,48 @@ pub const SvtBackend = struct {
         config.frame_rate_denominator = 1;
 
         // Preset 12 — fastest. Appropriate for a software-fallback where
-        // encode speed matters more than peak quality.
+        // encode speed matters more than peak quality. SVT-AV1 may
+        // auto-adjust downward based on host capabilities.
         config.enc_mode = 12;
 
-        // CQP rate control (T-011 refines). `enable_adaptive_quantization=0`
-        // + `rate_control_mode=CQP_OR_CRF` means every frame uses `qp`.
+        // T-011 — CQP rate control. `rate_control_mode=CQP_OR_CRF` +
+        // `enable_adaptive_quantization=0` fixes every frame to `qp`.
+        // Caller is expected to clamp qp ∈ [0, 63]; the library silently
+        // clamps out-of-range values but we log if we see one.
+        if (qp > 63) log.warn("SVT-AV1: qp {d} outside [0,63]; library will clamp", .{qp});
         config.rate_control_mode = c.SVT_AV1_RC_MODE_CQP_OR_CRF;
         config.enable_adaptive_quantization = 0;
         config.qp = @intCast(qp);
+
+        // T-012 — P-only GOP with self-contained keyframes.
+        // Matches capture-pipeline R8.
+        //
+        // * `intra_period_length = -1` — no automatic intra; keyframes
+        //   emit only when the caller forces them (PLI, reconfigure).
+        // * `intra_refresh_type = KF_REFRESH` — IDR / closed GOP so
+        //   every keyframe is a resync point.
+        // * `hierarchical_levels = 2` — the SVT v3.x minimum. Lower
+        //   values are rejected; 2 gives a MiniGOP of 4 and the shallowest
+        //   reference chain available to us.
+        // * `pred_structure = LOW_DELAY_B` — references only past frames,
+        //   no lookahead. SVT emits GPB-B frames that behave like P
+        //   (back-only references); the header's `_P` variant is marked
+        //   "No longer active" in the spec. External inspection at T-017
+        //   verifies the resulting bitstream has no true B frames.
+        config.intra_period_length = -1;
+        config.intra_refresh_type = c.SVT_AV1_KF_REFRESH;
+        config.hierarchical_levels = 2;
+        config.pred_structure = c.SVT_AV1_PRED_LOW_DELAY_B;
+
+        // T-013 — BT.709 color signalling. Compositor captures sRGB
+        // content; declaring BT.709 primaries/transfer/matrix with
+        // limited range keeps browsers from guessing (0="unspecified"
+        // in AV1 spec lets decoders assume BT.601 which is wrong for
+        // modern displays). Matches NVENC backend wiring.
+        config.color_primaries = c.EB_CICP_CP_BT_709;
+        config.transfer_characteristics = c.EB_CICP_TC_BT_709;
+        config.matrix_coefficients = c.EB_CICP_MC_BT_709;
+        config.color_range = c.EB_CR_STUDIO_RANGE; // limited (16–235)
 
         // Apply and commit.
         const set_rc = c.svt_av1_enc_set_parameter(self.component, &config);
