@@ -10,7 +10,18 @@ zerocast-linux-x86_64.tar.gz.sha256
 .claude/worktrees/
 .claude/ralph-loop.local.md
 .worktrees/
-.cavekit/
+# Cavekit runtime — transient state
+.cavekit/.loop.json
+.cavekit/.loop.lock
+.cavekit/.progress.json
+.cavekit/.auto-backprop-pending.json
+.cavekit/.debug.log
+.cavekit/tool-cache/
+.cavekit/state.md
+.cavekit/token-ledger.json
+.cavekit/task-status.json
+.cavekit/tasks.json
+.cavekit/capabilities.json
 .playwright-mcp
 .playwright/
 packages/worker/node_modules/
