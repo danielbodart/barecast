@@ -493,6 +493,9 @@ pub const AppShare = struct {
         }
         self.committed_width.store(new_w, .release);
         self.committed_height.store(new_h, .release);
+        // Force a keyframe so viewers get content at the new size immediately,
+        // even if the app is idle (damage tracking would otherwise skip frames).
+        self.session.forceKeyframeAll();
         self.sendAppMeta();
     }
 

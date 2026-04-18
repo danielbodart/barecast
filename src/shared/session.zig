@@ -644,6 +644,15 @@ pub const BroadcastSession = struct {
         return 0xFF;
     }
 
+    /// Force a keyframe on all connected peers (e.g. after encoder rebuild).
+    pub fn forceKeyframeAll(self: *BroadcastSession) void {
+        for (&self.peers) |*peer| {
+            if (peer.state.load(.acquire) == .connected) {
+                peer.force_keyframe.store(true, .release);
+            }
+        }
+    }
+
     /// Check and clear force-keyframe flags across all connected peers.
     pub fn shouldForceKeyframe(self: *BroadcastSession) bool {
         var need_key = false;

@@ -350,7 +350,7 @@ if (!roomId) {
         info.classList.add("visible");
         startStatsPolling();
 
-        if (!streamSized && video.videoWidth > 0) {
+        if (!streamSized && video.videoWidth > 100) {
             streamSized = true;
             const vw = video.videoWidth;
             const vh = video.videoHeight;
