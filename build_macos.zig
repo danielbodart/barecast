@@ -64,6 +64,7 @@ pub fn buildPlatform(
             .{ .name = "input", .module = input_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session_recorder", .module = shared.session_recorder },
+            .{ .name = "clock", .module = shared.clock },
         },
     });
     app_share_mod.addIncludePath(b.path("src/macos"));

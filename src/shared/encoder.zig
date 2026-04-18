@@ -4,6 +4,9 @@ const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 pub const Codec = @import("codec").Codec;
 
+const shared_clock = @import("clock");
+pub const Clock = shared_clock.Clock;
+
 const log = std.log.scoped(.encoder);
 
 // ── Encoder backend contract ─────────────────────────────────────────────
@@ -51,9 +54,75 @@ pub const EncodeBackend = struct {
 
 // ── Frame sink ───────────────────────────────────────────────────────────
 
+/// Stored encoded frame for the in-memory `FrameSink.buffer` sink.
+/// Owns a copy of the bitstream bytes — the ring buffer allocates on push
+/// and frees on overwrite or clear.
+pub const StoredFrame = struct {
+    bytes: []u8,
+    is_key: bool,
+    pts_ms: u64,
+    capture_ntp: u64,
+};
+
+/// In-memory frame sink. Bounded ring buffer of recent encoded frames.
+/// Tests assert over real encoder output without needing WebRTC or disk I/O.
+/// Push into the ring via `FrameSink.buffer` dispatch; read via `items()`
+/// or `count()`. Oldest frame is overwritten when capacity is reached.
+pub const FrameBuffer = struct {
+    allocator: std.mem.Allocator,
+    slots: []StoredFrame,
+    head: usize = 0,
+    total_pushed: usize = 0,
+
+    pub const default_capacity: usize = 64;
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !FrameBuffer {
+        const slots = try allocator.alloc(StoredFrame, capacity);
+        for (slots) |*s| s.* = .{ .bytes = &.{}, .is_key = false, .pts_ms = 0, .capture_ntp = 0 };
+        return .{ .allocator = allocator, .slots = slots };
+    }
+
+    pub fn deinit(self: *FrameBuffer) void {
+        for (self.slots) |*s| {
+            if (s.bytes.len != 0) self.allocator.free(s.bytes);
+        }
+        self.allocator.free(self.slots);
+    }
+
+    pub fn push(self: *FrameBuffer, frame: EncodedFrame, pts_ms: u64, capture_ntp: u64) !void {
+        const slot = &self.slots[self.head];
+        if (slot.bytes.len != 0) self.allocator.free(slot.bytes);
+        const copy = try self.allocator.alloc(u8, frame.data.len);
+        @memcpy(copy, frame.data);
+        slot.* = .{ .bytes = copy, .is_key = frame.is_key, .pts_ms = pts_ms, .capture_ntp = capture_ntp };
+        self.head = (self.head + 1) % self.slots.len;
+        self.total_pushed += 1;
+    }
+
+    /// Number of frames currently retained (min of pushes and capacity).
+    pub fn count(self: *const FrameBuffer) usize {
+        return @min(self.total_pushed, self.slots.len);
+    }
+
+    /// Iterate retained frames in oldest-first insertion order.
+    /// Callers must not mutate or free the returned slices.
+    pub fn items(self: *const FrameBuffer, out: []StoredFrame) []StoredFrame {
+        const n = self.count();
+        std.debug.assert(out.len >= n);
+        const capacity = self.slots.len;
+        const start = if (self.total_pushed <= capacity) 0 else self.head;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            out[i] = self.slots[(start + i) % capacity];
+        }
+        return out[0..n];
+    }
+};
+
 pub const FrameSink = union(enum) {
     ivf: IvfWriter,
     session: *BroadcastSession,
+    buffer: *FrameBuffer, // In-memory capture for GPU-free tests
     none, // No sink — caller writes encoded data directly (e.g. macOS PoC)
 };
 
@@ -100,6 +169,15 @@ pub const Encoder = struct {
     backend: EncodeBackend,
     sink: FrameSink,
     stats: Stats,
+    /// Injected clock (fat-pointer). Used for PTS derivation. Production
+    /// code supplies SystemClock; tests supply StoppedClock for determinism.
+    clock: Clock,
+    /// Monotonic clock value at the moment Encoder.init returned. Frame PTS
+    /// is derived as `(clock.nowNs() - start_ns) / ns_per_ms`.
+    start_ns: u64,
+    /// Legacy `std.time.Timer` retained only for `SessionRecorder.writeFrame`
+    /// chunk-rotation scheduling, which still takes a `*Timer`. When the
+    /// recorder is refactored to take a `Clock`, this field goes away.
     timer: std.time.Timer,
     timings: PipelineTimings,
     width: u32,
@@ -111,11 +189,13 @@ pub const Encoder = struct {
     idle_keyframe_sent: bool = false,
     force_next_keyframe: bool = false,
 
-    pub fn init(backend: EncodeBackend, width: u32, height: u32, sink: FrameSink, fps: u32) !Encoder {
+    pub fn init(backend: EncodeBackend, width: u32, height: u32, sink: FrameSink, fps: u32, clock: Clock) !Encoder {
         return .{
             .backend = backend,
             .sink = sink,
             .stats = .{},
+            .clock = clock,
+            .start_ns = clock.nowNs(),
             .timer = try std.time.Timer.start(),
             .timings = .{},
             .width = width,
@@ -131,7 +211,7 @@ pub const Encoder = struct {
         // a keyframe (new viewer, packet loss, etc.) and stops once it decodes one.
         const pli_pending = switch (self.sink) {
             .session => |s| s.shouldForceKeyframe(),
-            .ivf, .none => false,
+            .ivf, .buffer, .none => false,
         };
 
         if (!is_new and !pli_pending) {
@@ -159,8 +239,9 @@ pub const Encoder = struct {
             self.idle_keyframe_sent = false;
         }
 
-        // Real wall clock PTS in milliseconds
-        const pts_ms = self.timer.read() / std.time.ns_per_ms;
+        // Real wall clock PTS in milliseconds — derived from the injected
+        // Clock so tests can advance time deterministically.
+        const pts_ms = (self.clock.nowNs() - self.start_ns) / std.time.ns_per_ms;
 
         // NTP capture timestamp for abs-capture-time RTP extension.
         // CLOCK_REALTIME → NTP epoch (Jan 1, 1900) in UQ32.32 fixed-point.
@@ -195,6 +276,7 @@ pub const Encoder = struct {
             switch (self.sink) {
                 .ivf => |*ivf| try ivf.writeFrame(encoded.data, pts_ms),
                 .session => |s| s.sendFrame(encoded.data, pts_ms, capture_ntp),
+                .buffer => |buf| try buf.push(encoded, pts_ms, capture_ntp),
                 .none => {},
             }
             if (self.recorder) |rec| {
@@ -264,7 +346,7 @@ pub const Encoder = struct {
                 self.fps,
                 1,
             ),
-            .session, .none => {},
+            .session, .buffer, .none => {},
         }
     }
 
@@ -272,7 +354,8 @@ pub const Encoder = struct {
         self.backend.deinit();
         switch (self.sink) {
             .ivf => |*ivf| ivf.deinit(),
-            .session, .none => {}, // session lifetime managed by main
+            // buffer sink is borrowed — owner deinits it
+            .session, .buffer, .none => {},
         }
     }
 };

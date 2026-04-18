@@ -212,7 +212,7 @@ pub fn buildExtraArtifacts(
 
 }
 
-/// Create the cmake rebuild-libs step for libdatachannel.
+/// Create the cmake rebuild-libs step: libdatachannel + SVT-AV1 static libs.
 pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
     const cmake_build_dir = ".zig-cache/cmake";
 
@@ -244,5 +244,49 @@ pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
     });
     cmake_build.step.dependOn(&cmake_configure.step);
 
-    return &cmake_build.step;
+    // SVT-AV1: AOMediaCodec reference AV1 software encoder. Vendored as
+    // submodule at ./SVT-AV1. Pure C + ASM_NASM, builds with the same
+    // zig cc shim as libdatachannel for consistent toolchain. Produces a
+    // static libSvtAv1Enc.a consumed by the SW EncodeBackend adapter.
+    const svt_build_dir = ".zig-cache/cmake-svt";
+
+    const svt_configure = b.addSystemCommand(&.{
+        "cmake",
+        "-S",
+        "SVT-AV1",
+        "-B",
+        svt_build_dir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DBUILD_APPS=OFF",
+        "-DBUILD_ENC=OFF",
+        "-DBUILD_DEC=OFF",
+        "-DBUILD_TESTING=OFF",
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        // Pure-C build (no NASM/yasm assembler required). Slower than the
+        // optimized asm path but portable and adequate for a software-fallback
+        // encoder primarily used for GPU-free tests.
+        "-DCOMPILE_C_ONLY=ON",
+        // Zig cc treats -Wdate-time as an error by default; SVT-AV1's
+        // enc_handle.c uses __DATE__/__TIME__. Suppress to compile clean.
+        "-DCMAKE_C_FLAGS=-Wno-date-time",
+    });
+    svt_configure.addArg(b.fmt("-DCMAKE_C_COMPILER={s}", .{zig_cc_path}));
+
+    const svt_build = b.addSystemCommand(&.{
+        "cmake",
+        "--build",
+        svt_build_dir,
+        "--config",
+        "Release",
+        "--target",
+        "SvtAv1Enc",
+        "--parallel",
+    });
+    svt_build.step.dependOn(&svt_configure.step);
+    // Chain SVT-AV1 after libdatachannel so the whole rebuild-libs step
+    // exposes a single head to the caller (build.zig).
+    svt_configure.step.dependOn(&cmake_build.step);
+
+    return &svt_build.step;
 }

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const encoder_mod = @import("encoder");
+const SystemClock = @import("clock").SystemClock;
 const Encoder = encoder_mod.Encoder;
 const FrameSink = encoder_mod.FrameSink;
 const EncoderBackend = @import("encoder_backend").EncoderBackend;
@@ -205,6 +206,7 @@ pub const AppShare = struct {
             height,
             .{ .session = &self.session },
             config.fps,
+            SystemClock.clock(),
         ) catch |err| {
             log.err("encoder init failed: {}", .{err});
             self.vt_backend.backend().deinit();
@@ -406,6 +408,7 @@ pub const AppShare = struct {
             frame.height,
             .{ .session = &self.session },
             self.config.fps,
+            SystemClock.clock(),
         ) catch |err| {
             log.err("encoder reinit failed: {} — stopping", .{err});
             self.should_stop.store(true, .release);

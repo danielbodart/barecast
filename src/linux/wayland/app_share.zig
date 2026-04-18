@@ -271,6 +271,7 @@ pub const AppShare = struct {
             config.height,
             .{ .session = &self.session },
             config.fps,
+            SystemClock.clock(),
         ) catch |err| {
             log.err("encoder init failed: {}", .{err});
             self.session.deinit();
@@ -479,6 +480,7 @@ pub const AppShare = struct {
             new_h,
             .{ .session = &self.session },
             self.config.fps,
+            SystemClock.clock(),
         ) catch |e| {
             log.err("encoder reinit failed, stopping: {}", .{e});
             self.backend_state.deinitInner();

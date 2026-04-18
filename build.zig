@@ -74,6 +74,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const clock_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/clock.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const encoder_mod = b.createModule(.{
         .root_source_file = b.path("src/shared/encoder.zig"),
         .target = target,
@@ -83,13 +89,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "session", .module = session_mod },
             .{ .name = "session_recorder", .module = session_recorder_mod },
             .{ .name = "codec", .module = codec_mod },
+            .{ .name = "clock", .module = clock_mod },
         },
-    });
-
-    const clock_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/clock.zig"),
-        .target = target,
-        .optimize = optimize,
     });
 
     const debounce_mod = b.createModule(.{
@@ -313,6 +314,22 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
     }
 
+    // Encoder backend contract tests (cross-backend acceptance suite)
+    const encoder_contract_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shared/encoder_contract_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "encoder", .module = encoder_mod },
+            },
+        }),
+    });
+    encoder_contract_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    shared_defs.linkDatachannel(b, encoder_contract_tests);
+    test_step.dependOn(&b.addRunArtifact(encoder_contract_tests).step);
+
     // Tests that need libdatachannel linked
     const session_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -429,6 +446,6 @@ pub fn build(b: *std.Build) void {
     analyze_step.dependOn(&zwanzig_run.step);
 
     // ── Rebuild libdatachannel static libs ────────────────────────────────
-    const rebuild_step = b.step("rebuild-libs", "Rebuild libdatachannel static libs");
+    const rebuild_step = b.step("rebuild-libs", "Rebuild libdatachannel + SVT-AV1 static libs");
     rebuild_step.dependOn(platform.buildRebuildLibs(b));
 }
