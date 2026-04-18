@@ -95,10 +95,10 @@ The browser-side applications served by the signalling worker: screen viewer, te
 - See also: cavekit-testing.md (protocol roundtrip property tests)
 
 ## Source Traceability
-- `worker/src/viewer.ts` — R1, R2, R5, R6, R7, R8, R9
-- `worker/src/terminal-viewer.ts` — R1, R3, R7
-- `worker/src/index.ts` — R4 (hub page served by worker)
-- `worker/src/overlay.ts` — R5, R6
+- `packages/worker/src/viewer.ts` — R1, R2, R5, R6, R7, R8, R9
+- `packages/worker/src/terminal-viewer.ts` — R1, R3, R7
+- `packages/worker/src/index.ts` — R4 (hub page served by worker)
+- `packages/worker/src/overlay.ts` — R5, R6
 
 ## Changelog
 - 2026-04-18: initial draft (brownfield --from-code)

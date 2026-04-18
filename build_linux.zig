@@ -10,14 +10,14 @@ pub fn buildPlatform(
 ) shared_defs.PlatformModules {
     // --- Keymap module (evdev keycodes) ---
     const keymap_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/keymap.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/keymap.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // --- VA-API encoder backend (Intel QSV / AMD VCN) ---
     const vaapi_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/vaapi/vaapi.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/vaapi/vaapi.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -27,11 +27,11 @@ pub fn buildPlatform(
     });
     vaapi_mod.linkSystemLibrary("libva", .{});
     vaapi_mod.linkSystemLibrary("libva-drm", .{});
-    vaapi_mod.addIncludePath(b.path("src/linux/vaapi"));
-    vaapi_mod.addCSourceFile(.{ .file = b.path("src/linux/vaapi/hevc_params.c") });
+    vaapi_mod.addIncludePath(b.path("packages/zerocast/src/linux/vaapi"));
+    vaapi_mod.addCSourceFile(.{ .file = b.path("packages/zerocast/src/linux/vaapi/hevc_params.c") });
 
     const vaapi_encoder_backend_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/vaapi/encoder_backend.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/vaapi/encoder_backend.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -43,19 +43,19 @@ pub fn buildPlatform(
 
     // --- Embedded Wayland compositor (wlroots headless) ---
     const compositor_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/compositor.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/compositor.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    compositor_mod.addIncludePath(b.path("wlroots/include"));
+    compositor_mod.addIncludePath(b.path("packages/wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/protocol"));
-    compositor_mod.addIncludePath(b.path("src/linux/wayland"));
+    compositor_mod.addIncludePath(b.path("packages/zerocast/src/linux/wayland"));
     compositor_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
     compositor_mod.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
     // C helper to extract GL RBO from wlroots internal structs (NVIDIA path)
-    compositor_mod.addCSourceFile(.{ .file = b.path("src/linux/wayland/gles2_helper.c"), .flags = &.{} });
+    compositor_mod.addCSourceFile(.{ .file = b.path("packages/zerocast/src/linux/wayland/gles2_helper.c"), .flags = &.{} });
     compositor_mod.linkSystemLibrary("wayland-server", .{});
     compositor_mod.linkSystemLibrary("wayland-client", .{});
     compositor_mod.linkSystemLibrary("pixman-1", .{});
@@ -67,7 +67,7 @@ pub fn buildPlatform(
 
     // --- NVIDIA CUDA module for Wayland (GL renderbuffer interop) ---
     const wayland_cuda_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/cuda.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/cuda.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -75,7 +75,7 @@ pub fn buildPlatform(
 
     // --- NVENC module (NVIDIA hardware encoder via libnvidia-encode) ---
     const wayland_nvenc_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/nvenc.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/nvenc.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -88,7 +88,7 @@ pub fn buildPlatform(
 
     // --- NVENC encoder backend for Wayland (CUDA GL interop + NVENC) ---
     const wayland_nvenc_backend_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/nvenc_backend.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/nvenc_backend.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -102,7 +102,7 @@ pub fn buildPlatform(
 
     // --- Wayland input module (virtual keyboard + pointer via wlr_seat) ---
     const wayland_input_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/input.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -111,7 +111,7 @@ pub fn buildPlatform(
             .{ .name = "session", .module = shared.session },
         },
     });
-    wayland_input_mod.addIncludePath(b.path("wlroots/include"));
+    wayland_input_mod.addIncludePath(b.path("packages/wlroots/include"));
     wayland_input_mod.addIncludePath(b.path("libs/wlroots/include"));
     wayland_input_mod.addIncludePath(b.path("libs/wlroots/protocol"));
     wayland_input_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
@@ -122,7 +122,7 @@ pub fn buildPlatform(
 
     // --- Wayland app share (compositor + VA-API or NVENC encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/wayland/app_share.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -143,7 +143,7 @@ pub fn buildPlatform(
 
     // --- GPU auto-detection module (sysfs + CUDA/VA-API probing) ---
     const gpu_detect_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/gpu_detect.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/gpu_detect.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -171,13 +171,13 @@ pub fn buildExtraArtifacts(
 
     // --- KMS protocol and IPC modules (Linux-only) ---
     const protocol_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/kms/protocol.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const ipc_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/kms/ipc.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/kms/ipc.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -187,7 +187,7 @@ pub fn buildExtraArtifacts(
 
     // --- zerocast-kms (privileged helper, CAP_SYS_ADMIN) ---
     const drm_mod = b.createModule(.{
-        .root_source_file = b.path("src/linux/kms/drm.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/kms/drm.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -197,7 +197,7 @@ pub fn buildExtraArtifacts(
     const kms_exe = b.addExecutable(.{
         .name = "zerocast-kms",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/linux/kms/main.zig"),
+            .root_source_file = b.path("packages/zerocast/src/linux/kms/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -222,7 +222,7 @@ pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
     const cmake_configure = b.addSystemCommand(&.{
         "cmake",
         "-S",
-        "libdatachannel",
+        "packages/libdatachannel",
         "-B",
         cmake_build_dir,
         "-DCMAKE_BUILD_TYPE=Release",
@@ -253,7 +253,7 @@ pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
     const svt_configure = b.addSystemCommand(&.{
         "cmake",
         "-S",
-        "SVT-AV1",
+        "packages/svt-av1",
         "-B",
         svt_build_dir,
         "-DCMAKE_BUILD_TYPE=Release",

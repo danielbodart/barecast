@@ -110,10 +110,10 @@ Real-time media and control transport between one host (sharer) and many browser
 - See also: cavekit-testing.md (peer lifecycle contract tests, input protocol roundtrips)
 
 ## Source Traceability
-- `src/shared/session.zig` — R1, R2, R3, R7, R8, R10, R11
-- `src/shared/input_protocol.zig` — R6, R7
-- `src/shared/viewer_state.zig` — R8
-- `src/shared/encoder.zig` — R4, R5 (abs-capture-time, playout-delay)
+- `packages/zerocast/src/shared/session.zig` — R1, R2, R3, R7, R8, R10, R11
+- `packages/zerocast/src/shared/input_protocol.zig` — R6, R7
+- `packages/zerocast/src/shared/viewer_state.zig` — R8
+- `packages/zerocast/src/shared/encoder.zig` — R4, R5 (abs-capture-time, playout-delay)
 - libdatachannel fork (danielbodart/libdatachannel) — R4
 
 ## Changelog

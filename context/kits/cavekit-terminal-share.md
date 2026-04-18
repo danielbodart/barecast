@@ -84,9 +84,9 @@ Sharing a terminal session with remote viewers over a reliable data channel. Cov
 - See also: cavekit-testing.md (PTY boundary fidelity, OSC parser property tests)
 
 ## Source Traceability
-- `src/shared/terminal_share.zig` — R1, R2, R3, R4, R5, R7, R8
-- `src/shared/osc_parser.zig` — R6
-- `worker/src/terminal-viewer.ts` — R2, R4, R5 (viewer counterpart)
+- `packages/zerocast/src/shared/terminal_share.zig` — R1, R2, R3, R4, R5, R7, R8
+- `packages/zerocast/src/shared/osc_parser.zig` — R6
+- `packages/worker/src/terminal-viewer.ts` — R2, R4, R5 (viewer counterpart)
 
 ## Changelog
 - 2026-04-18: initial draft (brownfield --from-code)

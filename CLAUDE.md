@@ -53,8 +53,19 @@ Two Zig binaries + one Cloudflare Worker:
 
 ### Source layout
 
+All first-party and vendored code lives under `packages/`. Submodules (libdatachannel, wlroots, svt-av1) are peer packages, not privileged dependencies.
+
 ```
-src/
+packages/
+├── zerocast/src/                         # Our Zig binary (zerocast + zerocast-kms)
+├── worker/                               # Our Cloudflare Worker + browser viewers
+├── libdatachannel/                       # Submodule: WebRTC transport
+├── wlroots/                              # Submodule: embedded Wayland compositor
+└── svt-av1/                              # Submodule: SVT-AV1 software encoder
+```
+
+```
+packages/zerocast/src/
 ├── main.zig                              # Entry point — dispatches to daemon or CLI
 ├── shared/                               # Platform-agnostic code
 │   ├── daemon.zig                        # Daemon mode (Unix socket, session slots, threads)
@@ -102,10 +113,10 @@ src/
 
 ### Worker source files
 
-- **`worker/src/index.ts`** — Cloudflare Worker + routing.
-- **`worker/src/viewer.ts`** — WebRTC browser viewer (screen share).
-- **`worker/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).
-- **`worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.
+- **`packages/worker/src/index.ts`** — Cloudflare Worker + routing.
+- **`packages/worker/src/viewer.ts`** — WebRTC browser viewer (screen share).
+- **`packages/worker/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).
+- **`packages/worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.
 
 ## Testing
 

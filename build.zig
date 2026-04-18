@@ -20,37 +20,37 @@ pub fn build(b: *std.Build) void {
 
     // ── Shared modules (platform-independent) ────────────────────────────
     const input_protocol_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/input_protocol.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/input_protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const osc_parser_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/osc_parser.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/osc_parser.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const viewer_state_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/viewer_state.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/viewer_state.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const codec_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/codec.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/codec.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const ivf_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/ivf.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/ivf.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const session_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/session.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/session.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -60,10 +60,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "codec", .module = codec_mod },
         },
     });
-    session_mod.addIncludePath(b.path("libdatachannel/include"));
+    session_mod.addIncludePath(b.path("packages/libdatachannel/include"));
 
     const session_recorder_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/session_recorder.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/session_recorder.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -75,13 +75,13 @@ pub fn build(b: *std.Build) void {
     });
 
     const clock_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/clock.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/clock.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const encoder_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/encoder.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/encoder.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -94,7 +94,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const debounce_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/debounce.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/debounce.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -103,14 +103,14 @@ pub fn build(b: *std.Build) void {
     });
 
     const control_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/control.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/control.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
 
     const terminal_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/terminal_share.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/terminal_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -141,7 +141,7 @@ pub fn build(b: *std.Build) void {
 
     // ── Daemon module (socket listener, session manager) ─────────────────
     const daemon_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/daemon.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/daemon.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -158,7 +158,7 @@ pub fn build(b: *std.Build) void {
 
     // ── CLI module (subcommand parser, socket client) ────────────────────
     const cli_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/cli.zig"),
+        .root_source_file = b.path("packages/zerocast/src/shared/cli.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -172,7 +172,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "zerocast",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("packages/zerocast/src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -202,12 +202,12 @@ pub fn build(b: *std.Build) void {
 
     // Pure shared tests (no libdatachannel dependency)
     inline for (.{
-        .{ "src/shared/control.zig", true, &[_]std.Build.Module.Import{} },
-        .{ "src/shared/osc_parser.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/shared/ivf.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/shared/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/shared/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
-        .{ "src/shared/clock.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/control.zig", true, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/osc_parser.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/ivf.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/clock.zig", false, &[_]std.Build.Module.Import{} },
     }) |entry| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{
@@ -224,7 +224,7 @@ pub fn build(b: *std.Build) void {
     {
         const debounce_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/shared/debounce.zig"),
+                .root_source_file = b.path("packages/zerocast/src/shared/debounce.zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
@@ -239,7 +239,7 @@ pub fn build(b: *std.Build) void {
     if (builtin.os.tag == .macos) {
         const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/macos/keymap.zig"),
+                .root_source_file = b.path("packages/zerocast/src/macos/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -250,7 +250,7 @@ pub fn build(b: *std.Build) void {
     if (builtin.os.tag == .linux) {
         const keymap_test = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/linux/keymap.zig"),
+                .root_source_file = b.path("packages/zerocast/src/linux/keymap.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -271,7 +271,7 @@ pub fn build(b: *std.Build) void {
     // CLI tests (needs imports)
     const cli_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/cli.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/cli.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -286,14 +286,14 @@ pub fn build(b: *std.Build) void {
     // KMS tests (Linux only — SCM_RIGHTS, DMA-BUF protocol)
     if (builtin.os.tag == .linux) {
         const protocol_mod = b.createModule(.{
-            .root_source_file = b.path("src/linux/kms/protocol.zig"),
+            .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
             .target = target,
             .optimize = optimize,
         });
 
         const protocol_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/linux/kms/protocol.zig"),
+                .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
@@ -302,7 +302,7 @@ pub fn build(b: *std.Build) void {
 
         const ipc_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/linux/kms/ipc.zig"),
+                .root_source_file = b.path("packages/zerocast/src/linux/kms/ipc.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -317,7 +317,7 @@ pub fn build(b: *std.Build) void {
     // Encoder backend contract tests (cross-backend acceptance suite)
     const encoder_contract_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/encoder_contract_test.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/encoder_contract_test.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -326,26 +326,26 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    encoder_contract_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    encoder_contract_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
     shared_defs.linkDatachannel(b, encoder_contract_tests);
     test_step.dependOn(&b.addRunArtifact(encoder_contract_tests).step);
 
     // Tests that need libdatachannel linked
     const session_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/session.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/session.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
         }),
     });
-    session_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    session_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
     shared_defs.linkDatachannel(b, session_tests);
     test_step.dependOn(&b.addRunArtifact(session_tests).step);
 
     const daemon_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/daemon.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/daemon.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -365,7 +365,7 @@ pub fn build(b: *std.Build) void {
 
     const terminal_share_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/terminal_share.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/terminal_share.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
@@ -375,7 +375,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    terminal_share_tests.root_module.addIncludePath(b.path("libdatachannel/include"));
+    terminal_share_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
     shared_defs.linkDatachannel(b, terminal_share_tests);
     test_step.dependOn(&b.addRunArtifact(terminal_share_tests).step);
 
@@ -387,7 +387,7 @@ pub fn build(b: *std.Build) void {
 
     // protocol.zig is pure Zig structs (no platform deps) — safe to compile everywhere
     const protocol_mod_for_props = b.createModule(.{
-        .root_source_file = b.path("src/linux/kms/protocol.zig"),
+        .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -395,7 +395,7 @@ pub fn build(b: *std.Build) void {
     const prop_exe = b.addExecutable(.{
         .name = "prop-tests",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared/prop_tests.zig"),
+            .root_source_file = b.path("packages/zerocast/src/shared/prop_tests.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -416,7 +416,7 @@ pub fn build(b: *std.Build) void {
         if (platform_mods.compositor) |compositor_mod| {
             const compositor_test = b.addTest(.{
                 .root_module = b.createModule(.{
-                    .root_source_file = b.path("src/linux/wayland/compositor_test.zig"),
+                    .root_source_file = b.path("packages/zerocast/src/linux/wayland/compositor_test.zig"),
                     .target = target,
                     .optimize = optimize,
                     .link_libc = true,
@@ -442,7 +442,7 @@ pub fn build(b: *std.Build) void {
     const zwanzig_run = b.addRunArtifact(zwanzig_exe);
     zwanzig_run.addArgs(&.{ "--do", "store-violations-engine" });
     zwanzig_run.addArgs(&.{ "--do", "unreachable-code-engine" });
-    zwanzig_run.addDirectoryArg(b.path("src"));
+    zwanzig_run.addDirectoryArg(b.path("packages/zerocast/src"));
     analyze_step.dependOn(&zwanzig_run.step);
 
     // ── Rebuild libdatachannel static libs ────────────────────────────────

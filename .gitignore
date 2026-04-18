@@ -8,11 +8,13 @@ CLAUDE.local.md
 zerocast-linux-x86_64.tar.gz
 zerocast-linux-x86_64.tar.gz.sha256
 .claude/worktrees/
+.claude/ralph-loop.local.md
 .worktrees/
+.cavekit/
 .playwright-mcp
 .playwright/
-worker/node_modules/
-worker/.wrangler/
-worker/public/*.js
+packages/worker/node_modules/
+packages/worker/.wrangler/
+packages/worker/public/*.js
 .env
 ffmpeg-6.1.1/

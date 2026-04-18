@@ -132,16 +132,16 @@ Everything from capturing an application's rendered surface through GPU-side han
 - See also: cavekit-testing.md (encoder backend contract tests, frame sink doubles)
 
 ## Source Traceability
-- `src/linux/wayland/compositor.zig` — R1
-- `src/linux/wayland/app_share.zig` — R1, R10, R11
-- `src/linux/wayland/nvenc_backend.zig`, `src/linux/wayland/nvenc.zig` — R3, R4, R5, R6, R7, R8, R9
-- `src/linux/wayland/cuda.zig` — R2
-- `src/linux/vaapi/vaapi.zig`, `src/linux/vaapi/encoder_backend.zig` — R3, R4
-- `src/shared/encoder.zig` — R3, R9, R14, R15
-- `src/shared/codec.zig`, `src/shared/ivf.zig` — R5, R12
-- `src/shared/session_recorder.zig` — R12, R13
-- `src/macos/app_share.zig`, `src/macos/encoder_backend.zig`, `src/macos/screen_capture.m`, `src/macos/videotoolbox.m` — R1, R3, R4, R5 (GAP: macOS backend currently emits HEVC, needs AV1 migration via SVT-AV1 software path)
-- `src/linux/gpu_detect.zig` — R4
+- `packages/zerocast/src/linux/wayland/compositor.zig` — R1
+- `packages/zerocast/src/linux/wayland/app_share.zig` — R1, R10, R11
+- `packages/zerocast/src/linux/wayland/nvenc_backend.zig`, `packages/zerocast/src/linux/wayland/nvenc.zig` — R3, R4, R5, R6, R7, R8, R9
+- `packages/zerocast/src/linux/wayland/cuda.zig` — R2
+- `packages/zerocast/src/linux/vaapi/vaapi.zig`, `packages/zerocast/src/linux/vaapi/encoder_backend.zig` — R3, R4
+- `packages/zerocast/src/shared/encoder.zig` — R3, R9, R14, R15
+- `packages/zerocast/src/shared/codec.zig`, `packages/zerocast/src/shared/ivf.zig` — R5, R12
+- `packages/zerocast/src/shared/session_recorder.zig` — R12, R13
+- `packages/zerocast/src/macos/app_share.zig`, `packages/zerocast/src/macos/encoder_backend.zig`, `packages/zerocast/src/macos/screen_capture.m`, `packages/zerocast/src/macos/videotoolbox.m` — R1, R3, R4, R5 (GAP: macOS backend currently emits HEVC, needs AV1 migration via SVT-AV1 software path)
+- `packages/zerocast/src/linux/gpu_detect.zig` — R4
 
 ## Changelog
 - 2026-04-18: initial draft (brownfield --from-code). AV1-only, HEVC references removed per direction of travel.

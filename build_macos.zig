@@ -10,7 +10,7 @@ pub fn buildPlatform(
 ) shared_defs.PlatformModules {
     // --- VideoToolbox encoder backend (HEVC via VTCompressionSession) ---
     const encoder_backend_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/encoder_backend.zig"),
+        .root_source_file = b.path("packages/zerocast/src/macos/encoder_backend.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -18,9 +18,9 @@ pub fn buildPlatform(
             .{ .name = "encoder", .module = shared.encoder },
         },
     });
-    encoder_backend_mod.addIncludePath(b.path("src/macos"));
+    encoder_backend_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
     encoder_backend_mod.addCSourceFile(.{
-        .file = b.path("src/macos/videotoolbox.m"),
+        .file = b.path("packages/zerocast/src/macos/videotoolbox.m"),
         .flags = &.{"-fobjc-arc"},
     });
     encoder_backend_mod.linkFramework("VideoToolbox", .{});
@@ -30,14 +30,14 @@ pub fn buildPlatform(
 
     // --- macOS keymap (W3C KeyboardEvent.code → macOS virtual keycodes) ---
     const keymap_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/keymap.zig"),
+        .root_source_file = b.path("packages/zerocast/src/macos/keymap.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // --- Input handler (mouse + keyboard injection via CoreGraphics) ---
     const input_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/input.zig"),
+        .root_source_file = b.path("packages/zerocast/src/macos/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -46,13 +46,13 @@ pub fn buildPlatform(
             .{ .name = "session", .module = shared.session },
         },
     });
-    input_mod.addIncludePath(b.path("src/macos"));
+    input_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
     input_mod.linkFramework("CoreGraphics", .{});
     input_mod.linkFramework("ApplicationServices", .{});
 
     // --- App share module (ScreenCaptureKit capture + VideoToolbox encode + WebRTC) ---
     const app_share_mod = b.createModule(.{
-        .root_source_file = b.path("src/macos/app_share.zig"),
+        .root_source_file = b.path("packages/zerocast/src/macos/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -67,13 +67,13 @@ pub fn buildPlatform(
             .{ .name = "clock", .module = shared.clock },
         },
     });
-    app_share_mod.addIncludePath(b.path("src/macos"));
+    app_share_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
     app_share_mod.addCSourceFile(.{
-        .file = b.path("src/macos/screen_capture.m"),
+        .file = b.path("packages/zerocast/src/macos/screen_capture.m"),
         .flags = &.{"-fobjc-arc"},
     });
     app_share_mod.addCSourceFile(.{
-        .file = b.path("src/macos/virtual_display.m"),
+        .file = b.path("packages/zerocast/src/macos/virtual_display.m"),
         .flags = &.{"-fobjc-arc"},
     });
     app_share_mod.linkFramework("ScreenCaptureKit", .{});
@@ -112,7 +112,7 @@ pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
     const cmake_configure = b.addSystemCommand(&.{
         "cmake",
         "-S",
-        "libdatachannel",
+        "packages/libdatachannel",
         "-B",
         cmake_build_dir,
         "-DCMAKE_BUILD_TYPE=Release",

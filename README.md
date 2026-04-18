@@ -160,30 +160,30 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 
 | File | What it does |
 |---|---|
-| `src/app_share.zig` | App sharing session — headless Xorg, NvFBC capture loop, resize, input |
-| `src/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
-| `src/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
-| `src/codec.zig` | Codec enum (AV1/HEVC) — shared across encoder, session, recorder |
-| `src/encoder.zig` | Encode pipeline — CUDA copy, NVENC encode, idle detection, timing telemetry |
-| `src/nvenc.zig` | NVENC SDK 12.0 bindings — AV1/HEVC config, codec detection, VBR rate control |
-| `src/cuda.zig` | CUDA Driver API — GL texture interop, pitched device memory |
-| `src/nvfbc.zig` | NvFBC bindings — GPU texture capture, polling mode |
-| `src/daemon.zig` | Daemon — Unix socket listener, session slots (up to 8), thread lifecycle |
-| `src/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
-| `src/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
-| `src/headless_display.zig` | Headless Xorg — config generation, display discovery, xrandr resize |
-| `src/xorg.zig` | Setuid helper — Xorg process lifecycle (minimal, root-only) |
-| `src/xtest_input.zig` | Input injection — XTEST extension, keycode mapping |
-| `src/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
-| `src/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
-| `src/fpscap.zig` | Frame rate cap — LD_PRELOAD `glXSwapBuffers` hook |
-| `src/kms.zig` | KMS helper — DRM plane capture, DMA-BUF export (retained for Wayland) |
-| `worker/src/room.ts` | Durable Object — signaling, TURN credentials, shares-list broadcast |
-| `worker/src/hub.ts` | Hub page — live session cards, pop-out viewer windows |
-| `worker/src/viewer.ts` | App viewer — WebRTC client, stats panel, abs-capture-time e2e latency |
-| `worker/src/terminal-viewer.ts` | Terminal viewer — xterm.js + WebRTC data channel |
-| `worker/src/overlay.ts` | SVG overlay — multi-cursor rendering, draw paths, Bibata cursors |
-| `worker/src/input.ts` | Input controller — binary encoding, coordinate mapping, draw/input modes |
+| `packages/zerocast/src/app_share.zig` | App sharing session — headless Xorg, NvFBC capture loop, resize, input |
+| `packages/zerocast/src/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
+| `packages/zerocast/src/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
+| `packages/zerocast/src/codec.zig` | Codec enum (AV1/HEVC) — shared across encoder, session, recorder |
+| `packages/zerocast/src/encoder.zig` | Encode pipeline — CUDA copy, NVENC encode, idle detection, timing telemetry |
+| `packages/zerocast/src/nvenc.zig` | NVENC SDK 12.0 bindings — AV1/HEVC config, codec detection, VBR rate control |
+| `packages/zerocast/src/cuda.zig` | CUDA Driver API — GL texture interop, pitched device memory |
+| `packages/zerocast/src/nvfbc.zig` | NvFBC bindings — GPU texture capture, polling mode |
+| `packages/zerocast/src/daemon.zig` | Daemon — Unix socket listener, session slots (up to 8), thread lifecycle |
+| `packages/zerocast/src/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
+| `packages/zerocast/src/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
+| `packages/zerocast/src/headless_display.zig` | Headless Xorg — config generation, display discovery, xrandr resize |
+| `packages/zerocast/src/xorg.zig` | Setuid helper — Xorg process lifecycle (minimal, root-only) |
+| `packages/zerocast/src/xtest_input.zig` | Input injection — XTEST extension, keycode mapping |
+| `packages/zerocast/src/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
+| `packages/zerocast/src/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
+| `packages/zerocast/src/fpscap.zig` | Frame rate cap — LD_PRELOAD `glXSwapBuffers` hook |
+| `packages/zerocast/src/kms.zig` | KMS helper — DRM plane capture, DMA-BUF export (retained for Wayland) |
+| `packages/worker/src/room.ts` | Durable Object — signaling, TURN credentials, shares-list broadcast |
+| `packages/worker/src/hub.ts` | Hub page — live session cards, pop-out viewer windows |
+| `packages/worker/src/viewer.ts` | App viewer — WebRTC client, stats panel, abs-capture-time e2e latency |
+| `packages/worker/src/terminal-viewer.ts` | Terminal viewer — xterm.js + WebRTC data channel |
+| `packages/worker/src/overlay.ts` | SVG overlay — multi-cursor rendering, draw paths, Bibata cursors |
+| `packages/worker/src/input.ts` | Input controller — binary encoding, coordinate mapping, draw/input modes |
 | `build.zig` | Build system — executables, modules, static libdatachannel, tests |
 | `run.ts` | Task runner — build, test, lint, setup, worker-dev, worker-deploy |
 

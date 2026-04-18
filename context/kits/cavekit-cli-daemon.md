@@ -103,12 +103,12 @@ Single-binary process lifecycle for zerocast as an unprivileged user process. Co
 - See also: cavekit-testing.md (DI patterns, determinism, lint gate)
 
 ## Source Traceability
-- `src/main.zig` — R1, R2 (mode dispatch)
-- `src/shared/daemon.zig` — R3, R4, R5, R6, R10 (daemon core)
-- `src/shared/cli.zig` — R2, R3, R10 (subcommand parsing and client)
-- `src/shared/control.zig` — R3 (wire protocol)
-- `src/shared/clock.zig` (or equivalent) — R7 (Clock interface)
-- `src/shared/debounce.zig` (or equivalent) — R8 (Debounce primitive)
+- `packages/zerocast/src/main.zig` — R1, R2 (mode dispatch)
+- `packages/zerocast/src/shared/daemon.zig` — R3, R4, R5, R6, R10 (daemon core)
+- `packages/zerocast/src/shared/cli.zig` — R2, R3, R10 (subcommand parsing and client)
+- `packages/zerocast/src/shared/control.zig` — R3 (wire protocol)
+- `packages/zerocast/src/shared/clock.zig` (or equivalent) — R7 (Clock interface)
+- `packages/zerocast/src/shared/debounce.zig` (or equivalent) — R8 (Debounce primitive)
 
 ## Changelog
 - 2026-04-18: initial draft (brownfield --from-code)

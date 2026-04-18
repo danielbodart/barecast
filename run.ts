@@ -18,9 +18,9 @@ async function which(cmd: string): Promise<boolean> {
 // ─── Prerequisites ─────────────────────────────────────────────────────────
 
 async function ensureSubmodule() {
-    if (!existsSync("libdatachannel/CMakeLists.txt")) {
+    if (!existsSync("packages/libdatachannel/CMakeLists.txt")) {
         const mainWorktree = (await $`git worktree list`.quiet()).text().split("\n")[0]?.split(/\s+/)[0];
-        const mainSubmodule = mainWorktree ? `${mainWorktree}/libdatachannel` : null;
+        const mainSubmodule = mainWorktree ? `${mainWorktree}/packages/libdatachannel` : null;
         const isWorktree = mainSubmodule && mainWorktree !== SCRIPT_DIR;
         if (isWorktree && existsSync(`${mainSubmodule}/CMakeLists.txt`)) {
             // In a worktree, use `git worktree add` on each submodule instead of cloning.
@@ -29,9 +29,9 @@ async function ensureSubmodule() {
             const submodules = (await $`git -C ${mainSubmodule} submodule status`.quiet())
                 .text().trim().split("\n").map(line => line.trim().split(/\s+/));
             const commit = (await $`git -C ${mainSubmodule} rev-parse HEAD`.quiet()).text().trim();
-            await $`git -C ${mainSubmodule} worktree add --detach ${SCRIPT_DIR}/libdatachannel ${commit}`;
+            await $`git -C ${mainSubmodule} worktree add --detach ${SCRIPT_DIR}/packages/libdatachannel ${commit}`;
             for (const [depCommit, depPath] of submodules) {
-                await $`git -C ${mainSubmodule}/${depPath} worktree add --detach ${SCRIPT_DIR}/libdatachannel/${depPath} ${depCommit}`;
+                await $`git -C ${mainSubmodule}/${depPath} worktree add --detach ${SCRIPT_DIR}/packages/libdatachannel/${depPath} ${depCommit}`;
             }
 
         } else {
@@ -342,9 +342,9 @@ export async function ci() {
 
     // Worker: install deps, build viewer TS, deploy to production
     console.log("Deploying worker to production...");
-    await $`cd worker && bun install`;
+    await $`cd packages/worker && bun install`;
     await workerBuild(true);
-    await $`cd worker && bun run wrangler deploy --env production`;
+    await $`cd packages/worker && bun run wrangler deploy --env production`;
 
     // GitHub release
     if (process.env.GH_TOKEN) {
@@ -459,26 +459,26 @@ export async function hevcValidate() {
 async function workerBuild(minify = false) {
     console.log("Building viewer TypeScript...");
     const flags = minify ? ["--minify"] : [];
-    await $`bun build worker/src/viewer.ts --outdir worker/public --target=browser ${flags}`;
-    await $`bun build worker/src/terminal-viewer.ts --outdir worker/public --target=browser ${flags}`;
-    await $`bun build worker/src/hub.ts --outdir worker/public --target=browser ${flags}`;
-    await $`bun build worker/src/install.ts --outdir worker/public --target=browser ${flags}`;
-    await $`bun build worker/src/sw.ts --outdir worker/public --target=browser ${flags}`;
+    await $`bun build packages/worker/src/viewer.ts --outdir packages/worker/public --target=browser ${flags}`;
+    await $`bun build packages/worker/src/terminal-viewer.ts --outdir packages/worker/public --target=browser ${flags}`;
+    await $`bun build packages/worker/src/hub.ts --outdir packages/worker/public --target=browser ${flags}`;
+    await $`bun build packages/worker/src/install.ts --outdir packages/worker/public --target=browser ${flags}`;
+    await $`bun build packages/worker/src/sw.ts --outdir packages/worker/public --target=browser ${flags}`;
 }
 
 export async function workerDev() {
     await workerBuild();
-    await $`cd worker && bun run wrangler dev --port 8787`;
+    await $`cd packages/worker && bun run wrangler dev --port 8787`;
 }
 
 export async function workerDeploy() {
     await workerBuild(true);
-    await $`cd worker && bun run wrangler deploy`;
+    await $`cd packages/worker && bun run wrangler deploy`;
 }
 
 export async function workerPromote() {
     await workerBuild(true);
-    await $`cd worker && bun run wrangler deploy --env production`;
+    await $`cd packages/worker && bun run wrangler deploy --env production`;
 }
 
 // ─── Command dispatch ──────────────────────────────────────────────────────

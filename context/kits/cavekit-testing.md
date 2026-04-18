@@ -94,9 +94,9 @@ Cross-cutting testing strategy, dependency-injection patterns, and specification
 - See also: cavekit-viewer-ui.md (browser-side protocol encoder/decoder property tests)
 
 ## Source Traceability
-- `src/shared/prop_tests.zig` — R2, R4 (property-based test harness)
-- `src/shared/daemon.zig` — R3, R6 (Clock injection at daemon boundary)
-- `src/shared/encoder.zig` — R3 (FrameSink dispatch)
+- `packages/zerocast/src/shared/prop_tests.zig` — R2, R4 (property-based test harness)
+- `packages/zerocast/src/shared/daemon.zig` — R3, R6 (Clock injection at daemon boundary)
+- `packages/zerocast/src/shared/encoder.zig` — R3 (FrameSink dispatch)
 - `run.ts` — R2, R7 (test and lint entry points)
 
 ## Changelog

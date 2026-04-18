@@ -88,10 +88,10 @@ The signalling server: a durable-object-backed worker that brokers control messa
 - See also: cavekit-testing.md (worker-level contract tests)
 
 ## Source Traceability
-- `worker/src/index.ts` — R1, R7
-- `worker/src/room.ts` — R1, R2, R3, R4, R5, R6, R9
-- `worker/src/viewer.ts` — R7
-- `worker/src/terminal-viewer.ts` — R7
+- `packages/worker/src/index.ts` — R1, R7
+- `packages/worker/src/room.ts` — R1, R2, R3, R4, R5, R6, R9
+- `packages/worker/src/viewer.ts` — R7
+- `packages/worker/src/terminal-viewer.ts` — R7
 - CI workflow under `.github/workflows/` — R8
 
 ## Changelog

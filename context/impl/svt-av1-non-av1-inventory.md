@@ -12,20 +12,20 @@ Generated 2026-04-18. Input to T-009 (actual deletion pass).
 | REPLACE  | 0     |
 
 **Whole files queued for deletion (2):**
-- `src/linux/vaapi/hevc_params.c` — HEVC-only GPB-B slice packer. No AV1 equivalent needed (VA-API vaapi.zig will shrink to AV1 encode path only; if VA-API AV1 is out of scope for R5 the whole `src/linux/vaapi/` directory becomes a candidate — see note under that file).
-- *(optional, pending scope decision in T-009)* entire `src/linux/vaapi/` tree if VA-API is dropped in favour of SVT-AV1 software encode. Flagged but not listed as a hard delete — R5 only demands AV1, it does not specify VA-API removal.
+- `packages/zerocast/src/linux/vaapi/hevc_params.c` — HEVC-only GPB-B slice packer. No AV1 equivalent needed (VA-API vaapi.zig will shrink to AV1 encode path only; if VA-API AV1 is out of scope for R5 the whole `packages/zerocast/src/linux/vaapi/` directory becomes a candidate — see note under that file).
+- *(optional, pending scope decision in T-009)* entire `packages/zerocast/src/linux/vaapi/` tree if VA-API is dropped in favour of SVT-AV1 software encode. Flagged but not listed as a hard delete — R5 only demands AV1, it does not specify VA-API removal.
 
 **Whole files that DO NOT need deletion** (no HEVC/VBR references at all):
-- `src/shared/codec.zig` — already only declares `Codec` enum with `.av1` variant (see KEEP).
-- `src/shared/ivf.zig` — already AV1-only logic (IVF fourCC `AV01`); no HEVC code path found.
-- `src/shared/encoder.zig` — codec-neutral pipeline; no HEVC or VBR refs.
-- `src/shared/session.zig` — no codec or bitrate references.
-- `src/shared/session_recorder.zig` — writes IVF only, no HEVC/VBR.
-- `src/macos/*` — already AV1-only (VideoToolbox AV1 path); no HEVC/VBR refs found.
-- `worker/src/*` — signaling-only; browser picks codec via SDP. No HEVC/VBR refs.
+- `packages/zerocast/src/shared/codec.zig` — already only declares `Codec` enum with `.av1` variant (see KEEP).
+- `packages/zerocast/src/shared/ivf.zig` — already AV1-only logic (IVF fourCC `AV01`); no HEVC code path found.
+- `packages/zerocast/src/shared/encoder.zig` — codec-neutral pipeline; no HEVC or VBR refs.
+- `packages/zerocast/src/shared/session.zig` — no codec or bitrate references.
+- `packages/zerocast/src/shared/session_recorder.zig` — writes IVF only, no HEVC/VBR.
+- `packages/zerocast/src/macos/*` — already AV1-only (VideoToolbox AV1 path); no HEVC/VBR refs found.
+- `packages/worker/src/*` — signaling-only; browser picks codec via SDP. No HEVC/VBR refs.
 - `run.ts` — no `hevc-validate` target exists (CLAUDE.md reference was historical; already removed). No HEVC / AV1 / codec / bitrate refs.
 - `build.zig` — no HEVC refs found; compiles `hevc_params.c` only implicitly via addCSourceFile (verify in T-009).
-- `src/linux/gpu_detect.zig` — no HEVC/AV1 strings; purely VRAM/NVENC/VA-API probe. KEEP.
+- `packages/zerocast/src/linux/gpu_detect.zig` — no HEVC/AV1 strings; purely VRAM/NVENC/VA-API probe. KEEP.
 
 **Findings surprising the prompt's expectations:**
 1. `nvenc_backend.zig` already contains **no HEVC fallback** — it directly calls `selectAv1Guid`. HEVC was removed in an earlier pass but the dead `getHevcGuid` probe still lives in `nvenc.zig`.
@@ -43,7 +43,7 @@ Net effect: T-009 is much smaller than the cavekit assumed. Most "delete" work i
 
 Format: `line | symbol/constant/function | intent: DELETE | KEEP (reason) | REPLACE (with AV1 equivalent)`
 
-### `src/linux/wayland/nvenc.zig`
+### `packages/zerocast/src/linux/wayland/nvenc.zig`
 
 Probe/dispatch code for NVENC codec selection. Core NVENC wrapper is codec-neutral (takes a GUID) so most file is KEEP.
 
@@ -59,7 +59,7 @@ Probe/dispatch code for NVENC codec selection. Core NVENC wrapper is codec-neutr
 
 *Note: no VBR/CBR/averageBitRate/maxBitRate references found in this file — rate-control is NOT wired here (nvenc.zig is the low-level API binding).*
 
-### `src/linux/wayland/nvenc_backend.zig`
+### `packages/zerocast/src/linux/wayland/nvenc_backend.zig`
 
 High-level NVENC encoder orchestration. Already CQP, already AV1.
 
@@ -70,7 +70,7 @@ No DELETE hits found. All content is:
 
 **Status**: already compliant with R5 + R7. T-009 touches this file only if a comment like "AV1 preferred, HEVC fallback" needs rewording.
 
-### `src/linux/vaapi/vaapi.zig`
+### `packages/zerocast/src/linux/vaapi/vaapi.zig`
 
 VA-API HEVC encoder. This is the file MEMORY.md `vaapi_hevc_fix.md` describes.
 
@@ -86,7 +86,7 @@ VA-API HEVC encoder. This is the file MEMORY.md `vaapi_hevc_fix.md` describes.
 
 **Scope flag**: If T-009 decides VA-API does NOT need an AV1 port (because SVT-AV1 software encode covers the non-NVENC case per R5), **delete this entire file**. Defer to T-009 orchestrator's call.
 
-### `src/linux/vaapi/encoder_backend.zig`
+### `packages/zerocast/src/linux/vaapi/encoder_backend.zig`
 
 EncodeBackend vtable impl for VA-API.
 
@@ -94,7 +94,7 @@ EncodeBackend vtable impl for VA-API.
 |---:|---|---|---|
 | 1–end | entire file | DELETE | Wraps `vaapi.zig` (HEVC-only). Remove with `vaapi.zig` or rewrite for SVT-AV1 (see scope flag above). |
 
-### `src/linux/vaapi/hevc_params.c`
+### `packages/zerocast/src/linux/vaapi/hevc_params.c`
 
 Standalone C helper for HEVC slice param bitfield packing.
 
@@ -104,7 +104,7 @@ Standalone C helper for HEVC slice param bitfield packing.
 
 Also delete the corresponding `addCSourceFile` entry in `build.zig` (verify location in T-009).
 
-### `src/macos/videotoolbox.h`, `videotoolbox.m`
+### `packages/zerocast/src/macos/videotoolbox.h`, `videotoolbox.m`
 
 VideoToolbox compression session.
 
@@ -112,11 +112,11 @@ No HEVC / VBR / AverageBitRate / DataRateLimits references found. **No changes n
 
 **Note**: If macOS historically had `kCMVideoCodecType_HEVC` references they're already gone. Spot-check in T-009 but no worklist entries to add.
 
-### `src/macos/encoder_backend.zig`, `app_share.zig`
+### `packages/zerocast/src/macos/encoder_backend.zig`, `app_share.zig`
 
 No HEVC / VBR references. **No changes needed.**
 
-### `src/shared/codec.zig`
+### `packages/zerocast/src/shared/codec.zig`
 
 ```zig
 pub const Codec = enum { av1 };
@@ -126,14 +126,14 @@ pub const Codec = enum { av1 };
 |---:|---|---|---|
 | 1 | `Codec.av1` only | KEEP | Already AV1-only. No HEVC variant to remove. |
 
-### `src/shared/ivf.zig`
+### `packages/zerocast/src/shared/ivf.zig`
 
 | line | symbol | intent | reason |
 |---:|---|---|---|
 | FourCC mapping | `.av1 => "AV01"` | KEEP | Only AV1 path wired. |
 | any `.hevc` arm | — | n/a | None present. |
 
-### `src/shared/encoder.zig`, `src/shared/session.zig`, `src/shared/session_recorder.zig`
+### `packages/zerocast/src/shared/encoder.zig`, `packages/zerocast/src/shared/session.zig`, `packages/zerocast/src/shared/session_recorder.zig`
 
 Codec-neutral pipeline. No HEVC/VBR refs. **No changes needed.**
 
@@ -149,11 +149,11 @@ No HEVC refs in the main build graph. Scan for `hevc_params.c` addition in the L
 
 No HEVC / AV1 / VBR / CBR / bitrate / `hevc-validate` references. CLAUDE.md mention of "hevc-validate run.ts target" is stale — no such target exists in current `run.ts`. **No changes needed.**
 
-### `worker/src/*`
+### `packages/worker/src/*`
 
 No HEVC / VBR / codec negotiation code. Browser does SDP codec selection on its own via `RTCPeerConnection`; worker only shuttles SDP/ICE blobs. **No changes needed.**
 
-### `src/linux/gpu_detect.zig`
+### `packages/zerocast/src/linux/gpu_detect.zig`
 
 No HEVC/AV1 strings — pure VRAM / `/dev/dri/*` / CUDA probe. **No changes needed.**
 
@@ -187,12 +187,12 @@ Grepped the whole `src/` tree for:
 
 ## HEVC symbol hunt results
 
-Grepped the whole `src/` + `worker/src/` + `build.zig` + `run.ts` for:
+Grepped the whole `src/` + `packages/worker/src/` + `build.zig` + `run.ts` for:
 
 | pattern | hits | locations |
 |---|---|---|
-| `HEVC` / `hevc` / `h265` / `h.265` | ~10 | all in `src/linux/vaapi/vaapi.zig` + `src/linux/vaapi/hevc_params.c` + (two stale refs in `src/linux/wayland/nvenc.zig`) |
-| `NV_ENC_CODEC_HEVC_GUID` | 1 | `src/linux/wayland/nvenc.zig` — the `CODEC_HEVC_GUID_STR` constant |
+| `HEVC` / `hevc` / `h265` / `h.265` | ~10 | all in `packages/zerocast/src/linux/vaapi/vaapi.zig` + `packages/zerocast/src/linux/vaapi/hevc_params.c` + (two stale refs in `packages/zerocast/src/linux/wayland/nvenc.zig`) |
+| `NV_ENC_CODEC_HEVC_GUID` | 1 | `packages/zerocast/src/linux/wayland/nvenc.zig` — the `CODEC_HEVC_GUID_STR` constant |
 | `kCMVideoCodecType_HEVC` | 0 | — |
 | `Codec.hevc` | 0 | — |
 | IVF fourCC for HEVC | 0 | — |
@@ -211,5 +211,5 @@ Grepped the whole `src/` + `worker/src/` + `build.zig` + `run.ts` for:
 ## Files NOT in the grep scope but worth spot-checking in T-009
 
 - `bootstrap.sh` — mentions `libva-dev`; if VA-API is dropped, remove the apt install line.
-- `src/shared/daemon.zig`, `src/shared/cli.zig` — CLI/daemon glue; no codec refs expected but worth a final grep.
+- `packages/zerocast/src/shared/daemon.zig`, `packages/zerocast/src/shared/cli.zig` — CLI/daemon glue; no codec refs expected but worth a final grep.
 - `README.md` — mentions "AV1 preferred, HEVC fallback" per MEMORY.md — update to "AV1 only".
