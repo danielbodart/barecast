@@ -8,10 +8,10 @@ Build site: context/plans/build-site.md
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T-001 | PENDING | SVT-AV1 static lib integration (submodule + cmake + build.zig) |
-| T-005 | PENDING | Inventory non-AV1/VBR symbols |
-| T-006 | PENDING | SW backend adapter (blocked T-001) |
-| T-009 | PENDING | Delete non-AV1/VBR symbols (blocked T-005) |
+| T-001 | DONE | SVT-AV1 v3.1.2 submodule + rebuild-libs wiring (commit adad2ed). COMPILE_C_ONLY=ON (no NASM). Lib at SVT-AV1/Bin/Release/libSvtAv1Enc.a |
+| T-005 | DONE | Inventory worklist at context/impl/svt-av1-non-av1-inventory.md (commit 91ad99b) |
+| T-006 | PENDING | SW backend adapter (blocked T-001 ✓ — unblocked) |
+| T-009 | PENDING | Delete non-AV1/VBR symbols (blocked T-005 ✓ — unblocked) |
 | T-010 | PENDING | Frame ingestion (blocked T-006) |
 | T-011 | PENDING | CQP config (blocked T-006) |
 | T-012 | PENDING | P-only GOP (blocked T-006) |
