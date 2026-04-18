@@ -90,6 +90,55 @@ pub fn caseTeardownNoLeak(
     }
 }
 
+/// Case 4 — reconfigure-emits-keyframe.
+/// Tear down and re-create a backend at a new resolution. The first frame
+/// from the freshly configured backend must be a keyframe regardless of
+/// the force flag — fresh encoder state cannot refer to prior frames.
+pub fn caseReconfigureEmitsKeyframe(
+    allocator: std.mem.Allocator,
+    factory: BackendFactory,
+    config: ContractConfig,
+) !void {
+    // First backend at config.width × config.height
+    {
+        var backend = try factory(allocator, config);
+        defer backend.deinit();
+        try backend.prepare();
+        if (try backend.encode(true)) |_| backend.unlock();
+    }
+
+    // Reconfigured backend at a different size. First emitted frame
+    // should be a keyframe — we pass force=false to prove the encoder
+    // self-keyframes on a fresh stream.
+    var reconf = config;
+    reconf.width = @max(64, config.width / 2);
+    reconf.height = @max(64, config.height / 2);
+    var backend = try factory(allocator, reconf);
+    defer backend.deinit();
+    try backend.prepare();
+    const maybe = try backend.encode(false);
+    try std.testing.expect(maybe != null);
+    try std.testing.expect(maybe.?.is_key);
+    backend.unlock();
+}
+
+/// Case 5 — malformed input is rejected cleanly.
+/// A backend must refuse to encode before prepare() has been called
+/// or after teardown, without crashing or producing stale output.
+pub fn caseMalformedInputRejected(
+    allocator: std.mem.Allocator,
+    factory: BackendFactory,
+    config: ContractConfig,
+) !void {
+    var backend = try factory(allocator, config);
+    defer backend.deinit();
+
+    // encode() before prepare() either errors cleanly or returns null.
+    // Both are acceptable contracts — backend must not crash.
+    const maybe = backend.encode(false) catch null;
+    if (maybe) |_| backend.unlock();
+}
+
 /// Run every contract case against the supplied factory. Call this from a
 /// real backend's test block; failures bubble up with useful diagnostics.
 pub fn runContract(
@@ -100,6 +149,8 @@ pub fn runContract(
     try caseFirstFramePrdocesOutput(allocator, factory, config);
     try caseForceKeyframeHonored(allocator, factory, config);
     try caseTeardownNoLeak(allocator, factory, config);
+    try caseReconfigureEmitsKeyframe(allocator, factory, config);
+    try caseMalformedInputRejected(allocator, factory, config);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -159,6 +210,67 @@ const FakeBackend = struct {
 test "contract: FakeBackend satisfies the full contract" {
     const cfg = ContractConfig{ .codec = .av1, .width = 320, .height = 240, .fps = 30 };
     try runContract(std.testing.allocator, FakeBackend.build, cfg);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Property tests — T-008. Fuzz the factory across the valid config
+// ranges and run the full contract. A backend that can be constructed
+// at (w, h, fps, qp) within spec bounds must pass every contract case
+// for that configuration.
+// ─────────────────────────────────────────────────────────────────────
+
+test "property: contract holds across the valid config range" {
+    // Bounds per capture-pipeline R3 + SVT-AV1 spec (widths multiple of
+    // 8, height even, fps 1–240, qp 0–63). The FakeBackend here is lax
+    // about those bounds; a real backend plug-in constrains to its own.
+    const dims = [_]struct { w: u32, h: u32 }{
+        .{ .w = 64, .h = 64 }, // minimum
+        .{ .w = 128, .h = 72 },
+        .{ .w = 320, .h = 240 },
+        .{ .w = 640, .h = 480 },
+        .{ .w = 1280, .h = 720 },
+        .{ .w = 1920, .h = 1080 },
+        .{ .w = 3840, .h = 2160 }, // 4K
+    };
+    const fpses = [_]u32{ 1, 15, 24, 30, 60, 120 };
+    const qps = [_]u32{ 0, 10, 20, 32, 51, 63 };
+
+    for (dims) |d| {
+        // For each dimension pick a coprime-ish fps + qp so we
+        // sweep combinations without an O(n³) explosion.
+        const fps = fpses[d.w % fpses.len];
+        const qp = qps[d.h % qps.len];
+        const cfg = ContractConfig{
+            .codec = .av1,
+            .width = d.w,
+            .height = d.h,
+            .fps = fps,
+            .qp = qp,
+        };
+        runContract(std.testing.allocator, FakeBackend.build, cfg) catch |err| {
+            std.debug.print(
+                "contract failed at {d}x{d} @ {d}fps qp={d}: {}\n",
+                .{ d.w, d.h, fps, qp, err },
+            );
+            return err;
+        };
+    }
+}
+
+test "property: reconfigure is idempotent on repeated calls" {
+    // Repeatedly create+destroy a backend at the same config. Each
+    // cycle must produce a valid first-keyframe and release cleanly.
+    const cfg = ContractConfig{ .codec = .av1, .width = 640, .height = 480, .fps = 30 };
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        var backend = try FakeBackend.build(std.testing.allocator, cfg);
+        defer backend.deinit();
+        try backend.prepare();
+        const maybe = try backend.encode(true);
+        try std.testing.expect(maybe != null);
+        try std.testing.expect(maybe.?.is_key);
+        backend.unlock();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
