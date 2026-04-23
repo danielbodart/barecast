@@ -388,6 +388,11 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "input_protocol", .module = input_protocol_mod },
+                .{ .name = "viewer_state", .module = viewer_state_mod },
+                .{ .name = "codec", .module = codec_mod },
+            },
         }),
     });
     session_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));

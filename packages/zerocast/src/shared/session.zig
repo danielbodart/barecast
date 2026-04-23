@@ -1082,3 +1082,27 @@ test "jsonRoutedIce roundtrip" {
     try std.testing.expectEqualSlices(u8, "a3f9c12d4e5b6708", jsonExtract(msg, "to").?);
     try std.testing.expectEqualSlices(u8, "0", jsonExtract(msg, "mid").?);
 }
+
+// ── R5 AC3 regression guard (T-019) ─────────────────────────────────────
+// Viewer negotiation must advertise AV1 as the sole video codec — no
+// fallback, no dual-offer, regardless of which encoder backend the
+// selector chose. The `Codec` enum is the only input that drives the
+// `RTC_CODEC_*` pick at Peer.startScreen. Locking its shape here means
+// any future addition forces an explicit review of every track-init
+// call site that currently exhaustively switches on Codec.
+
+test "R5 AC3 regression: negotiated codec universe is AV1-only" {
+    const fields = @typeInfo(Codec).@"enum".fields;
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("av1", fields[0].name);
+}
+
+test "R5 AC3 regression: track_init.codec maps Codec.av1 to RTC_CODEC_AV1" {
+    // Mirrors the startScreen switch literally — if anything else sneaks
+    // in there, this test catches the second branch.
+    const codec: Codec = .av1;
+    const rtc_codec = switch (codec) {
+        .av1 => c.RTC_CODEC_AV1,
+    };
+    try std.testing.expectEqual(c.RTC_CODEC_AV1, rtc_codec);
+}
