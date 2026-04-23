@@ -60,6 +60,31 @@ pub const DetectResult = struct {
     }
 };
 
+/// Which encoder backend the selector picks for a given probe result.
+pub const BackendKind = enum { nvenc, svt_av1 };
+
+/// Probe-driven backend selection (capture-pipeline R4).
+///
+/// NVIDIA hardware AV1 → NVENC. Everything else — Intel/AMD VA-API AV1
+/// (detected but not implementable because the VA-API encoder was
+/// removed with T-009), absent AV1 encode, absent GPU — falls through
+/// to the SVT-AV1 software backend. The user cannot override this;
+/// selection is driven only by the probe result.
+pub fn selectBackend(detect: *const DetectResult) BackendKind {
+    const best_candidate = detect.best() orelse return .svt_av1;
+    if (best_candidate.has_av1 and best_candidate.vendor == .nvidia) return .nvenc;
+    return .svt_av1;
+}
+
+/// Render node path for the compositor to use. Prefer the highest-scoring
+/// candidate's render node; fall back to /dev/dri/renderD128 when no GPU
+/// was probed (unusual — a compositor won't actually run in that case but
+/// we pick a sane default rather than crash during config setup).
+pub fn selectRenderDevice(detect: *const DetectResult) [*:0]const u8 {
+    if (detect.best()) |b| return b.renderPath();
+    return "/dev/dri/renderD128";
+}
+
 const MAX_GPUS = 8;
 
 // ── Main entry point ────────────────────────────────────────────────────
@@ -419,4 +444,56 @@ test "vendor priority ordering" {
     try std.testing.expect(GpuVendor.nvidia.priority() > GpuVendor.intel.priority());
     try std.testing.expect(GpuVendor.intel.priority() > GpuVendor.amd.priority());
     try std.testing.expect(GpuVendor.amd.priority() > GpuVendor.unknown.priority());
+}
+
+// ── Backend selection (T-018) ────────────────────────────────────────────
+
+fn makeDetect(items: []const GpuCandidate) DetectResult {
+    var result = DetectResult{ .candidates = undefined, .count = @intCast(items.len) };
+    for (items, 0..) |c, i| result.candidates[i] = c;
+    return result;
+}
+
+test "selectBackend: empty probe → SVT-AV1 fallback" {
+    const d = makeDetect(&.{});
+    try std.testing.expectEqual(BackendKind.svt_av1, selectBackend(&d));
+}
+
+test "selectBackend: NVIDIA with AV1 → NVENC" {
+    const d = makeDetect(&.{testCandidate(.nvidia, true)});
+    try std.testing.expectEqual(BackendKind.nvenc, selectBackend(&d));
+}
+
+test "selectBackend: NVIDIA without AV1 → SVT-AV1" {
+    const d = makeDetect(&.{testCandidate(.nvidia, false)});
+    try std.testing.expectEqual(BackendKind.svt_av1, selectBackend(&d));
+}
+
+test "selectBackend: Intel with AV1 → SVT-AV1 (no VA-API backend)" {
+    // VA-API encoder was removed in T-009, so HW-AV1 on Intel is not a
+    // usable backend today — fall through to SVT-AV1.
+    const d = makeDetect(&.{testCandidate(.intel, true)});
+    try std.testing.expectEqual(BackendKind.svt_av1, selectBackend(&d));
+}
+
+test "selectBackend: AMD with AV1 → SVT-AV1 (no VA-API backend)" {
+    const d = makeDetect(&.{testCandidate(.amd, true)});
+    try std.testing.expectEqual(BackendKind.svt_av1, selectBackend(&d));
+}
+
+test "selectBackend: multiple GPUs — picks sorted best" {
+    var items = [_]GpuCandidate{
+        testCandidate(.intel, true), // detected but not implementable
+        testCandidate(.nvidia, true), // HW AV1 — preferred
+    };
+    sortCandidates(&items);
+    var d = DetectResult{ .candidates = undefined, .count = 2 };
+    for (items, 0..) |c, i| d.candidates[i] = c;
+    try std.testing.expectEqual(BackendKind.nvenc, selectBackend(&d));
+}
+
+test "selectRenderDevice: empty probe returns default" {
+    const d = makeDetect(&.{});
+    const path = selectRenderDevice(&d);
+    try std.testing.expectEqualStrings("/dev/dri/renderD128", std.mem.span(path));
 }

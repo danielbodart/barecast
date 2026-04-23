@@ -11,12 +11,12 @@ const EncodeBackend = @import("encoder").EncodeBackend;
 const NvencBackend = @import("nvenc_backend").NvencBackend;
 const SvtBackend = @import("svt_backend").SvtBackend;
 const FrameDownloader = @import("frame_download").FrameDownloader;
+const gpu_detect = @import("gpu_detect");
 const session_mod = @import("session");
 const BroadcastSession = session_mod.BroadcastSession;
 const PEER_ID_LEN = session_mod.PEER_ID_LEN;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const generateRoomId = @import("control").generateRoomId;
-const GpuBackend = @import("control").GpuBackend;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 const WaylandInput = @import("wayland_input").WaylandInput;
 const Debounce = @import("debounce").Debounce;
@@ -34,10 +34,43 @@ pub const AppShareConfig = struct {
     room_id: ?[]const u8 = null,
     base_url: []const u8 = "https://zerocast.bodar.com",
     record_dir: ?[]const u8 = null,
-    render_device: [*:0]const u8 = "/dev/dri/renderD128",
-    gpu: GpuBackend = .auto,
     qp: u32 = 20,
 };
+
+/// Build the right backend variant for the probe-picked kind. Shared
+/// between initial setup and the resize reinit path so both stay in
+/// lockstep when selection logic evolves.
+fn initBackend(
+    kind: gpu_detect.BackendKind,
+    width: u32,
+    height: u32,
+    fps: u32,
+    qp: u32,
+) !BackendState {
+    switch (kind) {
+        .nvenc => {
+            const nvenc = NvencBackend.init(width, height, fps, qp) catch |err| {
+                log.err("NVENC encoder init failed: {}", .{err});
+                return error.EncoderInitFailed;
+            };
+            log.info("using NVIDIA NVENC AV1 encoder (GL renderbuffer → CUDA → NVENC)", .{});
+            return .{ .nvenc = nvenc };
+        },
+        .svt_av1 => {
+            var svt = SvtBackend.init(width, height, fps, qp) catch |err| {
+                log.err("SVT-AV1 encoder init failed: {}", .{err});
+                return error.EncoderInitFailed;
+            };
+            errdefer svt.deinit();
+            const dl = FrameDownloader.init(std.heap.c_allocator, width, height) catch |err| {
+                log.err("frame downloader init failed: {}", .{err});
+                return error.EncoderInitFailed;
+            };
+            log.info("using SVT-AV1 software AV1 encoder (GL FBO → CPU I420 → SVT-AV1)", .{});
+            return .{ .svt = .{ .backend = svt, .downloader = dl } };
+        },
+    }
+}
 
 /// Encoder backend — NVENC (GPU, zero-copy FBO→CUDA) or SVT-AV1 (CPU,
 /// FBO downloaded through FrameDownloader then handed as I420).
@@ -90,6 +123,10 @@ pub const AppShare = struct {
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
     backend_state: BackendState,
+    /// Probe-driven backend choice. Cached so resize reinit uses the same
+    /// selection the initial probe made (second-probe surprise would be
+    /// confusing — if GPU state changes mid-run, that's a reinit concern).
+    backend_kind: gpu_detect.BackendKind,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -136,8 +173,21 @@ pub const AppShare = struct {
 
         const setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
 
+        // Probe GPUs once. The result drives compositor render-device
+        // selection (highest-scoring GPU) *and* encoder-backend selection
+        // (selectBackend). The user cannot override — capture-pipeline R4
+        // AC4: selection is driven only by probe results.
+        const detect = gpu_detect.detectGpus();
+        const backend_kind = gpu_detect.selectBackend(&detect);
+        const render_device = gpu_detect.selectRenderDevice(&detect);
+        log.info(
+            "backend selection: {s} ({d} GPU(s) probed, render_device={s})",
+            .{ @tagName(backend_kind), detect.count, std.mem.span(render_device) },
+        );
+        self.backend_kind = backend_kind;
+
         // NVIDIA CUDA+GL interop requires this (gpu-screen-recorder confirmed)
-        if (config.gpu == .nvidia) {
+        if (backend_kind == .nvenc) {
             _ = setenv("__GL_THREADED_OPTIMIZATIONS", "0", 1);
         }
 
@@ -156,8 +206,8 @@ pub const AppShare = struct {
         // Generate session ID early — used for socket name and signaling
         self.session_id = generateRoomId();
 
-        // Start compositor
-        self.compositor = Compositor.init(config.width, config.height, config.fps, config.render_device, &self.session_id) catch |err| {
+        // Start compositor on the probe-picked render node.
+        self.compositor = Compositor.init(config.width, config.height, config.fps, render_device, &self.session_id) catch |err| {
             log.err("compositor init failed: {}", .{err});
             return error.CompositorFailed;
         };
@@ -226,34 +276,9 @@ pub const AppShare = struct {
 
         self.viewer_registry = ViewerRegistry.init();
 
-        // Encoder backend initialisation. NVENC (NVIDIA hardware AV1)
-        // when the user pinned `.nvidia` or left it at `.auto`; SVT-AV1
-        // software fallback for `.intel` or any non-NVIDIA host. T-018
-        // replaces this user-driven switch with probe-driven selection.
-        self.backend_state = switch (config.gpu) {
-            .nvidia, .auto => blk: {
-                const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
-                    log.err("NVENC encoder init failed: {}", .{err});
-                    return error.EncoderInitFailed;
-                };
-                log.info("using NVIDIA NVENC AV1 encoder (GL renderbuffer → CUDA → NVENC)", .{});
-                break :blk .{ .nvenc = nvenc };
-            },
-            .intel => blk: {
-                const svt = SvtBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
-                    log.err("SVT-AV1 encoder init failed: {}", .{err});
-                    return error.EncoderInitFailed;
-                };
-                const dl = FrameDownloader.init(std.heap.c_allocator, config.width, config.height) catch |err| {
-                    var svt_mut = svt;
-                    svt_mut.deinit();
-                    log.err("frame downloader init failed: {}", .{err});
-                    return error.EncoderInitFailed;
-                };
-                log.info("using SVT-AV1 software AV1 encoder (GL FBO → CPU I420 → SVT-AV1)", .{});
-                break :blk .{ .svt = .{ .backend = svt, .downloader = dl } };
-            },
-        };
+        // Encoder backend initialisation — driven by `backend_kind` from
+        // the probe above. R4 AC4: no user override.
+        self.backend_state = try initBackend(backend_kind, config.width, config.height, config.fps, config.qp);
         errdefer self.backend_state.deinitInner();
         const t_encoder = ts.elapsed(&t);
 
@@ -480,30 +505,10 @@ pub const AppShare = struct {
         self.encoder.deinit();
         self.compositor.resize(new_w, new_h);
 
-        self.backend_state = switch (self.config.gpu) {
-            .nvidia, .auto => blk: {
-                const nvenc = NvencBackend.init(new_w, new_h, self.config.fps, self.config.qp) catch |e| {
-                    log.err("NVENC reinit failed, stopping: {}", .{e});
-                    self.should_stop.store(true, .release);
-                    return;
-                };
-                break :blk .{ .nvenc = nvenc };
-            },
-            .intel => blk: {
-                const svt = SvtBackend.init(new_w, new_h, self.config.fps, self.config.qp) catch |e| {
-                    log.err("SVT-AV1 reinit failed, stopping: {}", .{e});
-                    self.should_stop.store(true, .release);
-                    return;
-                };
-                const dl = FrameDownloader.init(std.heap.c_allocator, new_w, new_h) catch |e| {
-                    var svt_mut = svt;
-                    svt_mut.deinit();
-                    log.err("frame downloader reinit failed, stopping: {}", .{e});
-                    self.should_stop.store(true, .release);
-                    return;
-                };
-                break :blk .{ .svt = .{ .backend = svt, .downloader = dl } };
-            },
+        self.backend_state = initBackend(self.backend_kind, new_w, new_h, self.config.fps, self.config.qp) catch |e| {
+            log.err("backend reinit failed, stopping: {}", .{e});
+            self.should_stop.store(true, .release);
+            return;
         };
 
         self.encoder = Encoder.init(

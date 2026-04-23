@@ -177,9 +177,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
-    if (platform_mods.gpu_detect) |gd_mod| {
-        daemon_mod.addImport("gpu_detect", gd_mod);
-    }
+    // Daemon no longer imports gpu_detect — backend selection moved
+    // into AppShare with T-018 (probe-driven, no user override).
 
     // ── CLI module (subcommand parser, socket client) ────────────────────
     const cli_mod = b.createModule(.{
@@ -409,9 +408,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    if (platform_mods.gpu_detect) |gd_mod| {
-        daemon_tests.root_module.addImport("gpu_detect", gd_mod);
-    }
     shared_defs.linkDatachannel(b, daemon_tests);
     test_step.dependOn(&b.addRunArtifact(daemon_tests).step);
 

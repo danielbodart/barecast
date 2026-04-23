@@ -3,7 +3,6 @@ const posix = std.posix;
 const control = @import("control");
 const AppShare = @import("app_share").AppShare;
 const AppShareConfig = @import("app_share").AppShareConfig;
-const gpu_detect = @import("gpu_detect");
 const TerminalShare = @import("terminal_share").TerminalShare;
 const TerminalShareConfig = @import("terminal_share").TerminalShareConfig;
 const build_options = @import("build_options");
@@ -276,23 +275,12 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
         else => null,
     };
 
-    // Detect render device for the requested GPU vendor
-    const detected = gpu_detect.detectGpus();
-    const target_vendor: gpu_detect.GpuVendor = switch (req.gpu) {
-        .nvidia => .nvidia,
-        .intel => .intel,
-        .auto => if (detected.best()) |b| b.vendor else .intel,
-    };
-    const gpu: control.GpuBackend = switch (target_vendor) {
-        .nvidia => .nvidia,
-        .intel, .amd, .unknown => .intel, // AMD/unknown use VA-API like Intel
-    };
-    const render_device: [*:0]const u8 = blk: {
-        for (detected.candidates[0..detected.count]) |*c2| {
-            if (c2.vendor == target_vendor) break :blk c2.renderPath();
-        }
-        break :blk if (gpu == .nvidia) "/dev/dri/renderD129" else "/dev/dri/renderD128";
-    };
+    // Backend selection + render device are probed inside AppShare
+    // (capture-pipeline R4). Daemon surfaces a warning if the legacy
+    // `--gpu` override was sent so users learn it has no effect.
+    if (req.gpu != .auto) {
+        log.warn("`gpu={s}` request field ignored — encoder selection is probe-driven (R4)", .{@tagName(req.gpu)});
+    }
 
     const config = AppShareConfig{
         .command = command,
@@ -300,8 +288,6 @@ fn handleShareApp(req: control.ShareRequest, buf: []u8) []const u8 {
         .base_url = base_url,
         .room_id = currentRoom(),
         .record_dir = if (record_dir) |d| d else null,
-        .gpu = gpu,
-        .render_device = render_device,
         .qp = req.qp,
     };
 

@@ -108,6 +108,20 @@ pub fn buildPlatform(
     wayland_input_mod.linkSystemLibrary("xkbcommon", .{});
     wayland_input_mod.linkSystemLibrary("pixman-1", .{});
 
+    // --- GPU auto-detection module (sysfs + CUDA/VA-API probing) ---
+    // Declared before app_share so app_share can import it for its
+    // probe-driven backend selection (T-018).
+    const gpu_detect_mod = b.createModule(.{
+        .root_source_file = b.path("packages/zerocast/src/linux/gpu_detect.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "codec", .module = shared.codec },
+            .{ .name = "nvenc", .module = wayland_nvenc_mod },
+        },
+    });
+
     // --- Wayland app share (compositor + NVENC/SVT-AV1 encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/linux/wayland/app_share.zig"),
@@ -120,6 +134,7 @@ pub fn buildPlatform(
             .{ .name = "nvenc_backend", .module = wayland_nvenc_backend_mod },
             .{ .name = "svt_backend", .module = shared.svt_backend },
             .{ .name = "frame_download", .module = frame_download_mod },
+            .{ .name = "gpu_detect", .module = gpu_detect_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
@@ -127,18 +142,6 @@ pub fn buildPlatform(
             .{ .name = "wayland_input", .module = wayland_input_mod },
             .{ .name = "debounce", .module = shared.debounce },
             .{ .name = "clock", .module = shared.clock },
-        },
-    });
-
-    // --- GPU auto-detection module (sysfs + CUDA/VA-API probing) ---
-    const gpu_detect_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/gpu_detect.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "codec", .module = shared.codec },
-            .{ .name = "nvenc", .module = wayland_nvenc_mod },
         },
     });
 
