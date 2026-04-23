@@ -74,6 +74,20 @@ pub fn buildPlatform(
         },
     });
 
+    // SVT-AV1 software backend + YUV downloader. The encoder module is
+    // shared (see build.zig); the downloader is Wayland-specific because
+    // it does GL readback on the compositor's FBO (T-010).
+    const frame_download_mod = b.createModule(.{
+        .root_source_file = b.path("packages/zerocast/src/linux/wayland/frame_download.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "yuv", .module = shared.yuv },
+        },
+    });
+    frame_download_mod.linkSystemLibrary("glesv2", .{});
+
     // --- Wayland input module (virtual keyboard + pointer via wlr_seat) ---
     const wayland_input_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/linux/wayland/input.zig"),
@@ -94,7 +108,7 @@ pub fn buildPlatform(
     wayland_input_mod.linkSystemLibrary("xkbcommon", .{});
     wayland_input_mod.linkSystemLibrary("pixman-1", .{});
 
-    // --- Wayland app share (compositor + NVENC encoder pipeline) ---
+    // --- Wayland app share (compositor + NVENC/SVT-AV1 encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/linux/wayland/app_share.zig"),
         .target = target,
@@ -104,6 +118,8 @@ pub fn buildPlatform(
             .{ .name = "compositor", .module = compositor_mod },
             .{ .name = "encoder", .module = shared.encoder },
             .{ .name = "nvenc_backend", .module = wayland_nvenc_backend_mod },
+            .{ .name = "svt_backend", .module = shared.svt_backend },
+            .{ .name = "frame_download", .module = frame_download_mod },
             .{ .name = "control", .module = shared.control },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },

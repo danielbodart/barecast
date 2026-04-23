@@ -15,6 +15,8 @@ pub const SharedModules = struct {
     debounce: *std.Build.Module,
     clock: *std.Build.Module,
     control: *std.Build.Module,
+    yuv: *std.Build.Module,
+    svt_backend: *std.Build.Module,
 };
 
 /// Platform-specific modules returned by platform build functions.

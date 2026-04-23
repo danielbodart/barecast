@@ -9,6 +9,8 @@ const Encoder = @import("encoder").Encoder;
 const FrameSink = @import("encoder").FrameSink;
 const EncodeBackend = @import("encoder").EncodeBackend;
 const NvencBackend = @import("nvenc_backend").NvencBackend;
+const SvtBackend = @import("svt_backend").SvtBackend;
+const FrameDownloader = @import("frame_download").FrameDownloader;
 const session_mod = @import("session");
 const BroadcastSession = session_mod.BroadcastSession;
 const PEER_ID_LEN = session_mod.PEER_ID_LEN;
@@ -37,15 +39,25 @@ pub const AppShareConfig = struct {
     qp: u32 = 20,
 };
 
-/// Encoder backend. Currently NVENC only. A software SVT-AV1 variant
-/// lands with T-018 (backend selector wiring); the union shape is kept
-/// so the second variant slots in without disturbing call sites.
+/// Encoder backend — NVENC (GPU, zero-copy FBO→CUDA) or SVT-AV1 (CPU,
+/// FBO downloaded through FrameDownloader then handed as I420).
+///
+/// The .svt variant owns its matched FrameDownloader so buffer lifetimes
+/// track the backend. Resize reallocates both so the staging buffers
+/// stay sized to the compositor's output.
 const BackendState = union(enum) {
     nvenc: NvencBackend,
+    svt: SvtState,
+
+    const SvtState = struct {
+        backend: SvtBackend,
+        downloader: FrameDownloader,
+    };
 
     fn encodeBackend(self: *BackendState) EncodeBackend {
         return switch (self.*) {
             .nvenc => |*n| n.backend(),
+            .svt => |*s| s.backend.backend(),
         };
     }
 
@@ -54,6 +66,10 @@ const BackendState = union(enum) {
             .nvenc => |*n| {
                 n.nvenc.deinit();
                 n.cuda_ctx.deinit();
+            },
+            .svt => |*s| {
+                s.backend.deinit();
+                s.downloader.deinit();
             },
         }
     }
@@ -210,11 +226,10 @@ pub const AppShare = struct {
 
         self.viewer_registry = ViewerRegistry.init();
 
-        // Initialize encoder backend based on GPU type.
-        // AV1-only direction: NVENC AV1 hardware path is live; non-NVIDIA
-        // hardware will route to SVT-AV1 software fallback when T-018
-        // wires the selector. Until then, non-NVIDIA GPU types surface a
-        // clear error.
+        // Encoder backend initialisation. NVENC (NVIDIA hardware AV1)
+        // when the user pinned `.nvidia` or left it at `.auto`; SVT-AV1
+        // software fallback for `.intel` or any non-NVIDIA host. T-018
+        // replaces this user-driven switch with probe-driven selection.
         self.backend_state = switch (config.gpu) {
             .nvidia, .auto => blk: {
                 const nvenc = NvencBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
@@ -224,9 +239,19 @@ pub const AppShare = struct {
                 log.info("using NVIDIA NVENC AV1 encoder (GL renderbuffer → CUDA → NVENC)", .{});
                 break :blk .{ .nvenc = nvenc };
             },
-            .intel => {
-                log.err(".intel GPU type requires SVT-AV1 software fallback, not yet wired (pending T-018)", .{});
-                return error.EncoderInitFailed;
+            .intel => blk: {
+                const svt = SvtBackend.init(config.width, config.height, config.fps, config.qp) catch |err| {
+                    log.err("SVT-AV1 encoder init failed: {}", .{err});
+                    return error.EncoderInitFailed;
+                };
+                const dl = FrameDownloader.init(std.heap.c_allocator, config.width, config.height) catch |err| {
+                    var svt_mut = svt;
+                    svt_mut.deinit();
+                    log.err("frame downloader init failed: {}", .{err});
+                    return error.EncoderInitFailed;
+                };
+                log.info("using SVT-AV1 software AV1 encoder (GL FBO → CPU I420 → SVT-AV1)", .{});
+                break :blk .{ .svt = .{ .backend = svt, .downloader = dl } };
             },
         };
         errdefer self.backend_state.deinitInner();
@@ -368,12 +393,22 @@ pub const AppShare = struct {
                 continue;
             }
 
-            // Feed the latest frame to the encoder backend
+            // Feed the latest frame to the encoder backend. NVENC consumes
+            // the FBO id directly (CUDA GL interop); SVT-AV1 downloads the
+            // FBO into an I420 staging buffer on the encode thread because
+            // the software encoder takes CPU memory.
             const is_new = self.has_new_frame;
             if (is_new) {
                 switch (self.backend_state) {
                     .nvenc => |*n| {
                         n.pending_fbo = self.latest_fbo;
+                    },
+                    .svt => |*s| {
+                        const yuv_slice = s.downloader.downloadFromFbo(self.latest_fbo) catch |err| {
+                            log.err("frame download failed: {}", .{err});
+                            break;
+                        };
+                        s.backend.setPendingYuv(yuv_slice);
                     },
                 }
                 self.has_new_frame = false;
@@ -454,10 +489,20 @@ pub const AppShare = struct {
                 };
                 break :blk .{ .nvenc = nvenc };
             },
-            .intel => {
-                log.err(".intel reinit requires SVT-AV1 software fallback (pending T-018)", .{});
-                self.should_stop.store(true, .release);
-                return;
+            .intel => blk: {
+                const svt = SvtBackend.init(new_w, new_h, self.config.fps, self.config.qp) catch |e| {
+                    log.err("SVT-AV1 reinit failed, stopping: {}", .{e});
+                    self.should_stop.store(true, .release);
+                    return;
+                };
+                const dl = FrameDownloader.init(std.heap.c_allocator, new_w, new_h) catch |e| {
+                    var svt_mut = svt;
+                    svt_mut.deinit();
+                    log.err("frame downloader reinit failed, stopping: {}", .{e});
+                    self.should_stop.store(true, .release);
+                    return;
+                };
+                break :blk .{ .svt = .{ .backend = svt, .downloader = dl } };
             },
         };
 

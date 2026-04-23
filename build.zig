@@ -80,6 +80,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Pure RGBA→I420 BT.709 limited-range converter. Shared because the
+    // macOS SVT-AV1 migration (T-021) consumes the same helper.
+    const yuv_mod = b.createModule(.{
+        .root_source_file = b.path("packages/zerocast/src/shared/yuv.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const encoder_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/shared/encoder.zig"),
         .target = target,
@@ -149,6 +157,8 @@ pub fn build(b: *std.Build) void {
         .debounce = debounce_mod,
         .clock = clock_mod,
         .control = control_mod,
+        .yuv = yuv_mod,
+        .svt_backend = svt_backend_mod,
     };
 
     // ── Platform-specific modules ────────────────────────────────────────
@@ -223,6 +233,7 @@ pub fn build(b: *std.Build) void {
         .{ "packages/zerocast/src/shared/input_protocol.zig", false, &[_]std.Build.Module.Import{} },
         .{ "packages/zerocast/src/shared/viewer_state.zig", false, &[_]std.Build.Module.Import{} },
         .{ "packages/zerocast/src/shared/clock.zig", false, &[_]std.Build.Module.Import{} },
+        .{ "packages/zerocast/src/shared/yuv.zig", false, &[_]std.Build.Module.Import{} },
     }) |entry| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{
