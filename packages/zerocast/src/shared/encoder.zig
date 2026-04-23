@@ -1,5 +1,5 @@
 const std = @import("std");
-const IvfWriter = @import("ivf").IvfWriter;
+pub const IvfWriter = @import("ivf").IvfWriter;
 const BroadcastSession = @import("session").BroadcastSession;
 const SessionRecorder = @import("session_recorder").SessionRecorder;
 pub const Codec = @import("codec").Codec;

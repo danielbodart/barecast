@@ -147,6 +147,38 @@ pub const SvtBackend = struct {
 
     pub fn deinit(self: *SvtBackend) void {
         if (self.component) |comp| {
+            // Release any still-held output packet before flushing.
+            if (self.current_packet != null) {
+                c.svt_av1_enc_release_out_buffer(&self.current_packet);
+                self.current_packet = null;
+            }
+
+            // Signal end of stream so SVT can drain its internal pipeline.
+            // Without this, the library logs "deinit called without sending
+            // EOS!" at error level on shutdown, which is noisy during tests
+            // and masks real errors. An empty EOS header is the documented
+            // shutdown protocol.
+            var eos_hdr = std.mem.zeroes(c.EbBufferHeaderType);
+            eos_hdr.size = @sizeOf(c.EbBufferHeaderType);
+            eos_hdr.flags = c.EB_BUFFERFLAG_EOS;
+            eos_hdr.pic_type = c.EB_AV1_INVALID_PICTURE;
+            _ = c.svt_av1_enc_send_picture(comp, &eos_hdr);
+
+            // Drain remaining packets. Bounded loop — if the library never
+            // signals EOS back within this many polls, move on rather than
+            // hanging. Each packet must be released back to the encoder
+            // before handle teardown.
+            var drained: usize = 0;
+            const max_drain: usize = 256;
+            while (drained < max_drain) : (drained += 1) {
+                var pkt: ?*c.EbBufferHeaderType = null;
+                const rc = c.svt_av1_enc_get_packet(comp, &pkt, 1);
+                if (rc != c.EB_ErrorNone or pkt == null) break;
+                const flags = pkt.?.flags;
+                c.svt_av1_enc_release_out_buffer(&pkt);
+                if ((flags & c.EB_BUFFERFLAG_EOS) != 0) break;
+            }
+
             _ = c.svt_av1_enc_deinit(comp);
             _ = c.svt_av1_enc_deinit_handle(comp);
             self.component = null;

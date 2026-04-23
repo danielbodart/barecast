@@ -1,16 +1,21 @@
 //! Encoder backend contract tests.
 //!
-//! Any `EncodeBackend` implementation (NVENC, VA-API, SVT-AV1 software,
-//! VideoToolbox) must satisfy the same behavioural contract defined here.
-//! Tests are parameterised over a backend factory, so each implementation
-//! supplies its own construction logic and runs the shared cases.
+//! Any `EncodeBackend` implementation (NVENC, SVT-AV1, VideoToolbox) must
+//! satisfy the same behavioural contract defined here. Tests are
+//! parameterised over a backend factory, so each implementation supplies
+//! its own construction logic and runs the shared cases.
 //!
-//! Currently validated by a trivial in-file fake backend; real backends
-//! plug into `runContract` as they land (NVENC in its GPU-gated test step,
-//! SVT-AV1 software in the GPU-free unit tier).
+//! This file exercises the contract against:
+//!   * `FakeBackend` — in-file dummy that emits on first encode.
+//!   * `SvtContractAdapter` — real SVT-AV1 software backend wrapped with a
+//!     mid-grey YUV feeder (so the contract runs GPU-free in the unit tier).
+//!
+//! The hardware NVENC backend is exercised by the same `runContract` entry
+//! point from its GPU-gated test step (compositor integration tests).
 
 const std = @import("std");
 const encoder = @import("encoder");
+const svt_backend = @import("svt_backend");
 const Codec = encoder.Codec;
 
 /// Minimum config a factory needs to build a backend for the contract suite.
@@ -30,10 +35,33 @@ pub const BackendFactory = *const fn (
     config: ContractConfig,
 ) anyerror!encoder.EncodeBackend;
 
-/// Case 1 — configure-then-submit produces output.
-/// After a single prepare+encode cycle the backend must emit at least one
-/// encoded frame (the first frame is always a keyframe in this pipeline).
-pub fn caseFirstFramePrdocesOutput(
+/// Software encoders (SVT-AV1) buffer inputs internally before emitting the
+/// first packet. Driving the backend through `prepare → encode` once is not
+/// enough; we have to drain a bounded number of cycles until a packet
+/// emerges. Hardware backends that emit immediately exit on the first
+/// iteration, so the same helper serves every implementation.
+///
+/// `force_first_key` applies only to the first submitted frame; subsequent
+/// drain cycles submit with `force = false` so the encoder's natural GOP
+/// structure holds.
+pub fn encodeUntilOutput(
+    backend: encoder.EncodeBackend,
+    force_first_key: bool,
+    max_steps: usize,
+) !?encoder.EncodedFrame {
+    var i: usize = 0;
+    while (i < max_steps) : (i += 1) {
+        try backend.prepare();
+        const force = force_first_key and i == 0;
+        if (try backend.encode(force)) |frame| return frame;
+    }
+    return null;
+}
+
+/// Case 1 — a fresh backend emits a keyframe within a bounded number of
+/// submissions. The encoder's stream must start with an IDR; whether it
+/// comes out on the first cycle or after a short queue is a backend detail.
+pub fn caseFirstFrameProducesOutput(
     allocator: std.mem.Allocator,
     factory: BackendFactory,
     config: ContractConfig,
@@ -41,15 +69,16 @@ pub fn caseFirstFramePrdocesOutput(
     var backend = try factory(allocator, config);
     defer backend.deinit();
 
-    try backend.prepare();
-    const maybe = try backend.encode(true);
+    const maybe = try encodeUntilOutput(backend, true, 32);
     try std.testing.expect(maybe != null);
     try std.testing.expect(maybe.?.is_key);
     backend.unlock();
 }
 
-/// Case 2 — requestKeyframe flag forces an IDR on the next encoded frame.
-/// Submit one non-key frame, then a forced-key frame, assert the latter.
+/// Case 2 — requestKeyframe flag forces an IDR within a bounded number of
+/// subsequent submissions. Warm past the opening IDR, drive one non-key
+/// submission, then force a keyframe and assert the next emitted frame is
+/// marked as a keyframe.
 pub fn caseForceKeyframeHonored(
     allocator: std.mem.Allocator,
     factory: BackendFactory,
@@ -58,11 +87,17 @@ pub fn caseForceKeyframeHonored(
     var backend = try factory(allocator, config);
     defer backend.deinit();
 
+    // Warm up: drain the opening IDR.
+    if (try encodeUntilOutput(backend, true, 32)) |_| backend.unlock();
+
+    // One non-key submission. May or may not emit; either way does not
+    // change the contract below.
     try backend.prepare();
     if (try backend.encode(false)) |_| backend.unlock();
 
-    try backend.prepare();
-    const maybe = try backend.encode(true);
+    // Force a keyframe on the next submission. The next frame the backend
+    // emits must be flagged as a keyframe.
+    const maybe = try encodeUntilOutput(backend, true, 32);
     try std.testing.expect(maybe != null);
     try std.testing.expect(maybe.?.is_key);
     backend.unlock();
@@ -81,12 +116,11 @@ pub fn caseTeardownNoLeak(
         var backend = try factory(allocator, config);
         backend.deinit();
     }
-    // Backend after one encode cycle
+    // Backend after one drain cycle
     {
         var backend = try factory(allocator, config);
         defer backend.deinit();
-        try backend.prepare();
-        if (try backend.encode(true)) |_| backend.unlock();
+        if (try encodeUntilOutput(backend, true, 32)) |_| backend.unlock();
     }
 }
 
@@ -103,20 +137,18 @@ pub fn caseReconfigureEmitsKeyframe(
     {
         var backend = try factory(allocator, config);
         defer backend.deinit();
-        try backend.prepare();
-        if (try backend.encode(true)) |_| backend.unlock();
+        if (try encodeUntilOutput(backend, true, 32)) |_| backend.unlock();
     }
 
     // Reconfigured backend at a different size. First emitted frame
-    // should be a keyframe — we pass force=false to prove the encoder
+    // should be a keyframe — pass force=false to prove the encoder
     // self-keyframes on a fresh stream.
     var reconf = config;
     reconf.width = @max(64, config.width / 2);
     reconf.height = @max(64, config.height / 2);
     var backend = try factory(allocator, reconf);
     defer backend.deinit();
-    try backend.prepare();
-    const maybe = try backend.encode(false);
+    const maybe = try encodeUntilOutput(backend, false, 32);
     try std.testing.expect(maybe != null);
     try std.testing.expect(maybe.?.is_key);
     backend.unlock();
@@ -146,7 +178,7 @@ pub fn runContract(
     factory: BackendFactory,
     config: ContractConfig,
 ) !void {
-    try caseFirstFramePrdocesOutput(allocator, factory, config);
+    try caseFirstFrameProducesOutput(allocator, factory, config);
     try caseForceKeyframeHonored(allocator, factory, config);
     try caseTeardownNoLeak(allocator, factory, config);
     try caseReconfigureEmitsKeyframe(allocator, factory, config);
@@ -155,8 +187,7 @@ pub fn runContract(
 
 // ─────────────────────────────────────────────────────────────────────
 // Skeleton validation: drive the contract through a trivial in-file fake.
-// This proves the harness compiles and the flow is coherent. Real backends
-// replace the fake with their own factory.
+// This proves the harness compiles and the flow is coherent.
 // ─────────────────────────────────────────────────────────────────────
 
 const FakeBackend = struct {
@@ -210,6 +241,106 @@ const FakeBackend = struct {
 test "contract: FakeBackend satisfies the full contract" {
     const cfg = ContractConfig{ .codec = .av1, .width = 320, .height = 240, .fps = 30 };
     try runContract(std.testing.allocator, FakeBackend.build, cfg);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SVT-AV1 software backend — T-016 payoff.
+//
+// SvtContractAdapter wraps a real SvtBackend with an owned mid-grey I420
+// buffer. Its `prepareFn` replants the YUV into SvtBackend.pending_yuv
+// each cycle (SvtBackend consumes the reference during encode), so the
+// contract suite can drive the software encoder without GPU capture.
+//
+// This is T-016: running `runContract` against the real software encoder
+// so divergences surface at unit-test time.
+// ─────────────────────────────────────────────────────────────────────
+
+const SvtContractAdapter = struct {
+    allocator: std.mem.Allocator,
+    inner: *svt_backend.SvtBackend,
+    inner_vtable: encoder.EncodeBackend,
+    yuv: []u8,
+
+    fn prepareErase(ptr: *anyopaque) anyerror!void {
+        const self: *SvtContractAdapter = @ptrCast(@alignCast(ptr));
+        self.inner.setPendingYuv(self.yuv);
+        return self.inner_vtable.prepare();
+    }
+
+    fn encodeErase(ptr: *anyopaque, force_key: bool) anyerror!?encoder.EncodedFrame {
+        const self: *SvtContractAdapter = @ptrCast(@alignCast(ptr));
+        return self.inner_vtable.encode(force_key);
+    }
+
+    fn unlockErase(ptr: *anyopaque) void {
+        const self: *SvtContractAdapter = @ptrCast(@alignCast(ptr));
+        self.inner_vtable.unlock();
+    }
+
+    fn deinitErase(ptr: *anyopaque) void {
+        const self: *SvtContractAdapter = @ptrCast(@alignCast(ptr));
+        self.inner.deinit();
+        self.allocator.destroy(self.inner);
+        self.allocator.free(self.yuv);
+        self.allocator.destroy(self);
+    }
+
+    /// Fill an I420 buffer with mid-grey (Y=128, U=V=128). The actual
+    /// pixel contents do not matter for contract tests — SVT-AV1 still
+    /// produces a valid bitstream — but a stable fill avoids uninitialised
+    /// memory reads.
+    fn fillMidGreyI420(buf: []u8, width: u32, height: u32) void {
+        const luma = @as(usize, width) * height;
+        const chroma = @as(usize, width / 2) * (height / 2);
+        @memset(buf[0..luma], 128);
+        @memset(buf[luma .. luma + chroma], 128);
+        @memset(buf[luma + chroma .. luma + 2 * chroma], 128);
+    }
+
+    pub fn build(
+        allocator: std.mem.Allocator,
+        config: ContractConfig,
+    ) anyerror!encoder.EncodeBackend {
+        const adapter = try allocator.create(SvtContractAdapter);
+        errdefer allocator.destroy(adapter);
+
+        const svt = try allocator.create(svt_backend.SvtBackend);
+        errdefer allocator.destroy(svt);
+
+        svt.* = try svt_backend.SvtBackend.init(
+            config.width,
+            config.height,
+            config.fps,
+            config.qp,
+        );
+        errdefer svt.deinit();
+
+        const yuv_len = svt.layout.totalSize();
+        const yuv = try allocator.alloc(u8, yuv_len);
+        errdefer allocator.free(yuv);
+        fillMidGreyI420(yuv, config.width, config.height);
+
+        adapter.* = .{
+            .allocator = allocator,
+            .inner = svt,
+            .inner_vtable = svt.backend(),
+            .yuv = yuv,
+        };
+
+        return .{
+            .ptr = @ptrCast(adapter),
+            .codec = .av1,
+            .prepareFn = prepareErase,
+            .encodeFn = encodeErase,
+            .unlockFn = unlockErase,
+            .deinitFn = deinitErase,
+        };
+    }
+};
+
+test "contract: SvtBackend satisfies the full contract" {
+    const cfg = ContractConfig{ .codec = .av1, .width = 320, .height = 240, .fps = 30, .qp = 32 };
+    try runContract(std.testing.allocator, SvtContractAdapter.build, cfg);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -271,6 +402,64 @@ test "property: reconfigure is idempotent on repeated calls" {
         try std.testing.expect(maybe.?.is_key);
         backend.unlock();
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T-015 — SW backend → IVF container end-to-end.
+//
+// Proves the software encoder emits into the AV1 IVF path that the
+// hardware backends already use (`FrameSink.ivf` / `SessionRecorder`).
+// Drives the SvtContractAdapter directly into an IvfWriter, finalises,
+// and asserts the resulting file is a valid IVF with the AV01 FourCC
+// and at least one emitted frame.
+// ─────────────────────────────────────────────────────────────────────
+
+test "T-015: SvtBackend output streams into a valid IVF container" {
+    const allocator = std.testing.allocator;
+    const cfg = ContractConfig{ .codec = .av1, .width = 320, .height = 240, .fps = 30, .qp = 32 };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build backend via the contract factory so the same path used by
+    // contract tests also drives recording.
+    var backend = try SvtContractAdapter.build(allocator, cfg);
+    defer backend.deinit();
+
+    // Open IVF writer in the tmpdir — same IvfWriter used by session_recorder.
+    var ivf = try encoder.IvfWriter.initDir(tmp.dir, "svt-t015.ivf");
+    defer ivf.deinit();
+
+    // Drain the SW encoder until at least one frame emerges, then keep
+    // pushing a few more to exercise the multi-frame write path. SVT-AV1
+    // with LOW_DELAY_B MiniGOP=4 typically buffers the first 3 submissions
+    // before emitting; 32 steps is an ample ceiling.
+    var emitted: u32 = 0;
+    var i: usize = 0;
+    while (i < 32 and emitted < 4) : (i += 1) {
+        try backend.prepare();
+        const force_key = i == 0;
+        if (try backend.encode(force_key)) |frame| {
+            try ivf.writeFrame(frame.data, i);
+            backend.unlock();
+            emitted += 1;
+        }
+    }
+
+    try std.testing.expect(emitted > 0);
+    try ivf.finalize(@intCast(cfg.width), @intCast(cfg.height), cfg.fps, 1);
+
+    // Validate header: open the file and check magic + codec + frame count.
+    const file = try tmp.dir.openFile("svt-t015.ivf", .{});
+    defer file.close();
+    var hdr: [32]u8 = undefined;
+    const n = try file.readAll(&hdr);
+    try std.testing.expectEqual(@as(usize, 32), n);
+    try std.testing.expectEqualSlices(u8, "DKIF", hdr[0..4]);
+    try std.testing.expectEqualSlices(u8, "AV01", hdr[8..12]);
+    try std.testing.expectEqual(@as(u16, 320), std.mem.readInt(u16, hdr[12..14], .little));
+    try std.testing.expectEqual(@as(u16, 240), std.mem.readInt(u16, hdr[14..16], .little));
+    try std.testing.expectEqual(@as(u32, emitted), std.mem.readInt(u32, hdr[24..28], .little));
 }
 
 // ─────────────────────────────────────────────────────────────────────

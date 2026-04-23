@@ -349,7 +349,9 @@ pub fn build(b: *std.Build) void {
     shared_defs.linkDatachannel(b, svt_backend_tests);
     test_step.dependOn(&b.addRunArtifact(svt_backend_tests).step);
 
-    // Encoder backend contract tests (cross-backend acceptance suite)
+    // Encoder backend contract tests (cross-backend acceptance suite).
+    // Links the SVT-AV1 software backend so the contract runs against a
+    // real encoder in the GPU-free unit tier (T-016).
     const encoder_contract_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("packages/zerocast/src/shared/encoder_contract_test.zig"),
@@ -358,10 +360,14 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "encoder", .module = encoder_mod },
+                .{ .name = "svt_backend", .module = svt_backend_mod },
+                .{ .name = "codec", .module = codec_mod },
             },
         }),
     });
     encoder_contract_tests.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
+    encoder_contract_tests.root_module.addIncludePath(b.path("packages/svt-av1/Source/API"));
+    encoder_contract_tests.root_module.addObjectFile(b.path("packages/svt-av1/Bin/Release/libSvtAv1Enc.a"));
     shared_defs.linkDatachannel(b, encoder_contract_tests);
     test_step.dependOn(&b.addRunArtifact(encoder_contract_tests).step);
 
