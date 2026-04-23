@@ -463,6 +463,110 @@ test "T-015: SvtBackend output streams into a valid IVF container" {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// T-017 — external-inspection verification.
+//
+// Run ffprobe on an IVF produced by the SW backend and assert:
+//   * color_primaries / color_transfer / color_space = bt709
+//   * color_range = tv (limited)                    → R6 AC2
+//   * no frame carries pict_type "B"                 → R8 AC1
+//
+// Skips if ffprobe is not on PATH so the unit tier stays runnable
+// without external tools. CI installs ffmpeg/ffprobe; the integration
+// lane exercises this path in its normal pass.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Invoke `which <cmd>` and return true iff it exits 0. Used to gate
+/// tests that require external binaries so the suite stays green on
+/// hosts without them.
+fn haveCommand(allocator: std.mem.Allocator, name: []const u8) bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "which", name },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    return result.term == .Exited and result.term.Exited == 0;
+}
+
+test "T-017: ffprobe confirms BT.709 limited range and no B-frames" {
+    const allocator = std.testing.allocator;
+    if (!haveCommand(allocator, "ffprobe")) {
+        std.debug.print("skipping T-017 — ffprobe not on PATH\n", .{});
+        return error.SkipZigTest;
+    }
+
+    const cfg = ContractConfig{ .codec = .av1, .width = 320, .height = 240, .fps = 30, .qp = 32 };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var backend = try SvtContractAdapter.build(allocator, cfg);
+    defer backend.deinit();
+
+    var ivf = try encoder.IvfWriter.initDir(tmp.dir, "svt-t017.ivf");
+    defer ivf.deinit();
+
+    // Drive enough frames for ffprobe to see a complete sequence.
+    // SVT-AV1 LOW_DELAY_B + MiniGOP=4 buffers the first few
+    // submissions; 64 steps gives us >=16 emitted frames comfortably.
+    var emitted: u32 = 0;
+    var i: usize = 0;
+    while (i < 64 and emitted < 16) : (i += 1) {
+        try backend.prepare();
+        const force_key = i == 0;
+        if (try backend.encode(force_key)) |frame| {
+            try ivf.writeFrame(frame.data, i);
+            backend.unlock();
+            emitted += 1;
+        }
+    }
+    try std.testing.expect(emitted >= 4);
+    try ivf.finalize(@intCast(cfg.width), @intCast(cfg.height), cfg.fps, 1);
+
+    // Build absolute path — tmp.dir is a relative Dir, ffprobe wants a path.
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    const file_path = try std.fmt.allocPrint(allocator, "{s}/svt-t017.ivf", .{tmp_path});
+    defer allocator.free(file_path);
+
+    const probe = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{
+            "ffprobe",
+            "-v",            "error",
+            "-of",           "json",
+            "-show_streams", "-show_frames",
+            "-select_streams",
+            "v:0",
+            file_path,
+        },
+        .max_output_bytes = 4 * 1024 * 1024,
+    });
+    defer allocator.free(probe.stdout);
+    defer allocator.free(probe.stderr);
+
+    if (!(probe.term == .Exited and probe.term.Exited == 0)) {
+        std.debug.print("ffprobe non-zero: stdout={s}\nstderr={s}\n", .{ probe.stdout, probe.stderr });
+        return error.FfprobeFailed;
+    }
+
+    const json = probe.stdout;
+
+    // ffprobe JSON emits these fields on the stream object. The bitstream
+    // carries BT.709 primaries/transfer/matrix + limited range because
+    // SvtBackend.init (T-013) set the matching SVT config fields.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"color_primaries\": \"bt709\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"color_transfer\": \"bt709\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"color_space\": \"bt709\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"color_range\": \"tv\"") != null);
+
+    // No frame classified as B (R8 AC1). AV1's inter frames surface as
+    // "P" under ffprobe when the encoder uses only past references;
+    // LOW_DELAY_B in SVT does exactly that.
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"pict_type\": \"B\"") == null);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // FrameBuffer (in-memory FrameSink double) — unit tests
 // ─────────────────────────────────────────────────────────────────────
 
