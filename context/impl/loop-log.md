@@ -97,3 +97,48 @@ Read the files below before picking work:
 - context/plans/build-site.md — task graph
 - context/impl/impl-*.md — per-domain status tables
 - context/impl/loop-log.md — this file (history + context)
+
+## Wave 4 — Tier 2 close + Tier 3+4+5 (2026-04-23)
+
+Continued from 13/21 checkpoint. Caveman build mode active.
+
+Commits (in order):
+- dab26... feat: T-016 + T-015 — SvtBackend contract tests + IVF recording path
+- 9de61... feat: T-010 — CPU-side frame ingestion for SVT-AV1 software backend
+- 0cbc1... feat: T-018 — probe-driven encoder backend selection
+- 5c05c... feat: T-019 — regression guard: AV1 is the sole negotiated video codec
+- 13ba4... feat: T-017 — ffprobe external-inspection verification of SW AV1 output
+- aac68... feat: T-020 — GPU-free SVT-AV1 integration lane
+- 8f5b7... feat: T-021 — macOS app-share migrated to SVT-AV1 (HEVC path retired)
+
+(Commit SHAs approximate — see `git log` for truth.)
+
+Summary of the wave:
+- **T-016** — real SvtBackend passes runContract. encodeUntilOutput
+  drain helper resolves the divergence between synchronous FakeBackend
+  and SW encoders that buffer internally. SvtBackend.deinit now sends
+  EOS + drains, cleaning up stderr noise.
+- **T-015** — SvtBackend → IVF end-to-end test asserts DKIF magic,
+  AV01 FourCC, dimensions, frame count. Uses the shared IvfWriter.
+- **T-010** — shared yuv (BT.709 limited-range RGBA→I420) + linux
+  frame_download (GL FBO readback). Wayland AppShare.BackendState
+  gains .svt variant so intel/AMD hosts can actually produce AV1.
+- **T-018** — selectBackend + selectRenderDevice in gpu_detect.
+  Probe-driven selection; no user override. Daemon logs a deprecation
+  warning if the legacy `gpu` field is sent.
+- **T-019** — two regression tests on Codec + RTC_CODEC mapping lock
+  viewer negotiation to AV1-only at the construction site.
+- **T-017** — ffprobe JSON checks for BT.709 metadata + absence of
+  B-frames, driven from the contract harness. Skips when ffprobe
+  not on PATH.
+- **T-020** — `./run.ts sw-integration` runs a synthetic capture
+  through SVT-AV1 into FrameBuffer. CI-safe, no GPU.
+- **T-021** — macOS migration. VideoToolbox HEVC backend deleted;
+  new macos/frame_download.zig (CVPixelBuffer BGRA → I420) wires
+  into SvtBackend. Linux build + tests still green; macOS runtime
+  verification pending native hardware.
+
+All 21 tasks DONE. Build green, tests green (6×200 + property +
+contract + T-015/T-017 + sw-integration), lint clean.
+
+Tier gates (Codex) skipped — `tier_gate_mode` off.
