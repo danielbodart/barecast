@@ -193,6 +193,13 @@ async function compositorTest() {
     await $`zig build compositor-test -- 2>&1`;
 }
 
+/** GPU-free integration lane. Pushes synthetic frames through SVT-AV1 into
+ *  the in-memory frame buffer and asserts the pipeline emitted enough
+ *  frames including a keyframe. Entirely CPU — safe for CI. */
+export async function swIntegration() {
+    await $`zig build sw-integration`;
+}
+
 export async function lint() {
     await $`zig build analyze`;
     await $`shellcheck bootstrap.sh`;
@@ -490,6 +497,7 @@ async function printVersion() {
 const commands: Record<string, Function> = {
     dev, build, clean, setup, test, lint, dist, ci, integration, install, version: printVersion,
     "compositor-test": compositorTest,
+    "sw-integration": swIntegration,
     "rebuild-libs": rebuildLibs, "hevc-validate": hevcValidate,
     "worker-dev": workerDev,
     "worker-deploy": workerDeploy,

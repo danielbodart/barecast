@@ -485,6 +485,30 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // ── GPU-free integration lane (T-020) ────────────────────────────────
+    // Runs a synthetic capture through SVT-AV1 into the in-memory
+    // FrameBuffer sink. No GPU, no WebRTC — pure CPU path so CI can
+    // exercise the capture→encode→transport layering anywhere.
+    const sw_integration_exe = b.addExecutable(.{
+        .name = "zerocast-sw-integration",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/zerocast/src/shared/sw_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "yuv", .module = yuv_mod },
+                .{ .name = "encoder", .module = encoder_mod },
+                .{ .name = "svt_backend", .module = svt_backend_mod },
+            },
+        }),
+    });
+    sw_integration_exe.root_module.addIncludePath(b.path("packages/libdatachannel/include"));
+    shared_defs.linkDatachannel(b, sw_integration_exe);
+    const run_sw_integration = b.addRunArtifact(sw_integration_exe);
+    const sw_integration_step = b.step("sw-integration", "Run GPU-free SVT-AV1 integration lane");
+    sw_integration_step.dependOn(&run_sw_integration.step);
+
     // ── Static analysis (zwanzig) ────────────────────────────────────────
     const analyze_step = b.step("analyze", "Run zwanzig static analyzer on src/");
     const zwanzig_dep = b.dependency("zwanzig", .{
