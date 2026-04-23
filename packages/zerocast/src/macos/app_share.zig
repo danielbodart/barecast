@@ -1,12 +1,15 @@
-// macOS app share — captures a window via ScreenCaptureKit, encodes HEVC via
-// VideoToolbox, and streams over WebRTC.
+// macOS app share — captures a window via ScreenCaptureKit, converts
+// BGRA to I420 on the CPU, and encodes AV1 via the shared SVT-AV1
+// backend (T-021 migration; the legacy VideoToolbox HEVC path is
+// retired).
 
 const std = @import("std");
 const encoder_mod = @import("encoder");
 const SystemClock = @import("clock").SystemClock;
 const Encoder = encoder_mod.Encoder;
 const FrameSink = encoder_mod.FrameSink;
-const EncoderBackend = @import("encoder_backend").EncoderBackend;
+const SvtBackend = @import("svt_backend").SvtBackend;
+const FrameDownloader = @import("frame_download").FrameDownloader;
 const BroadcastSession = @import("session").BroadcastSession;
 const ViewerRegistry = @import("viewer_state").ViewerRegistry;
 const Input = @import("input").Input;
@@ -28,6 +31,7 @@ pub const AppShareConfig = struct {
     room_id: ?[]const u8 = null,
     base_url: []const u8 = "https://zerocast.bodar.com",
     record_dir: ?[]const u8 = null,
+    qp: u32 = 32,
 };
 
 pub const AppShare = struct {
@@ -44,7 +48,8 @@ pub const AppShare = struct {
     cgevent: ?Input,
     viewer_registry: ViewerRegistry,
     session: BroadcastSession,
-    vt_backend: EncoderBackend,
+    svt_backend: SvtBackend,
+    downloader: FrameDownloader,
     encoder: Encoder,
     recorder: ?SessionRecorder,
     pending_resize: std.atomic.Value(u32),
@@ -194,14 +199,21 @@ pub const AppShare = struct {
         }
         const t_session = ts.elapsed(&t);
 
-        // VideoToolbox encoder
-        self.vt_backend = EncoderBackend.init(width, height, config.fps) catch |err| {
-            log.err("VideoToolbox init failed: {}", .{err});
+        // SVT-AV1 software encoder + CPU-side frame downloader.
+        // VideoToolbox HEVC was retired with T-021; AV1 everywhere now.
+        self.svt_backend = SvtBackend.init(width, height, config.fps, config.qp) catch |err| {
+            log.err("SVT-AV1 init failed: {}", .{err});
+            self.session.deinit();
+            return error.EncoderInitFailed;
+        };
+        self.downloader = FrameDownloader.init(std.heap.c_allocator, width, height) catch |err| {
+            log.err("frame downloader init failed: {}", .{err});
+            self.svt_backend.deinit();
             self.session.deinit();
             return error.EncoderInitFailed;
         };
         self.encoder = Encoder.init(
-            self.vt_backend.backend(),
+            self.svt_backend.backend(),
             width,
             height,
             .{ .session = &self.session },
@@ -209,7 +221,8 @@ pub const AppShare = struct {
             SystemClock.clock(),
         ) catch |err| {
             log.err("encoder init failed: {}", .{err});
-            self.vt_backend.backend().deinit();
+            self.downloader.deinit();
+            self.svt_backend.deinit();
             self.session.deinit();
             return error.EncoderInitFailed;
         };
@@ -319,7 +332,13 @@ pub const AppShare = struct {
             const pb = frame.pixel_buffer orelse continue;
             defer c.sc_capture_release_frame(pb);
 
-            self.vt_backend.setPixelBuffer(pb);
+            // CPU download + BGRA→I420 → SvtBackend, then encode.
+            const yuv_slice = self.downloader.downloadFromPixelBuffer(pb) catch |err| {
+                log.err("frame download failed: {}", .{err});
+                continue;
+            };
+            self.svt_backend.setPendingYuv(yuv_slice);
+
             self.encoder.processFrame(frame.is_new != 0) catch |err| {
                 log.err("encode error: {}", .{err});
                 break;
@@ -396,14 +415,20 @@ pub const AppShare = struct {
         if (frame.pixel_buffer) |pb| c.sc_capture_release_frame(pb);
         const t_frame = ts.elapsed(&t);
 
-        // 8. Rebuild encoder
-        self.vt_backend = EncoderBackend.init(frame.width, frame.height, self.config.fps) catch |err| {
-            log.err("encoder reinit failed: {} — stopping", .{err});
+        // 8. Rebuild encoder — SVT-AV1 + matching I420 downloader.
+        self.svt_backend = SvtBackend.init(frame.width, frame.height, self.config.fps, self.config.qp) catch |err| {
+            log.err("SVT-AV1 reinit failed: {} — stopping", .{err});
+            self.should_stop.store(true, .release);
+            return;
+        };
+        self.downloader.resize(frame.width, frame.height) catch |err| {
+            log.err("downloader resize failed: {} — stopping", .{err});
+            self.svt_backend.deinit();
             self.should_stop.store(true, .release);
             return;
         };
         self.encoder = Encoder.init(
-            self.vt_backend.backend(),
+            self.svt_backend.backend(),
             frame.width,
             frame.height,
             .{ .session = &self.session },
@@ -456,6 +481,7 @@ pub const AppShare = struct {
         self.encoder.recorder = null;
         self.encoder.finish() catch {};
         self.encoder.deinit();
+        self.downloader.deinit();
         self.session.deinit();
         c.sc_capture_destroy(self.capture);
 

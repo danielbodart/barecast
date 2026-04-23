@@ -32,18 +32,29 @@ pub fn i420Size(width: u32, height: u32) usize {
     return luma + 2 * chroma;
 }
 
-/// Convert a tightly packed RGBA8888 buffer to I420 YUV with BT.709
-/// limited range signalling. Width and height must both be even (4:2:0
-/// subsampling needs even dimensions).
+/// Byte order of the source pixel buffer. RGBA is the GL/Wayland
+/// native layout; BGRA is what Core Video / ScreenCaptureKit deliver
+/// by default on macOS. The converter cost is identical either way —
+/// only the byte offsets used to sample R/G/B differ.
+pub const PixelOrder = enum { rgba, bgra };
+
+/// Convert a tightly packed 32-bit pixel buffer to I420 YUV with
+/// BT.709 limited range signalling. Width and height must both be
+/// even (4:2:0 subsampling needs even dimensions).
 ///
-/// `rgba` length must be at least width*height*4.
+/// `src` length must be at least width*height*4.
 /// `out` length must be at least `i420Size(width, height)`.
-pub fn rgbaToI420Bt709Limited(
-    rgba: []const u8,
+pub fn toI420Bt709Limited(
+    comptime order: PixelOrder,
+    src: []const u8,
     width: u32,
     height: u32,
     out: []u8,
 ) Error!void {
+    const R_IDX: usize = if (order == .rgba) 0 else 2;
+    const G_IDX: usize = 1;
+    const B_IDX: usize = if (order == .rgba) 2 else 0;
+
     if (width % 2 != 0 or height % 2 != 0) return Error.OddDimensions;
 
     const luma_len = @as(usize, width) * height;
@@ -51,7 +62,7 @@ pub fn rgbaToI420Bt709Limited(
     const chroma_h = height / 2;
     const chroma_len = @as(usize, chroma_w) * chroma_h;
 
-    if (rgba.len < luma_len * 4) return Error.SourceTooSmall;
+    if (src.len < luma_len * 4) return Error.SourceTooSmall;
     if (out.len < luma_len + 2 * chroma_len) return Error.DestinationTooSmall;
 
     const y_plane = out[0..luma_len];
@@ -65,9 +76,9 @@ pub fn rgbaToI420Bt709Limited(
         const row_out = @as(usize, y) * width;
         while (x < width) : (x += 1) {
             const idx = (row_out + x) * 4;
-            const r: i32 = rgba[idx + 0];
-            const g: i32 = rgba[idx + 1];
-            const b: i32 = rgba[idx + 2];
+            const r: i32 = src[idx + R_IDX];
+            const g: i32 = src[idx + G_IDX];
+            const b: i32 = src[idx + B_IDX];
             // 47/256 ≈ 0.1826  157/256 ≈ 0.6142  16/256 ≈ 0.0620
             const yv = ((47 * r + 157 * g + 16 * b + 128) >> 8) + 16;
             y_plane[row_out + x] = @intCast(std.math.clamp(yv, 16, 235));
@@ -86,9 +97,9 @@ pub fn rgbaToI420Bt709Limited(
             const p2 = (@as(usize, y0 + 1) * width + x0) * 4;
             const p3 = (@as(usize, y0 + 1) * width + x0 + 1) * 4;
 
-            const r: i32 = (@as(i32, rgba[p0 + 0]) + rgba[p1 + 0] + rgba[p2 + 0] + rgba[p3 + 0] + 2) >> 2;
-            const g: i32 = (@as(i32, rgba[p0 + 1]) + rgba[p1 + 1] + rgba[p2 + 1] + rgba[p3 + 1] + 2) >> 2;
-            const b: i32 = (@as(i32, rgba[p0 + 2]) + rgba[p1 + 2] + rgba[p2 + 2] + rgba[p3 + 2] + 2) >> 2;
+            const r: i32 = (@as(i32, src[p0 + R_IDX]) + src[p1 + R_IDX] + src[p2 + R_IDX] + src[p3 + R_IDX] + 2) >> 2;
+            const g: i32 = (@as(i32, src[p0 + G_IDX]) + src[p1 + G_IDX] + src[p2 + G_IDX] + src[p3 + G_IDX] + 2) >> 2;
+            const b: i32 = (@as(i32, src[p0 + B_IDX]) + src[p1 + B_IDX] + src[p2 + B_IDX] + src[p3 + B_IDX] + 2) >> 2;
 
             // -26/256 ≈ -0.1016  -87/256 ≈ -0.3398  112/256 ≈ 0.4375
             const u = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
@@ -100,6 +111,29 @@ pub fn rgbaToI420Bt709Limited(
             v_plane[cidx] = @intCast(std.math.clamp(v, 16, 240));
         }
     }
+}
+
+/// Tightly packed RGBA8888 (byte order R, G, B, A) → I420 BT.709 limited.
+/// Wayland / OpenGL's native read-back layout.
+pub fn rgbaToI420Bt709Limited(
+    rgba: []const u8,
+    width: u32,
+    height: u32,
+    out: []u8,
+) Error!void {
+    return toI420Bt709Limited(.rgba, rgba, width, height, out);
+}
+
+/// Tightly packed BGRA8888 (byte order B, G, R, A) → I420 BT.709 limited.
+/// macOS Core Video / ScreenCaptureKit's native layout for
+/// kCVPixelFormatType_32BGRA pixel buffers.
+pub fn bgraToI420Bt709Limited(
+    bgra: []const u8,
+    width: u32,
+    height: u32,
+    out: []u8,
+) Error!void {
+    return toI420Bt709Limited(.bgra, bgra, width, height, out);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -175,6 +209,35 @@ test "rgbaToI420: saturated red produces expected Cr bias" {
     try std.testing.expect(dst[4] < 128);
     // BT.709 Cr for pure red ≈ 240 in limited range (top of 16–240 span)
     try std.testing.expect(dst[5] >= 230);
+}
+
+test "bgraToI420: pure red (B=0,G=0,R=255,A=255) → expected Cr bias" {
+    // BGRA: byte 0 = B, byte 1 = G, byte 2 = R, byte 3 = A
+    var src = [_]u8{0} ** 16;
+    var p: usize = 0;
+    while (p < src.len) : (p += 4) {
+        src[p + 2] = 255; // R
+        src[p + 3] = 255; // A
+    }
+    var dst = [_]u8{0} ** 6;
+    try bgraToI420Bt709Limited(&src, 2, 2, &dst);
+    // Red surfaces the same as in RGBA — converter must index by
+    // colour channel, not byte offset.
+    try std.testing.expect(dst[5] > 128); // Cr high (R-biased)
+    try std.testing.expect(dst[4] < 128); // Cb low (no B)
+    try std.testing.expect(dst[5] >= 230);
+}
+
+test "bgraToI420 == rgbaToI420 when bytes swapped" {
+    // Feed the same pixel through both variants with matching byte
+    // layouts. The two outputs must be bit-identical.
+    const rgba = [_]u8{ 200, 100, 50, 255, 10, 240, 30, 255, 128, 128, 128, 255, 0, 0, 0, 255 };
+    const bgra = [_]u8{ 50, 100, 200, 255, 30, 240, 10, 255, 128, 128, 128, 255, 0, 0, 0, 255 };
+    var dst_rgba = [_]u8{0} ** 6;
+    var dst_bgra = [_]u8{0} ** 6;
+    try rgbaToI420Bt709Limited(&rgba, 2, 2, &dst_rgba);
+    try bgraToI420Bt709Limited(&bgra, 2, 2, &dst_bgra);
+    try std.testing.expectEqualSlices(u8, &dst_rgba, &dst_bgra);
 }
 
 test "rgbaToI420: 4x4 gradient stays within legal limited-range" {

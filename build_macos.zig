@@ -8,25 +8,19 @@ pub fn buildPlatform(
     optimize: std.builtin.OptimizeMode,
     shared: shared_defs.SharedModules,
 ) shared_defs.PlatformModules {
-    // --- VideoToolbox encoder backend (HEVC via VTCompressionSession) ---
-    const encoder_backend_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/macos/encoder_backend.zig"),
+    // --- macOS CPU-side frame downloader (BGRA → I420 via shared yuv) ---
+    // Consumed by app_share; takes a CVPixelBuffer pointer, returns an
+    // I420 slice the encoder can plant straight into SvtBackend.
+    const frame_download_mod = b.createModule(.{
+        .root_source_file = b.path("packages/zerocast/src/macos/frame_download.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "encoder", .module = shared.encoder },
+            .{ .name = "yuv", .module = shared.yuv },
         },
     });
-    encoder_backend_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
-    encoder_backend_mod.addCSourceFile(.{
-        .file = b.path("packages/zerocast/src/macos/videotoolbox.m"),
-        .flags = &.{"-fobjc-arc"},
-    });
-    encoder_backend_mod.linkFramework("VideoToolbox", .{});
-    encoder_backend_mod.linkFramework("CoreMedia", .{});
-    encoder_backend_mod.linkFramework("CoreVideo", .{});
-    encoder_backend_mod.linkSystemLibrary("objc", .{});
+    frame_download_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
 
     // --- macOS keymap (W3C KeyboardEvent.code → macOS virtual keycodes) ---
     const keymap_mod = b.createModule(.{
@@ -50,7 +44,7 @@ pub fn buildPlatform(
     input_mod.linkFramework("CoreGraphics", .{});
     input_mod.linkFramework("ApplicationServices", .{});
 
-    // --- App share module (ScreenCaptureKit capture + VideoToolbox encode + WebRTC) ---
+    // --- App share (ScreenCaptureKit capture → SVT-AV1 encode → WebRTC) ---
     const app_share_mod = b.createModule(.{
         .root_source_file = b.path("packages/zerocast/src/macos/app_share.zig"),
         .target = target,
@@ -58,7 +52,8 @@ pub fn buildPlatform(
         .link_libc = true,
         .imports = &.{
             .{ .name = "encoder", .module = shared.encoder },
-            .{ .name = "encoder_backend", .module = encoder_backend_mod },
+            .{ .name = "svt_backend", .module = shared.svt_backend },
+            .{ .name = "frame_download", .module = frame_download_mod },
             .{ .name = "session", .module = shared.session },
             .{ .name = "viewer_state", .module = shared.viewer_state },
             .{ .name = "input", .module = input_mod },

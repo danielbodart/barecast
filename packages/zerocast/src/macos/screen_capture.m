@@ -320,3 +320,22 @@ int sc_get_window_position(int64_t pid, double *out_x, double *out_y) {
         return 0;
     }
 }
+
+// ── CVPixelBuffer CPU read-lock helper (T-021) ──────────────────────────
+
+int sc_pixel_buffer_lock(void *pixel_buffer, SCPixelBufferLock *out) {
+    CVPixelBufferRef pb = (CVPixelBufferRef)pixel_buffer;
+    if (!pb || !out) return -1;
+    if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) return -1;
+    out->bytes = (const uint8_t *)CVPixelBufferGetBaseAddress(pb);
+    out->bytes_per_row = CVPixelBufferGetBytesPerRow(pb);
+    out->width = (uint32_t)CVPixelBufferGetWidth(pb);
+    out->height = (uint32_t)CVPixelBufferGetHeight(pb);
+    return 0;
+}
+
+void sc_pixel_buffer_unlock(void *pixel_buffer) {
+    CVPixelBufferRef pb = (CVPixelBufferRef)pixel_buffer;
+    if (!pb) return;
+    CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+}

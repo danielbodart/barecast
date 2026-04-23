@@ -35,6 +35,20 @@ int sc_capture_get_frame(SCCapture *cap, SCFrameResult *result);
 /// Release a pixel buffer obtained from sc_capture_get_frame().
 void sc_capture_release_frame(void *pixel_buffer);
 
+/// CPU-read lock on a CVPixelBuffer produced by ScreenCaptureKit.
+/// `bytes` points at the BGRA pixel data; `bytes_per_row` may exceed
+/// `width * 4` when the buffer has stride padding. Caller must pair
+/// with sc_pixel_buffer_unlock before the pb is released.
+typedef struct {
+    const uint8_t *bytes;
+    size_t bytes_per_row;
+    uint32_t width;
+    uint32_t height;
+} SCPixelBufferLock;
+
+int sc_pixel_buffer_lock(void *pixel_buffer, SCPixelBufferLock *out);
+void sc_pixel_buffer_unlock(void *pixel_buffer);
+
 /// Stop capturing and release resources.
 void sc_capture_destroy(SCCapture *cap);
 
