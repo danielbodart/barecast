@@ -1,3 +1,216 @@
 [tools]
 zig = "0.15.2"
 bun = "latest"
+
+# ─── Tasks ────────────────────────────────────────────────────────────────
+# mise is the build engine. Each task declares its inputs (sources) and
+# outputs (artifacts). mise handles parallelism, dependency ordering, and
+# skip-if-fresh. `run.ts` is a thin convenience wrapper around `mise run`.
+#
+# Conventions:
+#  * `libs:*`  — vendored static libraries (libdatachannel, svt-av1)
+#  * `worker:*` — Cloudflare Worker (signaling server + browser viewers)
+#  * Top-level — main developer-facing tasks (build, test, lint, etc.)
+
+# ─── Setup tasks (idempotent) ─────────────────────────────────────────────
+
+[tasks."deps"]
+description = "Install missing system packages (apt/brew). Idempotent."
+run = "bun scripts/deps.ts"
+
+[tasks."submodules"]
+description = "Initialize git submodules (libdatachannel, svt-av1, wlroots)."
+run = "bun scripts/submodules.ts"
+sources = [".gitmodules"]
+outputs = [
+    "packages/libdatachannel/CMakeLists.txt",
+    "packages/svt-av1/CMakeLists.txt",
+    "packages/wlroots/meson.build",
+]
+
+[tasks."zig-cc-wrappers"]
+description = "Write zig-cc / zig-c++ shims for cmake (libc++ ABI)."
+run = "bun scripts/zig-cc-wrappers.ts"
+outputs = [".zig-cache/bin/zig-cc", ".zig-cache/bin/zig-c++"]
+
+[tasks."libs:cache-from-main"]
+description = "In a worktree, copy pre-built cmake libs from the main repo."
+run = "bun scripts/cmake-libs-from-main.ts"
+hide = true
+
+# ─── Library builds ───────────────────────────────────────────────────────
+
+[tasks."libs:datachannel"]
+description = "Build libdatachannel + libjuice + libsrtp + libusrsctp static libs."
+depends = ["submodules", "zig-cc-wrappers", "libs:cache-from-main"]
+run = "zig build rebuild-datachannel"
+sources = ["packages/libdatachannel/**/CMakeLists.txt", "packages/libdatachannel/src/**/*"]
+outputs = [
+    ".zig-cache/cmake/libdatachannel.a",
+    ".zig-cache/cmake/deps/libjuice/libjuice.a",
+    ".zig-cache/cmake/deps/libsrtp/libsrtp2.a",
+    ".zig-cache/cmake/deps/usrsctp/usrsctplib/libusrsctp.a",
+]
+
+[tasks."libs:svt-av1"]
+description = "Build SVT-AV1 software encoder static lib (pure-C, no NASM)."
+depends = ["submodules", "zig-cc-wrappers", "libs:cache-from-main"]
+run = "zig build rebuild-svt"
+sources = ["packages/svt-av1/CMakeLists.txt", "packages/svt-av1/Source/**/*"]
+outputs = ["packages/svt-av1/Bin/Release/libSvtAv1Enc.a"]
+
+[tasks."libs"]
+description = "Build all native static libraries (datachannel + svt-av1) in parallel."
+depends = ["libs:datachannel", "libs:svt-av1"]
+
+# ─── Main developer tasks ─────────────────────────────────────────────────
+
+[tasks."build"]
+description = "Build zerocast and zerocast-kms binaries into dist/bin/."
+depends = ["deps", "libs"]
+run = '''
+ver=$(bun scripts/version.ts)
+echo "Building v$ver..."
+case "$(uname -s)" in
+    Linux) zig build --prefix dist -Dversion=$ver -Doptimize=ReleaseSafe -Dcpu=x86_64_v3 ;;
+    *)     zig build --prefix dist -Dversion=$ver -Doptimize=ReleaseSafe ;;
+esac
+'''
+sources = [
+    "build.zig", "build_*.zig", "build.zig.zon",
+    "packages/zerocast/src/**/*.zig",
+    "packages/zerocast/src/**/*.c",
+    "packages/zerocast/src/**/*.h",
+    "packages/zerocast/src/**/*.m",
+]
+outputs = ["dist/bin/zerocast", "dist/bin/zerocast-kms"]
+
+[tasks."test"]
+description = "Run unit + property tests."
+depends = ["libs"]
+run = "zig build test"
+sources = [
+    "build.zig", "build_*.zig",
+    "packages/zerocast/src/**/*.zig",
+    "packages/zerocast/src/**/*.c",
+    "packages/zerocast/src/**/*.h",
+    "packages/zerocast/src/**/*.m",
+]
+
+[tasks."lint"]
+description = "Run static analysis (zwanzig) + shellcheck."
+depends = ["libs"]
+run = """
+zig build analyze
+shellcheck bootstrap.sh
+"""
+sources = ["packages/zerocast/src/**/*.zig", "bootstrap.sh"]
+
+[tasks."clean"]
+description = "Delete build outputs and caches."
+run = "rm -rf dist/bin .zig-cache && echo Cleaned."
+
+[tasks."dev"]
+description = "Default: build + lint + tests."
+depends = ["build", "lint", "test"]
+
+[tasks."sw-integration"]
+description = "GPU-free SVT-AV1 integration lane. Pure CPU — safe for CI."
+depends = ["libs"]
+run = "zig build sw-integration"
+
+[tasks."compositor-test"]
+description = "Compositor integration test (requires GPU)."
+depends = ["libs"]
+run = "zig build compositor-test -- 2>&1"
+
+[tasks."integration"]
+description = "End-to-end recording test (requires GPU)."
+depends = ["build"]
+run = "bun scripts/integration.ts"
+
+[tasks."dist"]
+description = "Package dist/ into a release tarball."
+depends = ["build"]
+run = "bun scripts/dist.ts"
+
+[tasks."install"]
+description = "Build and run the installer."
+depends = ["build"]
+run = "bash dist/install.sh"
+
+[tasks."setup"]
+description = "First-time setup: build, symlink, set capabilities."
+depends = ["build"]
+run = "bun scripts/setup.ts"
+
+[tasks."version"]
+description = "Print the computed version string."
+run = "bun scripts/version.ts"
+
+# ─── CI pipeline ──────────────────────────────────────────────────────────
+# CI builds with ReleaseSmall (vs. dev's ReleaseSafe), so it can't reuse
+# the dev `build` task directly. Lint + test + worker bundle do reuse.
+
+[tasks."ci:build-small"]
+description = "Build with ReleaseSmall optimization (CI variant of build)."
+depends = ["deps", "libs"]
+run = '''
+ver=$(bun scripts/version.ts)
+echo "Building v$ver (ReleaseSmall)..."
+case "$(uname -s)" in
+    Linux) zig build --prefix dist -Dversion=$ver -Doptimize=ReleaseSmall -Dcpu=x86_64_v3 ;;
+    *)     zig build --prefix dist -Dversion=$ver -Doptimize=ReleaseSmall ;;
+esac
+'''
+hide = true
+
+[tasks."ci:worker-deps"]
+description = "Install worker dependencies (CI prereq)."
+run = "cd packages/worker && bun install"
+sources = ["packages/worker/package.json", "packages/worker/bun.lockb"]
+hide = true
+
+[tasks."ci:worker-deploy-production"]
+description = "Build + deploy worker to production env."
+depends = ["ci:worker-deps"]
+run = """
+bun scripts/worker-build.ts --minify
+cd packages/worker && bun run wrangler deploy --env production
+"""
+hide = true
+
+[tasks."ci"]
+description = "CI pipeline: lint + test + small build + dist + worker deploy + release."
+depends = ["lint", "test", "ci:build-small", "ci:worker-deploy-production"]
+run = """
+bun scripts/dist.ts
+bun scripts/release.ts
+"""
+
+# ─── Worker (Cloudflare) ──────────────────────────────────────────────────
+
+[tasks."worker:build"]
+description = "Build worker browser bundles."
+run = "bun scripts/worker-build.ts"
+sources = ["packages/worker/src/**/*.ts"]
+outputs = ["packages/worker/public/*.js"]
+
+[tasks."worker:dev"]
+description = "Run worker locally on :8787."
+depends = ["worker:build"]
+run = "cd packages/worker && bun run wrangler dev --port 8787"
+
+[tasks."worker:deploy"]
+description = "Deploy worker to Cloudflare (default env)."
+run = """
+bun scripts/worker-build.ts --minify
+cd packages/worker && bun run wrangler deploy
+"""
+
+[tasks."worker:promote"]
+description = "Deploy worker to Cloudflare production env."
+run = """
+bun scripts/worker-build.ts --minify
+cd packages/worker && bun run wrangler deploy --env production
+"""

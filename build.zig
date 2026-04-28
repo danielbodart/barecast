@@ -522,7 +522,18 @@ pub fn build(b: *std.Build) void {
     zwanzig_run.addDirectoryArg(b.path("packages/zerocast/src"));
     analyze_step.dependOn(&zwanzig_run.step);
 
-    // ── Rebuild libdatachannel static libs ────────────────────────────────
-    const rebuild_step = b.step("rebuild-libs", "Rebuild libdatachannel + SVT-AV1 static libs");
-    rebuild_step.dependOn(platform.buildRebuildLibs(b));
+    // ── Library rebuild steps ────────────────────────────────────────────
+    // Each library has its own step so the orchestrator (mise) can build
+    // them independently and in parallel. `rebuild-libs` is the legacy
+    // umbrella step — mise tasks invoke `rebuild-datachannel` and
+    // `rebuild-svt` separately. See .mise.toml.
+    const datachannel_step = b.step("rebuild-datachannel", "Rebuild libdatachannel static lib");
+    datachannel_step.dependOn(shared_defs.buildLibdatachannelStep(b));
+
+    const svt_step = b.step("rebuild-svt", "Rebuild SVT-AV1 static lib");
+    svt_step.dependOn(shared_defs.buildSvtAv1Step(b));
+
+    const rebuild_step = b.step("rebuild-libs", "Rebuild all native static libs");
+    rebuild_step.dependOn(shared_defs.buildLibdatachannelStep(b));
+    rebuild_step.dependOn(shared_defs.buildSvtAv1Step(b));
 }

@@ -10,6 +10,12 @@ Zerocast is a highly opinionated screen sharing tool for developers. Native Zig 
 
 Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `bootstrap.sh` + mise.
 
+The build is orchestrated by **mise** (see `.mise.toml`). mise is the engine —
+it handles dependency ordering, parallelism, and skip-if-fresh caching. `run.ts`
+is a thin convenience wrapper: `./run.ts <task>` is just `mise run <task>`.
+Anything in `.mise.toml` is callable via `./run.ts <task>` or directly
+`mise run <task>`.
+
 ```bash
 # Default: build + lint + unit tests
 ./run.ts
@@ -26,14 +32,17 @@ Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `
 # Static analysis
 ./run.ts lint
 
-# Rebuild libdatachannel static libs (after submodule update)
-./run.ts rebuild-libs
+# Rebuild native static libs (libdatachannel + SVT-AV1, in parallel)
+./run.ts libs
 
 # Integration test (requires GPU)
 ./run.ts integration
 
 # First-time setup (builds, installs binaries, sets CAP_SYS_ADMIN on zerocast-kms)
 ./run.ts setup
+
+# Show full task graph for a target
+mise tasks deps build
 ```
 
 ### Cloudflare Worker (signaling server)
@@ -130,7 +139,7 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 ## Conventions
 
 - Zig 0.15 API: `b.createModule(...)` for executables
-- **Always use `./run.ts <target>`** — never run `zig build`, `bun build`, `bun install`, `wrangler deploy`, etc. directly. `run.ts` is the single entry point for all build, test, lint, and deploy operations. It handles deps, submodules, versioning, and cmake libs automatically. If a command you need isn't there, add it to `run.ts`.
+- **Always use `./run.ts <target>` (or `mise run <target>`)** — never run `zig build`, `bun build`, `bun install`, `wrangler deploy`, etc. directly. The mise task graph in `.mise.toml` is the single source of truth for build orchestration. It handles deps, submodules, versioning, and cmake libs automatically. If a task you need isn't there, add it to `.mise.toml`.
 - **Binaries go to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast` and `dist/bin/zerocast-kms`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
 - **To run the daemon locally**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon` (after `./run.ts build`)
 - **To share an app**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share app glxgears`
@@ -139,4 +148,4 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
 - libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)
 - libdatachannel built with zig cc/c++ (libc++ ABI) to match Zig's linker
-- AV1 preferred, HEVC fallback (auto-detected via NVENC GUID enumeration)
+- AV1 only (HEVC retired)

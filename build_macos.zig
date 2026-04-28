@@ -97,37 +97,3 @@ pub fn buildExtraArtifacts(
     // No extra binaries on macOS — virtual display runs in-process.
 }
 
-/// Create the cmake rebuild-libs step for libdatachannel on macOS.
-pub fn buildRebuildLibs(b: *std.Build) *std.Build.Step {
-    const cmake_build_dir = ".zig-cache/cmake";
-
-    const zig_cc_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-cc" });
-    const zig_cxx_path = b.pathJoin(&.{ b.build_root.path orelse ".", ".zig-cache/bin/zig-c++" });
-
-    const cmake_configure = b.addSystemCommand(&.{
-        "cmake",
-        "-S",
-        "packages/libdatachannel",
-        "-B",
-        cmake_build_dir,
-        "-DCMAKE_BUILD_TYPE=Release",
-        "-DBUILD_SHARED_LIBS=OFF",
-        "-DNO_EXAMPLES=ON",
-        "-DNO_TESTS=ON",
-        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-    });
-    cmake_configure.addArg(b.fmt("-DCMAKE_C_COMPILER={s}", .{zig_cc_path}));
-    cmake_configure.addArg(b.fmt("-DCMAKE_CXX_COMPILER={s}", .{zig_cxx_path}));
-
-    const cmake_build = b.addSystemCommand(&.{
-        "cmake",
-        "--build",
-        cmake_build_dir,
-        "--config",
-        "Release",
-        "--parallel",
-    });
-    cmake_build.step.dependOn(&cmake_configure.step);
-
-    return &cmake_build.step;
-}
