@@ -68,7 +68,7 @@ depends = ["libs:datachannel", "libs:svt-av1"]
 # ─── Main developer tasks ─────────────────────────────────────────────────
 
 [tasks."build"]
-description = "Build zerocast and zerocast-kms binaries into dist/bin/."
+description = "Build zerocast binary into dist/bin/."
 depends = ["deps", "libs"]
 run = '''
 ver=$(bun scripts/version.ts)
@@ -85,7 +85,7 @@ sources = [
     "packages/zerocast/src/**/*.h",
     "packages/zerocast/src/**/*.m",
 ]
-outputs = ["dist/bin/zerocast", "dist/bin/zerocast-kms"]
+outputs = ["dist/bin/zerocast"]
 
 [tasks."test"]
 description = "Run unit + property tests."

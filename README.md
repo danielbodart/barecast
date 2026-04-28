@@ -3,15 +3,15 @@
 Highly opinionated application sharing for developers.
 
 - **Zero latency\*** — GPU-direct capture, hardware encode, P2P WebRTC with zero jitter buffer. End-to-end latency measured as low as 1ms on a local network. (\*We use the [abs-capture-time](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/abs-capture-time/) RTP extension to measure true capture-to-render latency, and [playout-delay](https://webrtc.googlesource.com/src/+/refs/heads/main/docs/native-code/rtp-hdrext/playout-delay/) set to zero to eliminate the browser's jitter buffer entirely.)
-- **Zero CPU copy** — Pixels never leave the GPU. NvFBC capture, CUDA interop, NVENC encode — all on GPU hardware. The CPU only sees the encoded bitstream.
+- **Zero CPU copy on the GPU path** — The wlroots compositor renders client surfaces into a GL renderbuffer that CUDA imports directly. NVENC reads ARGB and produces AV1; the CPU only sees the encoded bitstream.
 - **Zero audio, zero webcam** — Screen only. This is a collaboration tool, not a video call. Use your existing voice chat.
 - **Zero install for viewers** — Open a URL, see the application. No native app, no extension, no plugin.
-- **Zero shaders** — NvFBC gives a GPU texture. CUDA copies it to linear device memory. NVENC encodes with internal ARGB→NV12 color space conversion. No GL shaders, no compute passes.
-- **Zero codec negotiation** — AV1 preferred, HEVC fallback. Auto-detected at startup. One codec per session, no mid-stream switching.
+- **Zero codec negotiation** — AV1, period. NVENC for NVIDIA, VA-API for Intel/AMD, SVT-AV1 in software when neither is available. The encoder is auto-detected at startup.
 - **Zero infrastructure** — Signaling runs on Cloudflare Workers (serverless, hibernating Durable Objects). Media flows P2P via STUN. Cloudflare TURN as a last resort.
 - **Zero config** — Run the binary, share the URL. That's it.
+- **Zero privileged helpers** — One unprivileged binary. No setuid, no setcap, no daemons running as root.
 
-Built in Zig. Linux + NVIDIA today, macOS + Apple Silicon next.
+Built in Zig. Linux today, macOS in progress.
 
 > This project is a work in progress. The core capture and streaming pipeline is working end-to-end. See [Current Status](#current-status) for details.
 
@@ -21,13 +21,12 @@ Two sharing modes, both streaming over WebRTC to a browser viewer:
 
 ### Application Sharing (`zerocast share app <command>`)
 
-Launches your application in an isolated headless Xorg display, captures it via NvFBC, and streams over WebRTC. Each app gets its own X server — no compositor needed, no interference with your host desktop.
+Launches your application against a private wlroots compositor running headless inside the daemon, captures every committed frame, encodes it as AV1, and streams over WebRTC. Each app gets its own embedded compositor — no host display interaction, no DBus integration, no portal dialogs.
 
-- **Isolated display** — One headless Xorg per app (`:10`, `:11`, etc.), `UseDisplayDevice "none"` avoids modesetting conflicts with the host GPU
-- **Viewer-initiated resize** — Viewer resizes their browser window, the pipeline tears down and rebuilds at the new resolution (~300ms)
-- **Frame rate capping** — `fpscap.so` LD_PRELOAD hooks `glXSwapBuffers` with `clock_nanosleep` to prevent apps from spinning at 100% CPU in the vblank-less headless display
-- **Remote input** — Keyboard and mouse events from the browser are injected into the headless display via XTEST. Platform-independent `KeyboardEvent.code` mapped to Linux keycodes
-- **Input isolation** — `AutoAddDevices "false"` prevents physical keyboard/mouse from leaking into the headless display
+- **Embedded Wayland compositor** — wlroots in headless mode, one per share. The client app talks Wayland to a `WAYLAND_DISPLAY` socket the daemon owns; nothing leaks to your real desktop.
+- **Damage-driven event loop** — The compositor's headless output drives the encode loop. `wl_event_loop_dispatch` blocks until the next frame, and surface commit serials act as damage tracking — idle apps produce no encoded frames.
+- **Remote input** — Keyboard and mouse events from the browser are injected via virtual `wlr_keyboard` and `wlr_pointer` devices on the embedded `wlr_seat`. Platform-independent `KeyboardEvent.code` mapped to evdev keycodes.
+- **App-driven sizing** — The app's native size is authoritative. If the app resizes its toplevel, the encoder rebuilds at the new resolution.
 
 ### Terminal Sharing (`zerocast share terminal [command]`)
 
@@ -55,8 +54,8 @@ Each room gets a landing page showing all active shares as live stats cards (res
 
 ```
 zerocast daemon
-├── share app glxgears     → Headless Xorg :10 → NvFBC → CUDA → NVENC (AV1/HEVC) → WebRTC
-├── share app firefox      → Headless Xorg :11 → NvFBC → CUDA → NVENC (AV1/HEVC) → WebRTC
+├── share app glxgears     → wlroots compositor → GL FBO → CUDA / VA-API / readback → AV1 encode → WebRTC
+├── share app firefox      → wlroots compositor → GL FBO → CUDA / VA-API / readback → AV1 encode → WebRTC
 ├── share terminal         → PTY → data channel → xterm.js
 └── Unix socket ← CLI commands (share, unshare, join, status)
 
@@ -67,17 +66,31 @@ Cloudflare Worker + Durable Object
 └── Room auto-creation on first connection (client-generated IDs)
 ```
 
-### Capture Pipeline (Linux — NVIDIA + X11)
+### Capture Pipeline
 
+The daemon picks an `EncodeBackend` at startup based on what the host can do (`linux/gpu_detect.zig`). All three produce AV1 over the same `Encoder` orchestrator and `FrameSink` distributor.
+
+**NVIDIA — NVENC (preferred when available):**
 ```
-NvFBC (GPU texture, BGRA)
-  → CUDA resource (cuGraphicsGLRegisterImage, zero-copy)
-    → NVENC hardware encode (AV1 or HEVC, ARGB input, internal CSC to NV12)
-      → libdatachannel (RTP packetization, SRTP, abs-capture-time)
-        → WebRTC P2P to browser
+wlroots compositor (GLES2)
+  → GL renderbuffer (ARGB)
+    → cuGraphicsGLRegisterImage (zero-copy GPU import)
+      → NVENC AV1 (internal CSC to NV12)
+        → libdatachannel (RTP packetization, SRTP, abs-capture-time)
+          → WebRTC P2P to browser
 ```
 
-Everything stays GPU-resident. CPU usage near 0%.
+**Intel / AMD — VA-API:**
+```
+wlroots compositor → DMA-BUF export → VA-API AV1 → libdatachannel → browser
+```
+
+**Software fallback — SVT-AV1:**
+```
+wlroots compositor → glReadPixels → RGBA→I420 → SVT-AV1 (preset 12) → libdatachannel → browser
+```
+
+The SVT-AV1 path is the GPU-free safety net. It's also the test encoder — every layer of the pyramid above the browser can run on a CI runner without a GPU because SVT-AV1 produces real, valid AV1 bitstream in software.
 
 ### Transport: WebRTC via libdatachannel
 
@@ -85,7 +98,7 @@ Everything stays GPU-resident. CPU usage near 0%.
 
 | Extension | What it does |
 |---|---|
-| **abs-capture-time** (extmap 3) | Embeds an NTP timestamp from the moment of GPU capture into each RTP packet. The browser reads this via `getSynchronizationSources().captureTimestamp` to compute true end-to-end latency. |
+| **abs-capture-time** (extmap 3) | Embeds an NTP timestamp from the moment of capture into each RTP packet. The browser reads this via `getSynchronizationSources().captureTimestamp` to compute true end-to-end latency. |
 | **playout-delay** (extmap 4, min=max=0) | Instructs Chrome to render frames immediately with zero jitter buffer. Trades smoothness for latency — the right trade-off for interactive application sharing. |
 
 **RTCP chain per peer:**
@@ -111,35 +124,23 @@ Sharer (Zig)              Worker DO              Viewer (Browser)
 
 NAT traversal: STUN (`stun.cloudflare.com`) for ~85% of connections, Cloudflare TURN relay as fallback.
 
-## Codec Support
+## Codec: AV1 only
 
-AV1 preferred, HEVC fallback. The codec is auto-detected at startup by querying the GPU's supported encode GUIDs. One codec per session — no mid-stream negotiation.
-
-| Codec | GPU requirement | Browser decode |
-|-------|----------------|---------------|
-| **AV1** (preferred) | NVIDIA RTX 40-series+ (Ada/Blackwell) | Chrome 70+, Firefox 67+, Safari 17+ |
-| **HEVC** (fallback) | NVIDIA GTX 950+ (Maxwell Gen 2+) | Chrome 107+, Safari 11+, Firefox 120+ |
-
-### Why AV1 is Preferred
+AV1 is the only codec. There is no fallback to HEVC, no negotiation, no per-session selection.
 
 - **30–50% better compression** than HEVC at same quality — lower bandwidth for remote sessions
-- **Universal browser decode** — all major browsers support AV1 WebRTC without flags
-- **Future-proof** — when hardware encoders add screen content coding tools (IBC, palette mode), AV1 benefits most
+- **Universal browser decode** — Chrome 70+, Firefox 67+, Safari 17+ all support AV1 in WebRTC without flags
+- **Three encoder paths** — NVENC (NVIDIA, RTX 40-series+), VA-API (Intel ≥Tiger Lake, AMD RDNA 2+), SVT-AV1 (anywhere). The daemon probes the GPU at startup and picks the best one available; SVT-AV1 always works.
 
-### Why HEVC Fallback Matters
+### Encode configuration
 
-AV1 hardware encode requires RTX 40-series or newer. HEVC goes back to 2014 (GTX 950), covering the entire GTX 10-series, RTX 20-series, and RTX 30-series — a vastly larger installed base.
+All three backends share the same orchestration in `shared/encoder.zig`:
 
-### NVENC Encoding Configuration
-
-Both codecs share the same pipeline configuration:
-
-- **P-only GOP** — `frameIntervalP=1`, no B-frames. Minimum encode latency. Keyframes only when a viewer joins or requests one via PLI.
-- **Repeat headers** — Every keyframe includes sequence/parameter headers (AV1: `repeatSeqHdr`, HEVC: `repeatSPSPPS`), allowing late-joining viewers to start decoding immediately.
-- **Adaptive VBR** — Linear bitrate scaling: `90kbps + (pixels × fps × 0.012)`, capped at 10Mbps. Max bitrate = 2× average. VBV buffer = 1 second. Calibrated for screen content: 150×150 at 98kbps, 1080p at approx 1.5Mbps, 4K at approx 3Mbps.
-- **HQ tuning preset** — Counterintuitively, NVENC's high-quality preset (P4 + HQ tuning) produces better results for screen content than the low-latency preset.
-- **BT.709 color metadata** — Explicit BT.709 primaries/transfer/matrix with limited range so browsers decode consistently. AV1 uses top-level config fields; HEVC uses VUI parameters.
-- **Direct ARGB input** — NVENC takes ARGB directly (matching NvFBC's BGRA byte order on little-endian) and performs internal CSC to NV12. No CPU color conversion needed.
+- **Infinite GOP, P-only** — `gopLength = 0xFFFFFFFF`, `frameIntervalP = 1`. No B-frames, no scheduled keyframes. Keyframes are sent only when a viewer joins or requests one via PLI.
+- **Idle keyframe suppression** — Once a keyframe has been delivered while content is static, further PLIs during idle are dropped. Browsers stop sending PLIs once they decode a frame, so the burst is self-limiting.
+- **CQP by default** — Constant QP (default `--qp 20`) gives consistent quality regardless of content complexity. Crucial for text-heavy screen sharing where VBR would aggressively quantize static P-frames into a blurry mess. VBR is available via `--rc vbr` for bandwidth-constrained scenarios.
+- **BT.709 with limited range** — Explicit primaries/transfer/matrix so browsers decode consistently across wide-gamut and SDR displays.
+- **Repeat headers** — Every keyframe carries sequence/parameter headers so late-joining viewers can start decoding immediately.
 
 ## Latency Telemetry
 
@@ -158,69 +159,75 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 
 ## Project Structure
 
-| File | What it does |
+| Path | What it does |
 |---|---|
-| `packages/zerocast/src/app_share.zig` | App sharing session — headless Xorg, NvFBC capture loop, resize, input |
-| `packages/zerocast/src/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
-| `packages/zerocast/src/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
-| `packages/zerocast/src/codec.zig` | Codec enum (AV1/HEVC) — shared across encoder, session, recorder |
-| `packages/zerocast/src/encoder.zig` | Encode pipeline — CUDA copy, NVENC encode, idle detection, timing telemetry |
-| `packages/zerocast/src/nvenc.zig` | NVENC SDK 12.0 bindings — AV1/HEVC config, codec detection, VBR rate control |
-| `packages/zerocast/src/cuda.zig` | CUDA Driver API — GL texture interop, pitched device memory |
-| `packages/zerocast/src/nvfbc.zig` | NvFBC bindings — GPU texture capture, polling mode |
-| `packages/zerocast/src/daemon.zig` | Daemon — Unix socket listener, session slots (up to 8), thread lifecycle |
-| `packages/zerocast/src/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
-| `packages/zerocast/src/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
-| `packages/zerocast/src/headless_display.zig` | Headless Xorg — config generation, display discovery, xrandr resize |
-| `packages/zerocast/src/xorg.zig` | Setuid helper — Xorg process lifecycle (minimal, root-only) |
-| `packages/zerocast/src/xtest_input.zig` | Input injection — XTEST extension, keycode mapping |
-| `packages/zerocast/src/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
-| `packages/zerocast/src/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
-| `packages/zerocast/src/fpscap.zig` | Frame rate cap — LD_PRELOAD `glXSwapBuffers` hook |
-| `packages/zerocast/src/kms.zig` | KMS helper — DRM plane capture, DMA-BUF export (retained for Wayland) |
+| `packages/zerocast/src/main.zig` | Entry point — dispatches to daemon or CLI |
+| `packages/zerocast/src/shared/daemon.zig` | Daemon — Unix socket listener, session slots, thread lifecycle |
+| `packages/zerocast/src/shared/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
+| `packages/zerocast/src/shared/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
+| `packages/zerocast/src/shared/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
+| `packages/zerocast/src/shared/encoder.zig` | Encode pipeline — backend dispatch, idle detection, timing, FrameSink distribution |
+| `packages/zerocast/src/shared/svt_backend.zig` | SVT-AV1 software EncodeBackend (CPU fallback, also the test encoder) |
+| `packages/zerocast/src/shared/codec.zig` | Codec identity (AV1 only) |
+| `packages/zerocast/src/shared/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
+| `packages/zerocast/src/shared/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
+| `packages/zerocast/src/shared/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
+| `packages/zerocast/src/linux/gpu_detect.zig` | Backend selection — sysfs vendor probe + NVENC/VA-API capability check |
+| `packages/zerocast/src/linux/wayland/app_share.zig` | App share session — embedded compositor + encoder pipeline |
+| `packages/zerocast/src/linux/wayland/compositor.zig` | wlroots headless compositor — output, surface tracking, dispatch |
+| `packages/zerocast/src/linux/wayland/nvenc.zig` | NVENC SDK 12.0 bindings — AV1 config, capability detection |
+| `packages/zerocast/src/linux/wayland/nvenc_backend.zig` | EncodeBackend impl — CUDA GL interop + NVENC |
+| `packages/zerocast/src/linux/wayland/cuda.zig` | CUDA Driver API — GL renderbuffer interop, pitched device memory |
+| `packages/zerocast/src/linux/wayland/frame_download.zig` | GL FBO readback for the SVT-AV1 software path |
+| `packages/zerocast/src/linux/wayland/input.zig` | Input injection — virtual `wlr_keyboard` + `wlr_pointer` |
+| `packages/zerocast/src/linux/vaapi/vaapi.zig` | VA-API encoder (Intel QSV / AMD VCN) |
+| `packages/zerocast/src/linux/vaapi/encoder_backend.zig` | EncodeBackend impl (VA-API + DMA-BUF) |
 | `packages/worker/src/room.ts` | Durable Object — signaling, TURN credentials, shares-list broadcast |
 | `packages/worker/src/hub.ts` | Hub page — live session cards, pop-out viewer windows |
 | `packages/worker/src/viewer.ts` | App viewer — WebRTC client, stats panel, abs-capture-time e2e latency |
 | `packages/worker/src/terminal-viewer.ts` | Terminal viewer — xterm.js + WebRTC data channel |
 | `packages/worker/src/overlay.ts` | SVG overlay — multi-cursor rendering, draw paths, Bibata cursors |
 | `packages/worker/src/input.ts` | Input controller — binary encoding, coordinate mapping, draw/input modes |
-| `build.zig` | Build system — executables, modules, static libdatachannel, tests |
-| `run.ts` | Task runner — build, test, lint, setup, worker-dev, worker-deploy |
+| `build.zig` | Build system — executable, modules, static libdatachannel + SVT-AV1, tests |
+| `.mise.toml` | Task graph — build, test, lint, libs, worker, ci. The single source of truth for orchestration. |
+| `run.ts` | Thin wrapper around `mise run` |
 
 ## Hardware Requirements
 
-**Sharer (native Zig binary):**
-- NVIDIA GTX 950+ (HEVC) or RTX 40-series+ (AV1) — auto-detected at startup
-- Intel/AMD VA-API — future Linux backend
-- Apple Silicon (VideoToolbox) — future macOS backend
+**Sharer:**
+- NVIDIA GPU with AV1 encode (RTX 40-series, Ada/Blackwell), **or**
+- Intel iGPU with AV1 encode (Tiger Lake / Arc / Meteor Lake+), **or**
+- AMD GPU with AV1 encode (RDNA 2+ / RDNA 3), **or**
+- **Any x86_64 CPU** — SVT-AV1 software fallback always works (preset 12, real-time at modest resolutions).
+
+The daemon probes available encoders at startup and picks the fastest one; you don't choose. macOS support (Apple Silicon via SVT-AV1) is in progress.
 
 **Viewer (browser only):**
-- Any modern browser — AV1 and HEVC are both widely supported in WebRTC
+- Any modern browser — AV1 in WebRTC is broadly supported.
 
 ## Current Status
 
-**Working end-to-end on Linux + NVIDIA + X11:**
-- Application sharing with headless Xorg, NvFBC capture, hardware encode (AV1/HEVC), WebRTC streaming
+**Working end-to-end on Linux:**
+- Application sharing through the embedded wlroots compositor with AV1 hardware encode (NVENC) or software encode (SVT-AV1)
 - Terminal sharing with PTY, data channel transport, xterm.js viewer
 - Multi-cursor collaboration with drawing/annotation
-- Remote keyboard/mouse input
-- Viewer-initiated resize
+- Remote keyboard/mouse input via virtual wlroots seat devices
 - Hub page with live session stats
 - Cloudflare Worker signaling with TURN fallback
 
-**Next:**
-- macOS backend (ScreenCaptureKit + VideoToolbox + Metal)
-- Linux Wayland support (KMS/DRM capture path is implemented, needs EGL→CUDA wiring)
-- Intel/AMD GPU support via VA-API (HEVC + AV1)
+**In progress:**
+- VA-API (Intel/AMD) end-to-end validation
+- macOS backend (ScreenCaptureKit + SVT-AV1)
+- Viewer-initiated resize (currently the app's native size is authoritative)
 
 ## Build & Run
 
-Requires Linux with an NVIDIA GPU. Zig and Bun are installed automatically via `bootstrap.sh` + mise.
+Requires Linux. Zig and Bun are installed automatically via `bootstrap.sh` + mise.
 
 ```bash
 git clone <repo> && cd zerocast
 ./run.ts              # bootstrap, build, lint, test — one command
-./run.ts setup        # install binaries + setcap on helpers
+./run.ts setup        # symlink the binary into ~/.local/bin, ensure group membership
 
 # Run locally
 ./run.ts worker-dev                                              # signaling server on :8787
@@ -230,20 +237,24 @@ dist/bin/zerocast share app glxgears                             # share an app
 dist/bin/zerocast share terminal                                 # share a terminal
 ```
 
+Common tasks (all dispatch through `./run.ts <task>`, which is `mise run <task>`):
+
 ```
 ./run.ts              # build + lint + test (default)
-./run.ts build        # zig build ReleaseSafe
+./run.ts build        # ReleaseSafe build into dist/bin/zerocast
 ./run.ts test         # unit + property tests
 ./run.ts lint         # zwanzig static analysis + shellcheck
 ./run.ts integration  # GPU integration test (captures 3s video, validates with ffprobe)
+./run.ts sw-integration # GPU-free SVT-AV1 lane (CI-safe)
+./run.ts compositor-test # wlroots compositor integration test (requires GPU)
 ./run.ts worker-dev   # local Cloudflare Worker on :8787
-./run.ts worker-deploy # deploy Worker to production
-./run.ts rebuild-libs # rebuild libdatachannel static libs
-./run.ts setup        # build + install + setcap
+./run.ts libs         # rebuild libdatachannel + SVT-AV1 static libs
 ./run.ts clean        # rm -rf dist/bin .zig-cache
 ```
 
 ## Acknowledgements
 
 - [libdatachannel](https://github.com/paullouisageneau/libdatachannel) by Paul-Louis Ageneau — lightweight WebRTC in C/C++
-- [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) by dec05eba — reference for NvFBC capture and NVENC encoding patterns
+- [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) — modular Wayland compositor library
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) — open-source AV1 software encoder
+- [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) by dec05eba — reference for NVENC encoding patterns

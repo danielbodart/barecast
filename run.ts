@@ -29,11 +29,11 @@ if (command === "--help" || command === "-h" || command === "help") {
     console.log("");
     console.log("Common tasks:");
     console.log("  dev          build + lint + test (default)");
-    console.log("  build        build zerocast binaries");
+    console.log("  build        build the zerocast binary");
     console.log("  test         run unit + property tests");
     console.log("  lint         static analysis + shellcheck");
     console.log("  clean        delete build outputs");
-    console.log("  setup        first-time setup (build + symlink + caps)");
+    console.log("  setup        first-time setup (build + symlink + groups)");
     console.log("  ci           full CI pipeline");
     console.log("  integration  end-to-end recording test (requires GPU)");
     console.log("  worker:dev   run worker locally on :8787");

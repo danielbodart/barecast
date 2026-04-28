@@ -37,20 +37,6 @@ main() {
     ln -sfn "releases/$pending" "$INSTALL_DIR/current.tmp"
     mv -T "$INSTALL_DIR/current.tmp" "$INSTALL_DIR/current"
 
-    # Update privileged helpers (setuid xorg helper, capabilities on kms)
-    if [ -f "$release_dir/bin/zerocast-xorg" ] && command -v sudo >/dev/null 2>&1; then
-        if sudo -n cp "$release_dir/bin/zerocast-xorg" /usr/local/bin/zerocast-xorg 2>/dev/null && \
-           sudo -n chown root:root /usr/local/bin/zerocast-xorg 2>/dev/null && \
-           sudo -n chmod u+s /usr/local/bin/zerocast-xorg 2>/dev/null; then
-            echo "Updated /usr/local/bin/zerocast-xorg (setuid root)"
-        else
-            echo "WARNING: Could not update zerocast-xorg (run ./run.ts setup manually)" >&2
-        fi
-    fi
-    if [ -f "$release_dir/bin/zerocast-kms" ] && command -v sudo >/dev/null 2>&1; then
-        sudo -n setcap cap_sys_admin+ep "$release_dir/bin/zerocast-kms" 2>/dev/null || true
-    fi
-
     rm -f "$pending_file"
 
     echo "Applied update: $pending"

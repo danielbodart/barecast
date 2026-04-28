@@ -308,37 +308,6 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 
-    // KMS tests (Linux only — SCM_RIGHTS, DMA-BUF protocol)
-    if (builtin.os.tag == .linux) {
-        const protocol_mod = b.createModule(.{
-            .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-
-        const protocol_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-        test_step.dependOn(&b.addRunArtifact(protocol_tests).step);
-
-        const ipc_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/zerocast/src/linux/kms/ipc.zig"),
-                .target = target,
-                .optimize = optimize,
-                .link_libc = true,
-                .imports = &.{
-                    .{ .name = "protocol", .module = protocol_mod },
-                },
-            }),
-        });
-        test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
-    }
-
     // SVT-AV1 software backend smoke test — proves the library links and
     // the init/deinit handle lifecycle succeeds on this host.
     const svt_backend_tests = b.addTest(.{
@@ -438,13 +407,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // protocol.zig is pure Zig structs (no platform deps) — safe to compile everywhere
-    const protocol_mod_for_props = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const prop_exe = b.addExecutable(.{
         .name = "prop-tests",
         .root_module = b.createModule(.{
@@ -454,7 +416,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "minish", .module = minish_dep.module("minish") },
                 .{ .name = "input_protocol", .module = input_protocol_mod },
-                .{ .name = "protocol", .module = protocol_mod_for_props },
             },
         }),
     });

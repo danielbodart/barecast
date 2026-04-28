@@ -91,19 +91,6 @@ check_permissions() {
             fi
         fi
     fi
-
-    # Check tty group membership (needed for headless Xorg VT access)
-    if ! id -nG | grep -qw tty; then
-        echo ""
-        if confirm "Add current user to 'tty' group? (for headless Xorg, requires sudo)"; then
-            if sudo usermod -aG tty "$USER"; then
-                NEEDS_REBOOT=true
-                echo "Added to 'tty' group."
-            else
-                echo "WARNING: Failed. Run manually: sudo usermod -aG tty $USER"
-            fi
-        fi
-    fi
 }
 
 # ─── Systemd Service ─────────────────────────────────────────────────────────
@@ -135,7 +122,6 @@ install_service() {
         echo "ExecStart=$binary daemon"
         echo "Restart=always"
         echo "RestartSec=5"
-        echo "Environment=DISPLAY=:0"
         echo "Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
         if $with_recordings; then
             echo "Environment=ZEROCAST_RECORD_DIR=$RECORDINGS_DIR"
@@ -254,60 +240,17 @@ install_files() {
         rm -rf "$dir"
     done
 
-    # Symlink binaries + update command into ~/.local/bin
+    # Symlink binary + update command into ~/.local/bin
     mkdir -p "$HOME/.local/bin"
     ln -sf "$INSTALL_DIR/current/bin/zerocast" "$HOME/.local/bin/zerocast"
-    ln -sf "$INSTALL_DIR/current/bin/zerocast-kms" "$HOME/.local/bin/zerocast-kms"
     ln -sf "$INSTALL_DIR/zerocast-update.sh" "$HOME/.local/bin/zerocast-update"
 
     # Create recordings directory
     mkdir -p "$RECORDINGS_DIR"
 
     echo "Installed v$ver."
-    echo "Binaries: $INSTALL_DIR/current/bin/"
-    echo "Symlinks: ~/.local/bin/zerocast, ~/.local/bin/zerocast-kms"
-
-    # Install setuid helper to /usr/local/bin (must be on a non-nosuid filesystem)
-    if [ -f "$release_dir/bin/zerocast-xorg" ]; then
-        echo ""
-        echo "=== Privileged Helper Setup ==="
-        echo "zerocast-xorg needs setuid root (for headless Xorg VT access)."
-        echo "It must be installed to /usr/local/bin (home dirs may have nosuid)."
-        if confirm "Install zerocast-xorg to /usr/local/bin? (requires sudo)"; then
-            if sudo cp "$release_dir/bin/zerocast-xorg" /usr/local/bin/zerocast-xorg && \
-               sudo chown root:root /usr/local/bin/zerocast-xorg && \
-               sudo chmod u+s /usr/local/bin/zerocast-xorg; then
-                echo "Installed /usr/local/bin/zerocast-xorg (setuid root)"
-            else
-                echo "WARNING: Failed. Run manually:"
-                echo "  sudo cp $release_dir/bin/zerocast-xorg /usr/local/bin/zerocast-xorg"
-                echo "  sudo chown root:root /usr/local/bin/zerocast-xorg"
-                echo "  sudo chmod u+s /usr/local/bin/zerocast-xorg"
-            fi
-        fi
-    fi
-
-    # Set capabilities on KMS helper
-    if [ -f "$release_dir/bin/zerocast-kms" ]; then
-        sudo setcap cap_sys_admin+ep "$release_dir/bin/zerocast-kms" 2>/dev/null || true
-    fi
-
-    # Sudoers rule for passwordless auto-update of privileged helpers
-    local sudoers_file="/etc/sudoers.d/zerocast"
-    if [ ! -f "$sudoers_file" ]; then
-        echo ""
-        echo "A sudoers rule allows auto-updates to install the setuid helper"
-        echo "without prompting for a password on each service restart."
-        if confirm "Install sudoers rule for passwordless helper updates?"; then
-            local rule="$USER ALL=(root) NOPASSWD: /usr/bin/cp * /usr/local/bin/zerocast-xorg, /usr/bin/chown root\:root /usr/local/bin/zerocast-xorg, /usr/bin/chmod u+s /usr/local/bin/zerocast-xorg, /usr/sbin/setcap cap_sys_admin+ep *"
-            if echo "$rule" | sudo tee "$sudoers_file" >/dev/null && \
-               sudo chmod 440 "$sudoers_file"; then
-                echo "Sudoers rule installed."
-            else
-                echo "WARNING: Failed. Helper updates will require manual sudo."
-            fi
-        fi
-    fi
+    echo "Binary:  $INSTALL_DIR/current/bin/zerocast"
+    echo "Symlink: ~/.local/bin/zerocast"
 
     if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
         echo ""
@@ -352,8 +295,7 @@ cmd_install() {
         # Dev mode: symlink into ~/.local/bin pointing at source tree
         mkdir -p "$HOME/.local/bin"
         ln -sf "$SCRIPT_DIR/bin/zerocast" "$HOME/.local/bin/zerocast"
-        ln -sf "$SCRIPT_DIR/bin/zerocast-kms" "$HOME/.local/bin/zerocast-kms"
-        echo "Symlinks: ~/.local/bin/zerocast → $SCRIPT_DIR/bin/"
+        echo "Symlink: ~/.local/bin/zerocast → $SCRIPT_DIR/bin/zerocast"
 
         install_service "$project_dir" "$SCRIPT_DIR/bin/zerocast" false true
     else

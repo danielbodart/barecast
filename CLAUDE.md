@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What is this?
 
-Zerocast is a highly opinionated screen sharing tool for developers. Native Zig binary runs apps in an embedded Wayland compositor (wlroots), hardware-encodes video via NVENC (AV1 preferred, HEVC fallback) or VA-API (Intel/AMD), and streams to a browser viewer over WebRTC. See `README.md` for the full design.
+Zerocast is a highly opinionated screen sharing tool for developers. A single native Zig binary runs apps in an embedded Wayland compositor (wlroots), hardware-encodes AV1 via NVENC (NVIDIA) or VA-API (Intel/AMD), with SVT-AV1 as a software fallback, and streams to a browser viewer over WebRTC. See `README.md` for the full design.
 
 ## Build & Run
 
@@ -38,7 +38,7 @@ Anything in `.mise.toml` is callable via `./run.ts <task>` or directly
 # Integration test (requires GPU)
 ./run.ts integration
 
-# First-time setup (builds, installs binaries, sets CAP_SYS_ADMIN on zerocast-kms)
+# First-time setup (builds, symlinks the binary into ~/.local/bin, ensures group membership)
 ./run.ts setup
 
 # Show full task graph for a target
@@ -54,10 +54,9 @@ mise tasks deps build
 
 ## Architecture
 
-Two Zig binaries + one Cloudflare Worker:
+One Zig binary + one Cloudflare Worker:
 
-- **`zerocast`** — Main binary (unprivileged). App share pipeline: embedded wlroots compositor → GL renderbuffer → CUDA/VA-API → NVENC/VA-API (AV1/HEVC) → libdatachannel WebRTC → browser.
-- **`zerocast-kms`** — Privileged KMS helper (CAP_SYS_ADMIN). Opens `/dev/dri/card0`, exports DMA-BUF fds over Unix socketpair via SCM_RIGHTS. Intentionally minimal — no networking, no encoding.
+- **`zerocast`** — Single unprivileged binary. App share pipeline: embedded wlroots compositor → GL renderbuffer → CUDA / VA-API / GL readback → NVENC / VA-API / SVT-AV1 → libdatachannel WebRTC → browser. AV1 only.
 - **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
 
 ### Source layout
@@ -66,7 +65,7 @@ All first-party and vendored code lives under `packages/`. Submodules (libdatach
 
 ```
 packages/
-├── zerocast/src/                         # Our Zig binary (zerocast + zerocast-kms)
+├── zerocast/src/                         # Our Zig binary
 ├── worker/                               # Our Cloudflare Worker + browser viewers
 ├── libdatachannel/                       # Submodule: WebRTC transport
 ├── wlroots/                              # Submodule: embedded Wayland compositor
@@ -82,42 +81,37 @@ packages/zerocast/src/
 │   ├── control.zig                       # Wire protocol for daemon ↔ CLI (JSON/Unix socket)
 │   ├── session.zig                       # Multi-viewer WebRTC broadcast (libdatachannel)
 │   ├── encoder.zig                       # Encode pipeline with FrameSink dispatch
+│   ├── svt_backend.zig                   # SVT-AV1 software EncodeBackend (CPU fallback)
 │   ├── terminal_share.zig                # Terminal share (PTY + asciinema v2)
-│   ├── codec.zig, ivf.zig               # Codec types, IVF container writer
+│   ├── codec.zig, ivf.zig                # Codec types, IVF container writer
 │   ├── session_recorder.zig              # IVF recording to disk
 │   ├── input_protocol.zig                # Binary input message protocol
 │   ├── viewer_state.zig                  # Viewer color/state tracking
 │   ├── osc_parser.zig                    # Terminal OSC sequence parser
+│   ├── yuv.zig                           # RGBA → I420 BT.709 conversion
 │   └── prop_tests.zig                    # Property-based tests (minish)
 ├── linux/
-│   ├── keymap.zig                       # W3C code → evdev keycodes
-│   ├── gpu_detect.zig                   # GPU auto-detection (sysfs + CUDA/VA-API probing)
+│   ├── keymap.zig                        # W3C code → evdev keycodes
+│   ├── gpu_detect.zig                    # GPU auto-detection (sysfs + CUDA/VA-API probing)
 │   ├── wayland/
-│   │   ├── app_share.zig               # AppShare session (wlroots compositor)
-│   │   ├── compositor.zig              # Embedded wlroots headless compositor
-│   │   ├── nvenc_backend.zig           # EncodeBackend impl (CUDA + NVENC)
-│   │   ├── nvenc.zig                   # NVENC hardware encoder
-│   │   ├── cuda.zig                    # CUDA GL renderbuffer interop
-│   │   ├── input.zig                   # Input injection (wlr_seat)
-│   │   └── gles2_helper.c             # GL RBO extraction from wlroots
-│   ├── vaapi/
-│   │   ├── vaapi.zig                   # VA-API encoder (Intel QSV / AMD VCN)
-│   │   ├── encoder_backend.zig         # EncodeBackend impl (VA-API)
-│   │   └── hevc_params.c              # HEVC slice parameter helper
-│   └── kms/
-│       ├── main.zig                     # zerocast-kms privileged helper entry
-│       ├── drm.zig                      # KMS/DRM framebuffer capture
-│       ├── ipc.zig                      # SCM_RIGHTS fd passing
-│       └── protocol.zig                 # Wire protocol (zerocast ↔ zerocast-kms)
+│   │   ├── app_share.zig                 # AppShare session (wlroots compositor)
+│   │   ├── compositor.zig                # Embedded wlroots headless compositor
+│   │   ├── nvenc_backend.zig             # EncodeBackend impl (CUDA + NVENC)
+│   │   ├── nvenc.zig                     # NVENC hardware encoder (AV1)
+│   │   ├── cuda.zig                      # CUDA GL renderbuffer interop
+│   │   ├── frame_download.zig            # GL FBO readback for the SVT-AV1 path
+│   │   ├── input.zig                     # Input injection (wlr_seat)
+│   │   └── gles2_helper.c                # GL RBO extraction from wlroots
+│   └── vaapi/
+│       ├── vaapi.zig                     # VA-API encoder (Intel QSV / AMD VCN)
+│       └── encoder_backend.zig           # EncodeBackend impl (VA-API)
 └── macos/
-    ├── app_share.zig                    # AppShare session (ScreenCaptureKit)
-    ├── encoder_backend.zig              # EncodeBackend impl (VideoToolbox HEVC)
-    ├── input.zig                        # Input injection (CGEvent)
-    ├── keymap.zig                       # W3C code → macOS virtual keycodes
-    ├── screen_capture.{h,m}             # ScreenCaptureKit ObjC binding
-    ├── videotoolbox.{h,m}               # VTCompressionSession ObjC wrapper
-    ├── virtual_display.{h,m}            # CGVirtualDisplay ObjC binding
-    └── vd_helper.m                      # CGVirtualDisplay helper process
+    ├── app_share.zig                     # AppShare session (ScreenCaptureKit + SVT-AV1)
+    ├── frame_download.zig                # IOSurface → I420 readback for SVT-AV1
+    ├── input.zig                         # Input injection (CGEvent)
+    ├── keymap.zig                        # W3C code → macOS virtual keycodes
+    ├── screen_capture.{h,m}              # ScreenCaptureKit ObjC binding
+    └── virtual_display.{h,m}             # CGVirtualDisplay ObjC binding
 ```
 
 ### Worker source files
@@ -140,7 +134,7 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 
 - Zig 0.15 API: `b.createModule(...)` for executables
 - **Always use `./run.ts <target>` (or `mise run <target>`)** — never run `zig build`, `bun build`, `bun install`, `wrangler deploy`, etc. directly. The mise task graph in `.mise.toml` is the single source of truth for build orchestration. It handles deps, submodules, versioning, and cmake libs automatically. If a task you need isn't there, add it to `.mise.toml`.
-- **Binaries go to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast` and `dist/bin/zerocast-kms`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
+- **Binary goes to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
 - **To run the daemon locally**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon` (after `./run.ts build`)
 - **To share an app**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share app glxgears`
 - **Never deploy from a dev machine** — all deployments (worker, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
@@ -148,4 +142,4 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
 - libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)
 - libdatachannel built with zig cc/c++ (libc++ ABI) to match Zig's linker
-- AV1 only (HEVC retired)
+- AV1 only — HEVC and the X11/NvFBC pipeline were retired. NVENC, VA-API, and SVT-AV1 are the three EncodeBackend implementations.

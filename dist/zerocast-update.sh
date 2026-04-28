@@ -73,7 +73,6 @@ main() {
 
     # Validate critical files exist
     [ -f "$release_dir/bin/zerocast" ] || die "Extracted release is missing zerocast binary"
-    [ -f "$release_dir/bin/zerocast-kms" ] || die "Extracted release is missing zerocast-kms binary"
 
     # Update top-level scripts from staged release
     for script in zerocast-update.sh zerocast-apply-update.sh zerocast-rollback.sh; do

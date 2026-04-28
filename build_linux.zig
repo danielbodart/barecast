@@ -152,55 +152,17 @@ pub fn buildPlatform(
     };
 }
 
-/// Install Linux-specific extra binaries (zerocast-kms).
+/// Install Linux-specific extra binaries. Currently a no-op; kept so build.zig
+/// can call `platform.buildExtraArtifacts` uniformly across Linux and macOS.
 pub fn buildExtraArtifacts(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     shared: shared_defs.SharedModules,
 ) void {
+    _ = b;
+    _ = target;
+    _ = optimize;
     _ = shared;
-
-    // --- KMS protocol and IPC modules (Linux-only) ---
-    const protocol_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/kms/protocol.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ipc_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/kms/ipc.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "protocol", .module = protocol_mod },
-        },
-    });
-
-    // --- zerocast-kms (privileged helper, CAP_SYS_ADMIN) ---
-    const drm_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/kms/drm.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    drm_mod.linkSystemLibrary("libdrm", .{});
-
-    const kms_exe = b.addExecutable(.{
-        .name = "zerocast-kms",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/zerocast/src/linux/kms/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "protocol", .module = protocol_mod },
-                .{ .name = "ipc", .module = ipc_mod },
-                .{ .name = "drm", .module = drm_mod },
-            },
-        }),
-    });
-    kms_exe.linkLibC();
-    b.installArtifact(kms_exe);
-
 }
 
