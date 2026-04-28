@@ -1,6 +1,8 @@
 [tools]
 zig = "0.15.2"
-bun = "latest"
+# Pinned ≥ 1.1 because scripts/*.ts use the `$` shell template tag
+# (Bun.$), which was added in bun 1.0.20.
+bun = "1.2"
 
 # ─── Tasks ────────────────────────────────────────────────────────────────
 # mise is the build engine. Each task declares its inputs (sources) and
