@@ -1,4 +1,4 @@
-//! GPU-free integration lane (cavekit-testing R2 AC3).
+//! GPU-free integration lane.
 //!
 //! Drives a synthetic RGBA source through the SVT-AV1 software backend
 //! into the in-memory `FrameBuffer` sink. Exercises the capture → encode
