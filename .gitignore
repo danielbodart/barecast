@@ -12,8 +12,8 @@ zerocast-linux-x86_64.tar.gz.sha256
 .worktrees/
 .playwright-mcp
 .playwright/
-packages/worker/node_modules/
-packages/worker/.wrangler/
-packages/worker/public/*.js
+packages/server/node_modules/
+packages/server/.wrangler/
+packages/server/public/*.js
 .env
 ffmpeg-6.1.1/

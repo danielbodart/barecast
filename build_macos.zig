@@ -12,7 +12,7 @@ pub fn buildPlatform(
     // Consumed by app_share; takes a CVPixelBuffer pointer, returns an
     // I420 slice the encoder can plant straight into SvtBackend.
     const frame_download_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/macos/frame_download.zig"),
+        .root_source_file = b.path("packages/client/src/macos/frame_download.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -20,18 +20,18 @@ pub fn buildPlatform(
             .{ .name = "yuv", .module = shared.yuv },
         },
     });
-    frame_download_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
+    frame_download_mod.addIncludePath(b.path("packages/client/src/macos"));
 
     // --- macOS keymap (W3C KeyboardEvent.code → macOS virtual keycodes) ---
     const keymap_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/macos/keymap.zig"),
+        .root_source_file = b.path("packages/client/src/macos/keymap.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // --- Input handler (mouse + keyboard injection via CoreGraphics) ---
     const input_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/macos/input.zig"),
+        .root_source_file = b.path("packages/client/src/macos/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -40,13 +40,13 @@ pub fn buildPlatform(
             .{ .name = "session", .module = shared.session },
         },
     });
-    input_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
+    input_mod.addIncludePath(b.path("packages/client/src/macos"));
     input_mod.linkFramework("CoreGraphics", .{});
     input_mod.linkFramework("ApplicationServices", .{});
 
     // --- App share (ScreenCaptureKit capture → SVT-AV1 encode → WebRTC) ---
     const app_share_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/macos/app_share.zig"),
+        .root_source_file = b.path("packages/client/src/macos/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -62,13 +62,13 @@ pub fn buildPlatform(
             .{ .name = "clock", .module = shared.clock },
         },
     });
-    app_share_mod.addIncludePath(b.path("packages/zerocast/src/macos"));
+    app_share_mod.addIncludePath(b.path("packages/client/src/macos"));
     app_share_mod.addCSourceFile(.{
-        .file = b.path("packages/zerocast/src/macos/screen_capture.m"),
+        .file = b.path("packages/client/src/macos/screen_capture.m"),
         .flags = &.{"-fobjc-arc"},
     });
     app_share_mod.addCSourceFile(.{
-        .file = b.path("packages/zerocast/src/macos/virtual_display.m"),
+        .file = b.path("packages/client/src/macos/virtual_display.m"),
         .flags = &.{"-fobjc-arc"},
     });
     app_share_mod.linkFramework("ScreenCaptureKit", .{});

@@ -8,5 +8,5 @@ const flags = minify ? ["--minify"] : [];
 const entries = ["viewer", "terminal-viewer", "hub", "install", "sw"];
 console.log(`Building viewer TypeScript${minify ? " (minified)" : ""}...`);
 for (const e of entries) {
-    await $`bun build packages/worker/src/${e}.ts --outdir packages/worker/public --target=browser ${flags}`;
+    await $`bun build packages/server/src/${e}.ts --outdir packages/server/public --target=browser ${flags}`;
 }

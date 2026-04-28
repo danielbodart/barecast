@@ -10,14 +10,14 @@ pub fn buildPlatform(
 ) shared_defs.PlatformModules {
     // --- Keymap module (evdev keycodes) ---
     const keymap_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/keymap.zig"),
+        .root_source_file = b.path("packages/client/src/linux/keymap.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // --- Embedded Wayland compositor (wlroots headless) ---
     const compositor_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/compositor.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/compositor.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -25,11 +25,11 @@ pub fn buildPlatform(
     compositor_mod.addIncludePath(b.path("packages/wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/include"));
     compositor_mod.addIncludePath(b.path("libs/wlroots/protocol"));
-    compositor_mod.addIncludePath(b.path("packages/zerocast/src/linux/wayland"));
+    compositor_mod.addIncludePath(b.path("packages/client/src/linux/wayland"));
     compositor_mod.addIncludePath(.{ .cwd_relative = "/usr/include/pixman-1" });
     compositor_mod.addObjectFile(b.path("libs/wlroots/libwlroots.a"));
     // C helper to extract GL RBO from wlroots internal structs (NVIDIA path)
-    compositor_mod.addCSourceFile(.{ .file = b.path("packages/zerocast/src/linux/wayland/gles2_helper.c"), .flags = &.{} });
+    compositor_mod.addCSourceFile(.{ .file = b.path("packages/client/src/linux/wayland/gles2_helper.c"), .flags = &.{} });
     compositor_mod.linkSystemLibrary("wayland-server", .{});
     compositor_mod.linkSystemLibrary("wayland-client", .{});
     compositor_mod.linkSystemLibrary("pixman-1", .{});
@@ -41,7 +41,7 @@ pub fn buildPlatform(
 
     // --- NVIDIA CUDA module for Wayland (GL renderbuffer interop) ---
     const wayland_cuda_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/cuda.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/cuda.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -49,7 +49,7 @@ pub fn buildPlatform(
 
     // --- NVENC module (NVIDIA hardware encoder via libnvidia-encode) ---
     const wayland_nvenc_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/nvenc.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/nvenc.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -62,7 +62,7 @@ pub fn buildPlatform(
 
     // --- NVENC encoder backend for Wayland (CUDA GL interop + NVENC) ---
     const wayland_nvenc_backend_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/nvenc_backend.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/nvenc_backend.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -78,7 +78,7 @@ pub fn buildPlatform(
     // shared (see build.zig); the downloader is Wayland-specific because
     // it does GL readback on the compositor's FBO (T-010).
     const frame_download_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/frame_download.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/frame_download.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -90,7 +90,7 @@ pub fn buildPlatform(
 
     // --- Wayland input module (virtual keyboard + pointer via wlr_seat) ---
     const wayland_input_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/input.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/input.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -112,7 +112,7 @@ pub fn buildPlatform(
     // Declared before app_share so app_share can import it for its
     // probe-driven backend selection (T-018).
     const gpu_detect_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/gpu_detect.zig"),
+        .root_source_file = b.path("packages/client/src/linux/gpu_detect.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -124,7 +124,7 @@ pub fn buildPlatform(
 
     // --- Wayland app share (compositor + NVENC/SVT-AV1 encoder pipeline) ---
     const wayland_app_share_mod = b.createModule(.{
-        .root_source_file = b.path("packages/zerocast/src/linux/wayland/app_share.zig"),
+        .root_source_file = b.path("packages/client/src/linux/wayland/app_share.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,

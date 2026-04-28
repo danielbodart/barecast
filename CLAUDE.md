@@ -45,19 +45,19 @@ Anything in `.mise.toml` is callable via `./run.ts <task>` or directly
 mise tasks deps build
 ```
 
-### Cloudflare Worker (signaling server)
+### Signaling server (Cloudflare Worker)
 
 ```bash
-./run.ts worker-dev      # local dev server on :8787
-./run.ts worker-deploy   # deploy to Cloudflare
+./run.ts server-dev      # local dev server on :8787
+./run.ts server-deploy   # deploy to Cloudflare
 ```
 
 ## Architecture
 
 One Zig binary + one Cloudflare Worker:
 
-- **`zerocast`** — Single unprivileged binary. App share pipeline: embedded wlroots compositor → GL renderbuffer → CUDA / VA-API / GL readback → NVENC / VA-API / SVT-AV1 → libdatachannel WebRTC → browser. AV1 only.
-- **`worker/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange. Rooms auto-create on first connection with client-generated IDs.
+- **`packages/client/`** (`zerocast` binary) — Single unprivileged Zig binary. App share pipeline: embedded wlroots compositor → GL renderbuffer → CUDA / VA-API / GL readback → NVENC / VA-API / SVT-AV1 → libdatachannel WebRTC → browser. AV1 only.
+- **`packages/server/`** — Cloudflare Worker + Durable Object. WebSocket signaling for SDP/ICE exchange, TURN credential provisioning, and the static browser viewers. Rooms auto-create on first connection with client-generated IDs.
 
 ### Source layout
 
@@ -65,15 +65,15 @@ All first-party and vendored code lives under `packages/`. Submodules (libdatach
 
 ```
 packages/
-├── zerocast/src/                         # Our Zig binary
-├── worker/                               # Our Cloudflare Worker + browser viewers
+├── client/src/                           # Our Zig binary (zerocast)
+├── server/                               # Our Cloudflare Worker + browser viewers
 ├── libdatachannel/                       # Submodule: WebRTC transport
 ├── wlroots/                              # Submodule: embedded Wayland compositor
 └── svt-av1/                              # Submodule: SVT-AV1 software encoder
 ```
 
 ```
-packages/zerocast/src/
+packages/client/src/
 ├── main.zig                              # Entry point — dispatches to daemon or CLI
 ├── shared/                               # Platform-agnostic code
 │   ├── daemon.zig                        # Daemon mode (Unix socket, session slots, threads)
@@ -114,12 +114,12 @@ packages/zerocast/src/
     └── virtual_display.{h,m}             # CGVirtualDisplay ObjC binding
 ```
 
-### Worker source files
+### Server source files
 
-- **`packages/worker/src/index.ts`** — Cloudflare Worker + routing.
-- **`packages/worker/src/viewer.ts`** — WebRTC browser viewer (screen share).
-- **`packages/worker/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).
-- **`packages/worker/src/room.ts`** — Durable Object for signaling rooms with role tagging.
+- **`packages/server/src/index.ts`** — Cloudflare Worker + routing.
+- **`packages/server/src/viewer.ts`** — WebRTC browser viewer (screen share).
+- **`packages/server/src/terminal-viewer.ts`** — xterm.js browser viewer (terminal share).
+- **`packages/server/src/room.ts`** — Durable Object for signaling rooms with role tagging.
 
 ## Testing
 
@@ -137,7 +137,7 @@ Three test tiers: unit tests (inline `test` blocks), property tests (minish), in
 - **Binary goes to `dist/bin/`** — `./run.ts build` outputs to `dist/bin/zerocast`. Never look in `zig-out/` or `.zig-cache/` for built binaries. The `--prefix dist` flag in `run.ts build` controls this.
 - **To run the daemon locally**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon` (after `./run.ts build`)
 - **To share an app**: `ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast share app glxgears`
-- **Never deploy from a dev machine** — all deployments (worker, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
+- **Never deploy from a dev machine** — all deployments (server, releases) go through CI on push to trunk. Don't run `wrangler deploy` or `gh release create` locally.
 - CI only calls `run.ts` targets — no build logic in workflow YAML
 - All server-side infrastructure is Cloudflare Workers (signaling, TURN config)
 - libdatachannel for WebRTC transport (C API, callable from Zig, statically linked)

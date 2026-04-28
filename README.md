@@ -161,35 +161,35 @@ Plus: resolution, FPS, bitrate, packets lost, decoder implementation (hardware/s
 
 | Path | What it does |
 |---|---|
-| `packages/zerocast/src/main.zig` | Entry point — dispatches to daemon or CLI |
-| `packages/zerocast/src/shared/daemon.zig` | Daemon — Unix socket listener, session slots, thread lifecycle |
-| `packages/zerocast/src/shared/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
-| `packages/zerocast/src/shared/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
-| `packages/zerocast/src/shared/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
-| `packages/zerocast/src/shared/encoder.zig` | Encode pipeline — backend dispatch, idle detection, timing, FrameSink distribution |
-| `packages/zerocast/src/shared/svt_backend.zig` | SVT-AV1 software EncodeBackend (CPU fallback, also the test encoder) |
-| `packages/zerocast/src/shared/codec.zig` | Codec identity (AV1 only) |
-| `packages/zerocast/src/shared/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
-| `packages/zerocast/src/shared/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
-| `packages/zerocast/src/shared/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
-| `packages/zerocast/src/linux/gpu_detect.zig` | Backend selection — sysfs vendor probe + NVENC/VA-API capability check |
-| `packages/zerocast/src/linux/wayland/app_share.zig` | App share session — embedded compositor + encoder pipeline |
-| `packages/zerocast/src/linux/wayland/compositor.zig` | wlroots headless compositor — output, surface tracking, dispatch |
-| `packages/zerocast/src/linux/wayland/nvenc.zig` | NVENC SDK 12.0 bindings — AV1 config, capability detection |
-| `packages/zerocast/src/linux/wayland/nvenc_backend.zig` | EncodeBackend impl — CUDA GL interop + NVENC |
-| `packages/zerocast/src/linux/wayland/cuda.zig` | CUDA Driver API — GL renderbuffer interop, pitched device memory |
-| `packages/zerocast/src/linux/wayland/frame_download.zig` | GL FBO readback for the SVT-AV1 software path |
-| `packages/zerocast/src/linux/wayland/input.zig` | Input injection — virtual `wlr_keyboard` + `wlr_pointer` |
-| `packages/zerocast/src/linux/vaapi/vaapi.zig` | VA-API encoder (Intel QSV / AMD VCN) |
-| `packages/zerocast/src/linux/vaapi/encoder_backend.zig` | EncodeBackend impl (VA-API + DMA-BUF) |
-| `packages/worker/src/room.ts` | Durable Object — signaling, TURN credentials, shares-list broadcast |
-| `packages/worker/src/hub.ts` | Hub page — live session cards, pop-out viewer windows |
-| `packages/worker/src/viewer.ts` | App viewer — WebRTC client, stats panel, abs-capture-time e2e latency |
-| `packages/worker/src/terminal-viewer.ts` | Terminal viewer — xterm.js + WebRTC data channel |
-| `packages/worker/src/overlay.ts` | SVG overlay — multi-cursor rendering, draw paths, Bibata cursors |
-| `packages/worker/src/input.ts` | Input controller — binary encoding, coordinate mapping, draw/input modes |
+| `packages/client/src/main.zig` | Entry point — dispatches to daemon or CLI |
+| `packages/client/src/shared/daemon.zig` | Daemon — Unix socket listener, session slots, thread lifecycle |
+| `packages/client/src/shared/cli.zig` | CLI — subcommand parser (`share`, `unshare`, `join`, `status`) |
+| `packages/client/src/shared/control.zig` | Wire protocol — JSON over Unix socket between CLI and daemon |
+| `packages/client/src/shared/session.zig` | WebRTC broadcast — peer lifecycle, signaling, data channels, relay |
+| `packages/client/src/shared/encoder.zig` | Encode pipeline — backend dispatch, idle detection, timing, FrameSink distribution |
+| `packages/client/src/shared/svt_backend.zig` | SVT-AV1 software EncodeBackend (CPU fallback, also the test encoder) |
+| `packages/client/src/shared/codec.zig` | Codec identity (AV1 only) |
+| `packages/client/src/shared/terminal_share.zig` | Terminal sharing — PTY, replay buffer, asciinema recording |
+| `packages/client/src/shared/input_protocol.zig` | Binary protocol — mouse, keyboard, draw, resize, relay messages |
+| `packages/client/src/shared/viewer_state.zig` | Multi-viewer state — color assignment, cursor/path tracking |
+| `packages/client/src/linux/gpu_detect.zig` | Backend selection — sysfs vendor probe + NVENC/VA-API capability check |
+| `packages/client/src/linux/wayland/app_share.zig` | App share session — embedded compositor + encoder pipeline |
+| `packages/client/src/linux/wayland/compositor.zig` | wlroots headless compositor — output, surface tracking, dispatch |
+| `packages/client/src/linux/wayland/nvenc.zig` | NVENC SDK 12.0 bindings — AV1 config, capability detection |
+| `packages/client/src/linux/wayland/nvenc_backend.zig` | EncodeBackend impl — CUDA GL interop + NVENC |
+| `packages/client/src/linux/wayland/cuda.zig` | CUDA Driver API — GL renderbuffer interop, pitched device memory |
+| `packages/client/src/linux/wayland/frame_download.zig` | GL FBO readback for the SVT-AV1 software path |
+| `packages/client/src/linux/wayland/input.zig` | Input injection — virtual `wlr_keyboard` + `wlr_pointer` |
+| `packages/client/src/linux/vaapi/vaapi.zig` | VA-API encoder (Intel QSV / AMD VCN) |
+| `packages/client/src/linux/vaapi/encoder_backend.zig` | EncodeBackend impl (VA-API + DMA-BUF) |
+| `packages/server/src/room.ts` | Durable Object — signaling, TURN credentials, shares-list broadcast |
+| `packages/server/src/hub.ts` | Hub page — live session cards, pop-out viewer windows |
+| `packages/server/src/viewer.ts` | App viewer — WebRTC client, stats panel, abs-capture-time e2e latency |
+| `packages/server/src/terminal-viewer.ts` | Terminal viewer — xterm.js + WebRTC data channel |
+| `packages/server/src/overlay.ts` | SVG overlay — multi-cursor rendering, draw paths, Bibata cursors |
+| `packages/server/src/input.ts` | Input controller — binary encoding, coordinate mapping, draw/input modes |
 | `build.zig` | Build system — executable, modules, static libdatachannel + SVT-AV1, tests |
-| `.mise.toml` | Task graph — build, test, lint, libs, worker, ci. The single source of truth for orchestration. |
+| `.mise.toml` | Task graph — build, test, lint, libs, server, ci. The single source of truth for orchestration. |
 | `run.ts` | Thin wrapper around `mise run` |
 
 ## Hardware Requirements
@@ -230,7 +230,7 @@ git clone <repo> && cd zerocast
 ./run.ts setup        # symlink the binary into ~/.local/bin, ensure group membership
 
 # Run locally
-./run.ts worker-dev                                              # signaling server on :8787
+./run.ts server-dev                                              # signaling server on :8787
 ZEROCAST_URL=http://localhost:8787 dist/bin/zerocast daemon      # start daemon
 dist/bin/zerocast join myroom                                    # join a room
 dist/bin/zerocast share app glxgears                             # share an app
@@ -247,7 +247,7 @@ Common tasks (all dispatch through `./run.ts <task>`, which is `mise run <task>`
 ./run.ts integration  # GPU integration test (captures 3s video, validates with ffprobe)
 ./run.ts sw-integration # GPU-free SVT-AV1 lane (CI-safe)
 ./run.ts compositor-test # wlroots compositor integration test (requires GPU)
-./run.ts worker-dev   # local Cloudflare Worker on :8787
+./run.ts server-dev   # local Cloudflare Worker on :8787
 ./run.ts libs         # rebuild libdatachannel + SVT-AV1 static libs
 ./run.ts clean        # rm -rf dist/bin .zig-cache
 ```

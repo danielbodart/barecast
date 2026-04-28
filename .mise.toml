@@ -11,7 +11,7 @@ bun = "1.2"
 #
 # Conventions:
 #  * `libs:*`  — vendored static libraries (libdatachannel, svt-av1)
-#  * `worker:*` — Cloudflare Worker (signaling server + browser viewers)
+#  * `server:*` — Cloudflare Worker (signaling server + browser viewers)
 #  * Top-level — main developer-facing tasks (build, test, lint, etc.)
 
 # ─── Setup tasks (idempotent) ─────────────────────────────────────────────
@@ -80,10 +80,10 @@ esac
 '''
 sources = [
     "build.zig", "build_*.zig", "build.zig.zon",
-    "packages/zerocast/src/**/*.zig",
-    "packages/zerocast/src/**/*.c",
-    "packages/zerocast/src/**/*.h",
-    "packages/zerocast/src/**/*.m",
+    "packages/client/src/**/*.zig",
+    "packages/client/src/**/*.c",
+    "packages/client/src/**/*.h",
+    "packages/client/src/**/*.m",
 ]
 outputs = ["dist/bin/zerocast"]
 
@@ -93,10 +93,10 @@ depends = ["libs"]
 run = "zig build test"
 sources = [
     "build.zig", "build_*.zig",
-    "packages/zerocast/src/**/*.zig",
-    "packages/zerocast/src/**/*.c",
-    "packages/zerocast/src/**/*.h",
-    "packages/zerocast/src/**/*.m",
+    "packages/client/src/**/*.zig",
+    "packages/client/src/**/*.c",
+    "packages/client/src/**/*.h",
+    "packages/client/src/**/*.m",
 ]
 
 [tasks."lint"]
@@ -106,7 +106,7 @@ run = """
 zig build analyze
 shellcheck bootstrap.sh
 """
-sources = ["packages/zerocast/src/**/*.zig", "bootstrap.sh"]
+sources = ["packages/client/src/**/*.zig", "bootstrap.sh"]
 
 [tasks."clean"]
 description = "Delete build outputs and caches."
@@ -152,7 +152,7 @@ run = "bun scripts/version.ts"
 
 # ─── CI pipeline ──────────────────────────────────────────────────────────
 # CI builds with ReleaseSmall (vs. dev's ReleaseSafe), so it can't reuse
-# the dev `build` task directly. Lint + test + worker bundle do reuse.
+# the dev `build` task directly. Lint + test + server bundle do reuse.
 
 [tasks."ci:build-small"]
 description = "Build with ReleaseSmall optimization (CI variant of build)."
@@ -167,52 +167,52 @@ esac
 '''
 hide = true
 
-[tasks."ci:worker-deps"]
-description = "Install worker dependencies (CI prereq)."
-run = "cd packages/worker && bun install"
-sources = ["packages/worker/package.json", "packages/worker/bun.lockb"]
+[tasks."ci:server-deps"]
+description = "Install Cloudflare Worker dependencies (CI prereq)."
+run = "cd packages/server && bun install"
+sources = ["packages/server/package.json", "packages/server/bun.lockb"]
 hide = true
 
-[tasks."ci:worker-deploy-production"]
-description = "Build + deploy worker to production env."
-depends = ["ci:worker-deps"]
+[tasks."ci:server-deploy-production"]
+description = "Build + deploy Cloudflare Worker to production env."
+depends = ["ci:server-deps"]
 run = """
-bun scripts/worker-build.ts --minify
-cd packages/worker && bun run wrangler deploy --env production
+bun scripts/server-build.ts --minify
+cd packages/server && bun run wrangler deploy --env production
 """
 hide = true
 
 [tasks."ci"]
-description = "CI pipeline: lint + test + small build + dist + worker deploy + release."
-depends = ["lint", "test", "ci:build-small", "ci:worker-deploy-production"]
+description = "CI pipeline: lint + test + small build + dist + server deploy + release."
+depends = ["lint", "test", "ci:build-small", "ci:server-deploy-production"]
 run = """
 bun scripts/dist.ts
 bun scripts/release.ts
 """
 
-# ─── Worker (Cloudflare) ──────────────────────────────────────────────────
+# ─── Server (Cloudflare Worker) ───────────────────────────────────────────
 
-[tasks."worker:build"]
-description = "Build worker browser bundles."
-run = "bun scripts/worker-build.ts"
-sources = ["packages/worker/src/**/*.ts"]
-outputs = ["packages/worker/public/*.js"]
+[tasks."server:build"]
+description = "Build server browser bundles."
+run = "bun scripts/server-build.ts"
+sources = ["packages/server/src/**/*.ts"]
+outputs = ["packages/server/public/*.js"]
 
-[tasks."worker:dev"]
-description = "Run worker locally on :8787."
-depends = ["worker:build"]
-run = "cd packages/worker && bun run wrangler dev --port 8787"
+[tasks."server:dev"]
+description = "Run server locally on :8787."
+depends = ["server:build"]
+run = "cd packages/server && bun run wrangler dev --port 8787"
 
-[tasks."worker:deploy"]
-description = "Deploy worker to Cloudflare (default env)."
+[tasks."server:deploy"]
+description = "Deploy server to Cloudflare (default env)."
 run = """
-bun scripts/worker-build.ts --minify
-cd packages/worker && bun run wrangler deploy
+bun scripts/server-build.ts --minify
+cd packages/server && bun run wrangler deploy
 """
 
-[tasks."worker:promote"]
-description = "Deploy worker to Cloudflare production env."
+[tasks."server:promote"]
+description = "Deploy server to Cloudflare production env."
 run = """
-bun scripts/worker-build.ts --minify
-cd packages/worker && bun run wrangler deploy --env production
+bun scripts/server-build.ts --minify
+cd packages/server && bun run wrangler deploy --env production
 """

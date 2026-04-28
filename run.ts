@@ -11,13 +11,17 @@ import { spawn } from "bun";
 process.env.FORCE_COLOR = "1";
 
 // Aliases: short developer-facing name → mise task name. mise tasks use
-// `:` to namespace (libs:datachannel, worker:build); we keep the legacy
+// `:` to namespace (libs:datachannel, server:build); we keep the legacy
 // hyphenated names available as a courtesy.
 const aliases: Record<string, string> = {
     "rebuild-libs": "libs",
-    "worker-dev": "worker:dev",
-    "worker-deploy": "worker:deploy",
-    "worker-promote": "worker:promote",
+    "server-dev": "server:dev",
+    "server-deploy": "server:deploy",
+    "server-promote": "server:promote",
+    // Legacy aliases (the package was packages/worker before the rename)
+    "worker-dev": "server:dev",
+    "worker-deploy": "server:deploy",
+    "worker-promote": "server:promote",
 };
 
 const command = process.argv[2] || "dev";
@@ -36,7 +40,7 @@ if (command === "--help" || command === "-h" || command === "help") {
     console.log("  setup        first-time setup (build + symlink + groups)");
     console.log("  ci           full CI pipeline");
     console.log("  integration  end-to-end recording test (requires GPU)");
-    console.log("  worker:dev   run worker locally on :8787");
+    console.log("  server:dev   run signaling server locally on :8787");
     console.log("");
     console.log("List all tasks:    mise tasks");
     console.log("Show dep graph:    mise tasks deps <task>");
